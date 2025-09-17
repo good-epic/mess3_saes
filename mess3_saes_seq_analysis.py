@@ -1,6 +1,8 @@
 import os
 from typing import Dict, List, Tuple
 import itertools
+from itertools import combinations
+import warnings
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -76,7 +78,7 @@ def _fit_line(y: np.ndarray) -> np.ndarray:
     return y_fit
 
 
-def generate_last50_loss_plots(metrics_summary: Dict, out_dir: str) -> None:
+def generate_last50_loss_plots(metrics_summary: Dict, out_dir: str, show_plots: bool = False) -> None:
     """
     Generate line plots of the last 50 loss values with a straight line (values)
     and a dotted linear fit line, grouped by k (for top_k and batch_top_k, sequence/L2)
@@ -117,7 +119,8 @@ def generate_last50_loss_plots(metrics_summary: Dict, out_dir: str) -> None:
             plt.tight_layout()
             fname = f"last50_{site}_{sae_type}_l2_sequence.png"
             plt.savefig(os.path.join(out_dir, fname), dpi=200)
-            plt.show()
+            if show_plots:
+                plt.show()
             plt.close()
 
     # Vanilla SAEs (beliefs): by lambda; we save both L2 and L1 variants (if only one series is available,
@@ -149,14 +152,15 @@ def generate_last50_loss_plots(metrics_summary: Dict, out_dir: str) -> None:
                 plt.tight_layout()
                 fname = f"last50_{site}_vanilla_{loss_label.lower()}_{suffix}.png"
                 plt.savefig(os.path.join(out_dir, fname), dpi=200)
-                plt.show()
+                if show_plots:
+                    plt.show()
                 plt.close()
 
             _plot_and_save("L2", label_suffix)
             _plot_and_save("L1", label_suffix)
 
 
-def generate_l0_bar_plots(metrics_summary: Dict, out_dir: str) -> None:
+def generate_l0_bar_plots(metrics_summary: Dict, out_dir: str, show_plots: bool = False) -> None:
     """
     Side-by-side bar plots for sequence SAEs (top_k, batch_top_k): avg_last_quarter L2
     across layers, grouped by k. Vanilla L0/L2 bar charts are intentionally omitted.
@@ -204,13 +208,14 @@ def generate_l0_bar_plots(metrics_summary: Dict, out_dir: str) -> None:
         plt.tight_layout()
         fname = f"bars_{filename_suffix}.png"
         plt.savefig(os.path.join(out_dir, fname), dpi=200)
-        plt.show()
+        if show_plots:
+            plt.show()
         plt.close()
 
     _bar_by_k_l2("top_k", "sequence — top_k", "sequence_top_k_avg_l2")
 
 
-def generate_vanilla_l0_average_line_plots(metrics_summary: Dict, out_dir: str) -> None:
+def generate_vanilla_l0_average_line_plots(metrics_summary: Dict, out_dir: str, show_plots: bool = False) -> None:
     """
     For vanilla SAEs: plot two lines, one for L0 and one for L2, where each is the
     average across layers of the avg_last_quarter metric, vs lambda value (numeric).
@@ -259,7 +264,8 @@ def generate_vanilla_l0_average_line_plots(metrics_summary: Dict, out_dir: str) 
         plt.title("Vanilla (beliefs): L0 avg across layers vs λ")
         plt.tight_layout()
         plt.savefig(os.path.join(out_dir, "lines_beliefs_vanilla_avg_l0_across_layers.png"), dpi=200)
-        plt.show()
+        if show_plots:
+            plt.show()
         plt.close()
 
     if beliefs_l2_by_lambda:
@@ -275,7 +281,8 @@ def generate_vanilla_l0_average_line_plots(metrics_summary: Dict, out_dir: str) 
         plt.title("Vanilla (beliefs): L2 avg across layers vs λ")
         plt.tight_layout()
         plt.savefig(os.path.join(out_dir, "lines_beliefs_vanilla_avg_l2_across_layers.png"), dpi=200)
-        plt.show()
+        if show_plots:
+            plt.show()
         plt.close()
 
     if seq_l0_by_lambda:
@@ -291,7 +298,8 @@ def generate_vanilla_l0_average_line_plots(metrics_summary: Dict, out_dir: str) 
         plt.title("Vanilla (sequence): L0 avg across layers vs λ")
         plt.tight_layout()
         plt.savefig(os.path.join(out_dir, "lines_sequence_vanilla_avg_l0_across_layers.png"), dpi=200)
-        plt.show()
+        if show_plots:
+            plt.show()
         plt.close()
 
         # ylim (0,5) variant
@@ -306,7 +314,8 @@ def generate_vanilla_l0_average_line_plots(metrics_summary: Dict, out_dir: str) 
         plt.ylim(0, 8)
         plt.tight_layout()
         plt.savefig(os.path.join(out_dir, "lines_sequence_vanilla_avg_l0_across_layers_ylim_0_8.png"), dpi=200)
-        plt.show()
+        if show_plots:
+            plt.show()
         plt.close()
 
     if seq_l2_by_lambda:
@@ -322,7 +331,8 @@ def generate_vanilla_l0_average_line_plots(metrics_summary: Dict, out_dir: str) 
         plt.title("Vanilla (sequence): L2 avg across layers vs λ")
         plt.tight_layout()
         plt.savefig(os.path.join(out_dir, "lines_sequence_vanilla_avg_l2_across_layers.png"), dpi=200)
-        plt.show()
+        if show_plots:
+            plt.show()
         plt.close()
 
 
@@ -500,366 +510,3 @@ def plot_token_fingerprints(fingerprints: dict, out_dir: str, vocab_size: int = 
         plt.savefig(os.path.join(out_dir, f"latent_{li}_pos_tokens.png"), dpi=200)
         plt.show()
         plt.close()
-
-def sample_residual_stream_activations(model, mess3, seq_len, n_samples: int = 1000, device: str = "cuda"):
-    """
-    Get residual stream activations samples.
-    """
-    # Generate a batch for analysis
-    key = jax.random.PRNGKey(43)
-    key, subkey = jax.random.split(key)
-    gen_states = jnp.repeat(mess3.initial_state[None, :], n_samples, axis=0)
-    _, inputs, _ = generate_data_batch(gen_states, mess3, n_samples, seq_len, subkey)
-
-    if isinstance(inputs, torch.Tensor):
-        tokens = inputs.long().to(device)
-    else:
-        tokens = torch.from_numpy(np.array(inputs)).long().to(device)
-
-    # Run with cache to get all activations
-    logits, cache = model.run_with_cache(tokens)
-
-    # Extract residual stream activations at different layers
-    residual_streams = {
-        'embeddings': cache['hook_embed'],  # Shape: [batch, seq, d_model]
-        'layer_0': cache['blocks.0.hook_resid_post'],  # After first layer
-        'layer_1': cache['blocks.1.hook_resid_post'],  # After second layer,
-        'layer_2': cache['blocks.2.hook_resid_post'],  # After third layer
-        'layer_3': cache['blocks.3.hook_resid_post'],  # After fourth layer
-    }
-    return residual_streams, tokens
-
-
-
-from scipy.spatial import ConvexHull
-
-class LatentEPDF:
-    def __init__(self, site_name, sae_id, latent_idx, coords, weights):
-        self.site_name = site_name
-        self.sae_id = sae_id
-        self.latent_idx = latent_idx
-        self.coords = np.asarray(coords)
-        self.weights = np.asarray(weights)
-        self.kde = None
-
-        # Detect triangle on init
-        self.triangle_vertices = self._detect_triangle_vertices()
-
-    def fit_kde(self, bw_method="scott"):
-        if self.coords.shape[0] < 5:
-            return None
-        self.kde = st.gaussian_kde(self.coords.T, weights=self.weights, bw_method=bw_method)
-        return self.kde
-
-    def evaluate_on_grid(self, grid_x, grid_y):
-        if self.kde is None:
-            self.fit_kde()
-        xy = np.vstack([grid_x.ravel(), grid_y.ravel()])
-        z = self.kde(xy).reshape(grid_x.shape)
-        return z
-
-    def _detect_triangle_vertices(self, tol=0.02):
-        """Infer simplex triangle vertices from this latent's coords (robust to PCA noise)."""
-        if self.coords.shape[0] < 3:
-            return None
-
-        all_coords = self.coords
-        xmin, xmax = np.min(all_coords[:,0]), np.max(all_coords[:,0])
-        ymin, ymax = np.min(all_coords[:,1]), np.max(all_coords[:,1])
-
-        candidates = []
-
-        # Near xmin
-        mask = np.isclose(all_coords[:,0], xmin, atol=tol)
-        if mask.any():
-            ys = all_coords[mask,1]
-            candidates.append([xmin, ys.min()])
-            candidates.append([xmin, ys.max()])
-
-        # Near xmax
-        mask = np.isclose(all_coords[:,0], xmax, atol=tol)
-        if mask.any():
-            ys = all_coords[mask,1]
-            candidates.append([xmax, ys.min()])
-            candidates.append([xmax, ys.max()])
-
-        # Near ymin
-        mask = np.isclose(all_coords[:,1], ymin, atol=tol)
-        if mask.any():
-            xs = all_coords[mask,0]
-            candidates.append([xs.min(), ymin])
-            candidates.append([xs.max(), ymin])
-
-        # Near ymax
-        mask = np.isclose(all_coords[:,1], ymax, atol=tol)
-        if mask.any():
-            xs = all_coords[mask,0]
-            candidates.append([xs.min(), ymax])
-            candidates.append([xs.max(), ymax])
-
-        candidates = np.unique(np.array(candidates), axis=0)
-
-        if candidates.shape[0] < 3:
-            return None
-
-        hull = ConvexHull(candidates)
-        verts = candidates[hull.vertices]
-
-        # Force to exactly 3 vertices if noisy hull produced >3
-        if verts.shape[0] > 3:
-            dists = np.sum((verts[:, None, :] - verts[None, :, :])**2, axis=-1)
-            i, j = np.unravel_index(np.argmax(dists), dists.shape)
-
-            def area(p, q, r):
-                return abs(0.5 * ((q[0]-p[0])*(r[1]-p[1]) - (q[1]-p[1])*(r[0]-p[0])))
-
-            best_k, best_area = None, -1
-            for k in range(len(verts)):
-                if k in (i, j):
-                    continue
-                A = area(verts[i], verts[j], verts[k])
-                if A > best_area:
-                    best_area, best_k = A, k
-
-            verts = np.array([verts[i], verts[j], verts[best_k]])
-
-        return verts
-
-
-
-def plot_epdfs(epdfs, mode="3d", grid_size=80):
-    """
-    epdfs: list[LatentEPDF] (must be from the same SAE if multiple)
-    mode: "3d", "transparency", or "contours"
-    """
-    import matplotlib.tri as tri
-
-    if not isinstance(epdfs, (list, tuple)):
-        epdfs = [epdfs]
-
-    # Consistency check
-    sae_ids = {e.sae_id for e in epdfs}
-    if len(sae_ids) > 1 and mode == "3d":
-        raise ValueError("3D plotting requires all ePDFs from the same SAE.")
-
-    # Use triangle from first EPDF
-    triangle_vertices = epdfs[0].triangle_vertices
-    if triangle_vertices is None:
-        raise ValueError("Could not detect triangle vertices for plotting.")
-
-    # Generate a triangular grid inside detected simplex
-    pts_x, pts_y = [], []
-    for i in range(grid_size + 1):
-        for j in range(grid_size + 1 - i):
-            a = i / grid_size
-            b = j / grid_size
-            c = 1 - a - b
-            x = a * triangle_vertices[0, 0] + b * triangle_vertices[1, 0] + c * triangle_vertices[2, 0]
-            y = a * triangle_vertices[0, 1] + b * triangle_vertices[1, 1] + c * triangle_vertices[2, 1]
-            pts_x.append(x)
-            pts_y.append(y)
-    pts_x, pts_y = np.array(pts_x), np.array(pts_y)
-
-    fig = go.Figure()
-    colors = ["red", "blue", "green", "orange", "purple", "brown", "cyan"]
-
-    for idx, epdf in enumerate(epdfs):
-        if epdf.kde is None:
-            epdf.fit_kde()
-        xy = np.vstack([pts_x, pts_y])
-        z = epdf.kde(xy)
-
-        if z is None or z.size == 0:
-            continue
-        color = colors[idx % len(colors)]
-
-        # Normalize inside triangle
-        z_min, z_max = np.min(z), np.max(z)
-        z_norm = (z - z_min) / (z_max - z_min + 1e-12)
-
-        if mode == "3d":
-            fig.add_trace(go.Mesh3d(
-                x=pts_x, y=pts_y, z=z_norm,
-                color=color,
-                opacity=0.6,
-                name=f"Latent {epdf.latent_idx}",
-                alphahull=0
-            ))
-        elif mode == "transparency":
-            fig.add_trace(go.Scatter(
-                x=pts_x, y=pts_y,
-                mode="markers",
-                marker=dict(size=5, color=color, opacity=z_norm),
-                name=f"Latent {epdf.latent_idx}"
-            ))
-        elif mode == "contours":
-            triang = tri.Triangulation(pts_x, pts_y)
-            fig.add_trace(go.Contour(
-                x=pts_x,
-                y=pts_y,
-                z=z_norm,
-                colorscale=[[0, color], [1, color]],
-                contours_coloring="lines",
-                line_width=2,
-                name=f"Latent {epdf.latent_idx}",
-                connectgaps=False
-            ))
-
-    # Add simplex boundary
-    tri_x = np.append(triangle_vertices[:, 0], triangle_vertices[0, 0])
-    tri_y = np.append(triangle_vertices[:, 1], triangle_vertices[0, 1])
-    fig.add_trace(go.Scatter(
-        x=tri_x, y=tri_y, mode="lines",
-        line=dict(color="black"), showlegend=False
-    ))
-
-    fig.update_layout(
-        title=f"Empirical PDFs for {epdfs[0].site_name} / SAE {epdfs[0].sae_id}",
-        xaxis=dict(scaleanchor="y", scaleratio=1, showgrid=False, zeroline=False),
-        yaxis=dict(showgrid=False, zeroline=False),
-        height=700, width=800
-    )
-
-    return fig
-
-
-
-def build_epdfs_for_sae(
-    model,
-    sae,
-    mess3,
-    site_name: str,
-    sae_type: str,
-    param_value: str,
-    active_latent_indices,
-    pcas: dict,
-    seq_len: int = 10,
-    n_batches: int = 100,
-    device: str = "cpu",
-    hook_name: str | None = None,
-) -> dict:
-    """
-    Build LatentEPDFs for all non-dead latents in one SAE.
-
-    Returns:
-      {site_name: {sae_type: {param_value: {latent_idx: LatentEPDF}}}}
-    """
-
-    # Infer hook name if not provided
-    if hook_name is None:
-        if site_name == "embeddings":
-            hook_name = "hook_embed"
-        else:
-            layer_idx = int(site_name.split("_")[1])
-            hook_name = f"blocks.{layer_idx}.hook_resid_post"
-
-    # Generate activation samples
-    residuals, tokens = sample_residual_stream_activations(model, mess3, seq_len=seq_len, n_samples=n_batches, device=device)
-    acts = residuals[site_name].reshape(-1, residuals[site_name].shape[-1]).to(device)
-
-    # Run through SAE
-    with torch.no_grad():
-        sae_out = sae(acts)
-        latents = sae_out["feature_acts"].cpu().numpy()
-
-    # 🔹 CHANGE: use layer-specific PCA
-    if site_name not in pcas:
-        raise KeyError(f"No PCA provided for site {site_name}")
-    pca_proj = pcas[site_name]
-
-    coords = pca_proj.transform(acts.cpu().numpy())
-
-    # Normalize active latent indices: can be list/array or dict {idx: [count, sum]}
-    if isinstance(active_latent_indices, dict):
-        try:
-            indices = [int(k) for k in active_latent_indices.keys()]
-        except Exception:
-            indices = list(active_latent_indices.keys())
-    else:
-        indices = [int(i) for i in active_latent_indices]
-
-    # Build EPDFs
-    latent_map = {}
-    for li in indices:
-        li_int = int(li)
-        if li_int < 0 or li_int >= latents.shape[1]:
-            continue
-        mask = latents[:, li_int] > 1e-6
-        if not np.any(mask):
-            continue
-        latent_map[li_int] = LatentEPDF(
-            site_name=site_name,
-            sae_id=(sae_type, param_value),
-            latent_idx=li_int,
-            coords=coords[mask],
-            weights=latents[mask, li_int],
-        )
-
-    return {site_name: {sae_type: {param_value: latent_map}}}
-
-
-
-def build_epdfs_for_all_saes(
-    model,
-    mess3,
-    loaded_saes: dict,
-    active_latents: dict,
-    pcas: dict,
-    seq_len: int = 10,
-    n_batches: int = 100,
-    device: str = "cpu",
-) -> dict:
-    """
-    Loop over all loaded_saes and build EPDFs.
-
-    Returns:
-      sequence_epdfs[site_name][sae_type][param_value][latent_idx] = LatentEPDF
-    """
-
-    sequence_epdfs = {}
-
-    for site_name, sae_dict in loaded_saes.items():
-        sequence_epdfs[site_name] = {}
-        for (k, lmbda), sae_ckpt in sae_dict.items():
-            if k is not None:
-                sae_class = TopKSAE
-                sae_type = "top_k"
-                param_value = f"k{k}"
-                active_key = (site_name, "sequence", "top_k", f"k{k}")
-            else:
-                sae_class = VanillaSAE
-                sae_type = "l1"
-                param_value = f"lambda_{lmbda}"
-                active_key = (site_name, "sequence", "vanilla", f"lambda_{lmbda}")
-
-            sae = sae_class(sae_ckpt["cfg"])
-            sae.load_state_dict(sae_ckpt["state_dict"])
-            sae.to(device).eval()
-
-            active_inds = active_latents.get(active_key, [])
-            if not active_inds:
-                continue
-
-            # 🔹 CHANGE: pass pcas dict instead of single PCA
-            epdfs_dict = build_epdfs_for_sae(
-                model,
-                sae,
-                mess3,
-                site_name,
-                sae_type,
-                param_value,
-                active_inds,
-                pcas,
-                seq_len=seq_len,
-                n_batches=n_batches,
-                device=device,
-            )
-
-            # Merge into top-level dict
-            for site, type_map in epdfs_dict.items():
-                for sae_type, param_map in type_map.items():
-                    sequence_epdfs[site].setdefault(sae_type, {})
-                    for param_value, latent_map in param_map.items():
-                        sequence_epdfs[site][sae_type][param_value] = latent_map
-
-    return sequence_epdfs

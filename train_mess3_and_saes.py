@@ -24,14 +24,41 @@ import jax
 jax.config.update("jax_platform_name", "cpu")
 import jax.numpy as jnp
 from transformer_lens import HookedTransformer, HookedTransformerConfig
-from simplexity.generative_processes.builder import build_hidden_markov_model, build_generalized_hidden_markov_model
 from simplexity.generative_processes.torch_generator import generate_data_batch
 import argparse, sys, os, json
+from copy import deepcopy
 
-from mess3_saes import train_sae_on_site, check_cuda_memory
+from mess3_saes import train_sae_on_site, train_saes_for_sites, check_cuda_memory
+from multipartite_generation import (
+    build_components_from_config,
+    MultipartiteSampler,
+)
+
+
+PRESET_PROCESS_CONFIGS = {
+    "single_mess3": [
+        {"type": "mess3", "params": {"x": 0.1, "a": 0.7}},
+    ],
+    "3xmess3_2xtquant": [
+        {
+            "type": "mess3",
+            "instances": [
+                {"x": 0.1, "a": 0.8},
+                {"x": 0.25, "a": 0.2},
+                {"x": 0.4, "a": 0.5},
+            ],
+        },
+        {
+            "type": "tom_quantum",
+            "instances": [
+                {"alpha": 0.9, "beta": float(1.3)},
+                {"alpha": 1.0, "beta": float(np.sqrt(51))},
+            ],
+        },
+    ],
+}
 
 import plotly.graph_objects as go
-import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
@@ -44,20 +71,22 @@ device_default = "cuda" if torch.cuda.is_available() else "cpu"
 parser = argparse.ArgumentParser(description="Train Transformer on mess3 and SAEs")
 
 # HookedTransformerConfig parameters
-parser.add_argument("--d_model", type=int, default=64)
-parser.add_argument("--n_heads", type=int, default=1)
-parser.add_argument("--n_layers", type=int, default=4)
-parser.add_argument("--n_ctx", type=int, default=10)
+parser.add_argument("--d_model", type=int, default=128)
+parser.add_argument("--n_heads", type=int, default=4)
+parser.add_argument("--n_layers", type=int, default=3)
+parser.add_argument("--n_ctx", type=int, default=16)
 parser.add_argument("--d_vocab", type=int, default=None)
 parser.add_argument("--act_fn", type=str, default="relu")
 parser.add_argument("--device", type=str, default=device_default)
-parser.add_argument("--d_head", type=int, default=8)
+parser.add_argument("--d_head", type=int, default=32)
 
 # SAE hyperparameters
 parser.add_argument("--dict_mul", type=int, default=4)
-parser.add_argument("--k", type=int, nargs="+", default=[1, 2, 3, 4, 5, 6, 7])
-parser.add_argument("--l1_coeff_seq", type=float, nargs="+", default=[0.01, 0.015, 0.02, 0.025, 0.05, 0.075] + [round(x, 3) for x in np.arange(0.1, 0.151, 0.005)])
-parser.add_argument("--l1_coeff_beliefs", type=float, nargs="+", default=[1e-3, 0.01, 0.015, 0.02, 0.025, 0.05] + [round(x, 2) for x in np.arange(0.1, 0.651, 0.05)])
+parser.add_argument("--k", type=int, nargs="+", default=list(range(1, 25)))
+#parser.add_argument("--l1_coeff_seq", type=float, nargs="+", default=[0.01, 0.015, 0.02, 0.025, 0.05, 0.075] + [round(x, 3) for x in np.arange(0.1, 0.151, 0.005)])
+#parser.add_argument("--l1_coeff_beliefs", type=float, nargs="+", default=[1e-3, 0.01, 0.015, 0.02, 0.025, 0.05] + [round(x, 2) for x in np.arange(0.1, 0.651, 0.05)])
+parser.add_argument("--l1_coeff_seq", type=float, nargs="+", default=None)
+parser.add_argument("--l1_coeff_beliefs", type=float, nargs="+", default=None)
 parser.add_argument("--input_unit_norm", dest="input_unit_norm", action="store_true", default=True)
 parser.add_argument("--no_input_unit_norm", dest="input_unit_norm", action="store_false")
 parser.add_argument("--n_batches_to_dead", type=int, default=5)
@@ -70,17 +99,50 @@ parser.add_argument("--sae_steps", type=int, default=1600)
 parser.add_argument("--sae_batch_size", type=int, default=1024)
 parser.add_argument("--sae_seq_len", type=int, default=None)
 parser.add_argument("--seq_len", type=int, default=None, help="Sequence length used for analysis/visualization batches; defaults to n_ctx")
+parser.add_argument("--sae_output_dir", type=str, default="outputs/saes/multipartite_1", help="Directory to save trained SAEs and metrics")
 
 # Model loading
-parser.add_argument("--load_model", type=str, default=None, help="Path to a saved model checkpoint (.pt). If provided, skip training and load this model.")
+#parser.add_argument("--load_model", type=str, default=None, help="Path to a saved model checkpoint (.pt). If provided, skip training and load this model.")
+parser.add_argument("--load_model", type=str, default="outputs/checkpoints/multipartite_1/checkpoint_step_50000_final.pt", help="Path to a saved model checkpoint (.pt). If provided, skip training and load this model.")
+parser.add_argument("--process_config", type=str, default=None, help="Path to JSON describing a stack of generative processes")
+#parser.add_argument("--process_preset", type=str, default=None, help="Named preset for generative process configuration")
+parser.add_argument("--process_preset", type=str, default="3xmess3_2xtquant", help="Named preset for generative process configuration")
 
 # Parse known to be notebook-friendly
 args, _ = parser.parse_known_args()
 
-# Create mess3 process
-mess3 = build_hidden_markov_model("mess3", x=0.1, a=0.7)
-#mess3 = build_generalized_hidden_markov_model("tom_quantum", alpha=1, beta=np.sqrt(51))
-print(f"mess3: vocab_size={mess3.vocab_size}, states={mess3.num_states}")
+if args.process_config and args.process_preset:
+    parser.error("Specify at most one of --process_config or --process_preset")
+
+if args.process_config:
+    with open(args.process_config, "r", encoding="utf-8") as f:
+        process_config = json.load(f)
+elif args.process_preset:
+    if args.process_preset not in PRESET_PROCESS_CONFIGS:
+        parser.error(f"Unknown process preset '{args.process_preset}'")
+    process_config = deepcopy(PRESET_PROCESS_CONFIGS[args.process_preset])
+else:
+    process_config = deepcopy(PRESET_PROCESS_CONFIGS["single_mess3"])
+
+components = build_components_from_config(process_config)
+if len(components) == 1:
+    data_source = components[0].process
+    sampler: MultipartiteSampler | None = None
+else:
+    sampler = MultipartiteSampler(components)
+    data_source = sampler
+
+if isinstance(data_source, MultipartiteSampler):
+    vocab_size = data_source.vocab_size
+    num_states = data_source.belief_dim
+    print(
+        f"Multipartite process with components {[c.name for c in data_source.components]}"
+        f" → vocab_size={vocab_size}, belief_dim={num_states}"
+    )
+else:
+    vocab_size = data_source.vocab_size
+    num_states = data_source.num_states
+    print(f"Process: vocab_size={vocab_size}, states={num_states}")
 
 # Create TransformerLens model
 device = args.device
@@ -89,7 +151,7 @@ cfg = HookedTransformerConfig(
     n_heads=args.n_heads,
     n_layers=args.n_layers,
     n_ctx=args.n_ctx,
-    d_vocab=(args.d_vocab if args.d_vocab is not None else mess3.vocab_size),
+    d_vocab=(args.d_vocab if args.d_vocab is not None else vocab_size),
     act_fn=args.act_fn,
     device=device,
     d_head=args.d_head,
@@ -105,21 +167,24 @@ seq_len = args.seq_len if args.seq_len is not None else cfg.n_ctx
 ## Train or load model
 
 key = jax.random.PRNGKey(42)
-args.load_model = "outputs/mess3_transformer.pt"
-
 # Cell 3: Train (or load)
 losses = []
 if args.load_model is None:
+    if isinstance(data_source, MultipartiteSampler):
+        raise ValueError(
+            "Training from scratch is not implemented for multipartite stacks; "
+            "please provide --load_model pointing to a pretrained checkpoint."
+        )
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     batch_size, seq_len = 1024, cfg.n_ctx
     # Get stationary distribution for initial states
-    stationary = mess3.initial_state
+    stationary = data_source.initial_state
     # Create the tqdm progress bar object
     progress_bar = tqdm(range(25000), desc="Training")
     for step in progress_bar:
         key, subkey = jax.random.split(key)
         gen_states = jnp.repeat(stationary[None, :], batch_size, axis=0)
-        _, inputs, _ = generate_data_batch(gen_states, mess3, batch_size, seq_len+1, subkey)
+        _, inputs, _ = generate_data_batch(gen_states, data_source, batch_size, seq_len+1, subkey)
         if isinstance(inputs, torch.Tensor):
             tokens = inputs.long().to(device)
         else:
@@ -150,10 +215,16 @@ if args.load_model is None:
     print(f"Saved trained model to {save_path}")
 else:
     ckpt = torch.load(args.load_model, map_location=device, weights_only=False)
-    cfg_loaded = HookedTransformerConfig.from_dict(ckpt["config"]) if isinstance(ckpt.get("config"), dict) else cfg
+    cfg_loaded = None
     if isinstance(ckpt.get("config"), dict):
+        cfg_loaded = HookedTransformerConfig.from_dict(ckpt["config"])
         model = HookedTransformer(cfg_loaded).to(device)
-    model.load_state_dict(ckpt["state_dict"])  # type: ignore
+    state_dict = ckpt.get("state_dict") or ckpt.get("model_state_dict")
+    if state_dict is None:
+        raise KeyError("Checkpoint missing Transformer state dict")
+    if cfg_loaded is None:
+        model = HookedTransformer(cfg).to(device)
+    model.load_state_dict(state_dict)  # type: ignore[arg-type]
     model.eval()
     print(f"Loaded model from {args.load_model}")
 
@@ -162,50 +233,44 @@ else:
 ## Train SAEs
 
 # Train SAEs at the key residual stream points used below
-site_to_hook = {
-    "embeddings": "hook_embed",
-    "layer_0": "blocks.0.hook_resid_post",
-    "layer_1": "blocks.1.hook_resid_post",
-    "layer_2": "blocks.2.hook_resid_post",
-    "layer_3": "blocks.3.hook_resid_post",
-}
+site_to_hook = {"embeddings": "hook_embed"}
+for layer_idx in range(cfg.n_layers):
+    site_to_hook[f"layer_{layer_idx}"] = f"blocks.{layer_idx}.hook_resid_post"
 
 sequence_saes = {}
 true_coords_saes = {}
 metrics_summary = {}
-for site_name, hook_name in site_to_hook.items():
-    print(f"Training SAEs for {site_name} at {hook_name}")
-    sequence_saes[site_name], true_coords_saes[site_name], metrics_summary[site_name] = train_sae_on_site(
-        site_name,
-        hook_name,
-        model=model,
-        mess3=mess3,
-        cfg=cfg,
-        device=device,
-        rng_key=key,
-        steps=args.sae_steps,
-        batch_size=args.sae_batch_size,
-        seq_len=(args.sae_seq_len if args.sae_seq_len is not None else cfg.n_ctx - 1),
-        k_values=args.k,
-        lambda_values_seq=(args.l1_coeff_seq if args.l1_coeff_seq is not None else None),
-        lambda_values_beliefs=(args.l1_coeff_beliefs if args.l1_coeff_beliefs is not None else None),
-        dict_mul=args.dict_mul,
-        input_unit_norm=args.input_unit_norm,
-        n_batches_to_dead=args.n_batches_to_dead,
-        top_k_aux=args.top_k_aux,
-        aux_penalty=args.aux_penalty,
-        bandwidth=args.bandwidth,
-    )
+print("Training SAEs for all sites in one pass")
+sequence_saes, true_coords_saes, metrics_summary = train_saes_for_sites(
+    site_to_hook,
+    model=model,
+    data_source=data_source,
+    cfg=cfg,
+    device=device,
+    rng_key=key,
+    steps=args.sae_steps,
+    batch_size=args.sae_batch_size,
+    seq_len=(args.sae_seq_len if args.sae_seq_len is not None else cfg.n_ctx - 1),
+    k_values=args.k,
+    lambda_values_seq=(args.l1_coeff_seq if args.l1_coeff_seq is not None else None),
+    lambda_values_beliefs=(args.l1_coeff_beliefs if args.l1_coeff_beliefs is not None else None),
+    dict_mul=args.dict_mul,
+    input_unit_norm=args.input_unit_norm,
+    n_batches_to_dead=args.n_batches_to_dead,
+    top_k_aux=args.top_k_aux,
+    aux_penalty=args.aux_penalty,
+    bandwidth=args.bandwidth,
+    belief_dim=num_states,
+    sae_output_dir=args.sae_output_dir,
+)
 
 #%%
 
 # Save the entire metrics summary once across all layers
-os.makedirs("outputs/saes", exist_ok=True)
-metrics_path = os.path.join("outputs/saes", "metrics_summary.json")
+os.makedirs(args.sae_output_dir, exist_ok=True)
+metrics_path = os.path.join(args.sae_output_dir, "metrics_summary.json")
 with open(metrics_path, "w") as f:
     json.dump(metrics_summary, f, indent=2)
 print(f"Saved SAE metrics summary to {metrics_path}")
 
 #%%
-
-
