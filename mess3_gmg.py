@@ -93,7 +93,7 @@ def build_similarity_matrix(data, method="cosine", latent_acts=None, phi_compute
         raise ValueError(f"Unknown similarity method: {method}")
 
 
-def spectral_clustering_with_eigengap(sim_matrix, max_clusters=10, random_state=0, plot=False):
+def spectral_clustering_with_eigengap(sim_matrix, max_clusters=10, random_state=0, plot=False, plot_path=None):
     """
     Run spectral clustering using dense similarity matrix and eigengap heuristic.
 
@@ -121,21 +121,33 @@ def spectral_clustering_with_eigengap(sim_matrix, max_clusters=10, random_state=
     eigvecs = eigvecs[:, idx]
 
     # Eigengap heuristic
-    gaps = np.diff(eigvals[:max_clusters+1])
-    best_k = np.argmax(gaps) + 1
+    usable_count = min(eigvals.shape[0], max_clusters + 1)
+    gaps = np.diff(eigvals[:usable_count])
+    if gaps.size == 0:
+        best_k = 1
+    else:
+        best_k = int(np.argmax(gaps) + 1)
     print(f"Chosen number of clusters via eigengap: k={best_k}")
 
-    if plot:
-        plt.figure(figsize=(6,4))
-        plt.plot(range(1, max_clusters+2), eigvals[:max_clusters+1], marker="o")
-        plt.xlabel("Index")
-        plt.ylabel("Eigenvalue")
-        plt.title("Eigenvalue spectrum (normalized Laplacian)")
+    if plot or plot_path is not None:
+        fig = plt.figure(figsize=(6,4))
+        ax = fig.add_subplot(111)
+        x_len = usable_count
+        ax.plot(range(1, x_len + 1), eigvals[:usable_count], marker="o")
+        ax.set_xlabel("Index")
+        ax.set_ylabel("Eigenvalue")
+        ax.set_title("Eigenvalue spectrum (normalized Laplacian)")
         # Highlight chosen eigengap
-        plt.axvline(best_k, color="red", linestyle="--", label=f"Chosen k={best_k}")
-        plt.legend()
-        plt.tight_layout()
-        plt.show()
+        ax.axvline(best_k, color="red", linestyle="--", label=f"Chosen k={best_k}")
+        ax.legend()
+        fig.tight_layout()
+        if plot_path is not None:
+            import os
+            os.makedirs(os.path.dirname(plot_path), exist_ok=True)
+            fig.savefig(plot_path)
+            plt.close(fig)
+        elif plot:
+            plt.show()
 
     # Spectral embedding
     embedding = eigvecs[:, :best_k]
