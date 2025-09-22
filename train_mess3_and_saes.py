@@ -34,6 +34,11 @@ from multipartite_generation import (
     MultipartiteSampler,
 )
 
+import plotly.graph_objects as go
+from tqdm import tqdm
+import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
+from sklearn.linear_model import LinearRegression
 
 PRESET_PROCESS_CONFIGS = {
     "single_mess3": [
@@ -58,11 +63,6 @@ PRESET_PROCESS_CONFIGS = {
     ],
 }
 
-import plotly.graph_objects as go
-from tqdm import tqdm
-import matplotlib.pyplot as plt
-from sklearn.decomposition import PCA
-from sklearn.linear_model import LinearRegression
 
 
 #%%
@@ -95,15 +95,15 @@ parser.add_argument("--aux_penalty", type=float, default=1.0/32.0)
 parser.add_argument("--bandwidth", type=float, default=0.001)
 
 # SAE training loop controls
-parser.add_argument("--sae_steps", type=int, default=1600)
+parser.add_argument("--sae_steps", type=int, default=10000)
 parser.add_argument("--sae_batch_size", type=int, default=1024)
 parser.add_argument("--sae_seq_len", type=int, default=None)
 parser.add_argument("--seq_len", type=int, default=None, help="Sequence length used for analysis/visualization batches; defaults to n_ctx")
-parser.add_argument("--sae_output_dir", type=str, default="outputs/saes/multipartite_1", help="Directory to save trained SAEs and metrics")
+parser.add_argument("--sae_output_dir", type=str, default="outputs/saes/multipartite_001", help="Directory to save trained SAEs and metrics")
 
 # Model loading
 #parser.add_argument("--load_model", type=str, default=None, help="Path to a saved model checkpoint (.pt). If provided, skip training and load this model.")
-parser.add_argument("--load_model", type=str, default="outputs/checkpoints/multipartite_1/checkpoint_step_50000_final.pt", help="Path to a saved model checkpoint (.pt). If provided, skip training and load this model.")
+parser.add_argument("--load_model", type=str, default="outputs/checkpoints/multipartite_001/checkpoint_step_500000_final.pt", help="Path to a saved model checkpoint (.pt). If provided, skip training and load this model.")
 parser.add_argument("--process_config", type=str, default=None, help="Path to JSON describing a stack of generative processes")
 #parser.add_argument("--process_preset", type=str, default=None, help="Named preset for generative process configuration")
 parser.add_argument("--process_preset", type=str, default="3xmess3_2xtquant", help="Named preset for generative process configuration")

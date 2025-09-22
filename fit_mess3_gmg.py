@@ -19,11 +19,11 @@ from simplexity.generative_processes.torch_generator import generate_data_batch
 
 from BatchTopK.sae import TopKSAE
 
-from mess3_gmg import build_similarity_matrix, spectral_clustering_with_eigengap
+from training_and_analysis_utils import build_similarity_matrix, spectral_clustering_with_eigengap
 from mess3_gmg_analysis_utils import (
     collect_cluster_reconstructions,
     compute_average_l2,
-    extract_topk_l2,
+    extract_topk_l2, 
     find_elbow_k,
     fit_pca_for_clusters,
     load_metrics_summary,
@@ -36,7 +36,16 @@ from mess3_gmg_analysis_utils import (
     sae_encode_features,
     write_cluster_metadata,
 )
-from multipartite_generation import MultipartiteSampler, build_components_from_config
+from multipartite_utils import (
+    MultipartiteSampler,
+    build_components_from_config,
+    _resolve_device,
+    _load_process_stack,
+    _load_transformer,
+    _select_sites,
+    _sample_tokens,
+    collect_latent_activity_data,
+)
 
 
 # Mapping from human-readable site names to HookedTransformer cache keys
@@ -123,173 +132,6 @@ def _parse_args() -> argparse.Namespace:
 
     return args
 
-
-#%%
-def _resolve_device(preference: str) -> str:
-    if preference == "auto":
-        return "cuda" if torch.cuda.is_available() else "cpu"
-    return preference
-
-
-#%%
-def _load_process_stack(args: argparse.Namespace) -> tuple[list[dict], list, object]:
-    if args.process_config:
-        with open(args.process_config, "r", encoding="utf-8") as f:
-            process_cfg_raw = json.load(f)
-    elif args.process_preset:
-        if args.process_preset not in PRESET_PROCESS_CONFIGS:
-            raise ValueError(f"Unknown process preset '{args.process_preset}'")
-        process_cfg_raw = deepcopy(PRESET_PROCESS_CONFIGS[args.process_preset])
-    else:
-        process_cfg_raw = deepcopy(PRESET_PROCESS_CONFIGS["single_mess3"])
-
-    components = build_components_from_config(process_cfg_raw)
-    data_source: object
-    if len(components) == 1:
-        data_source = components[0].process
-    else:
-        data_source = MultipartiteSampler(components)
-    return process_cfg_raw, components, data_source
-
-
-#%%
-def _load_transformer(args: argparse.Namespace, device: str, vocab_size: int):
-    cfg = HookedTransformerConfig(
-        d_model=args.d_model,
-        n_heads=args.n_heads,
-        n_layers=args.n_layers,
-        n_ctx=args.n_ctx,
-        d_vocab=args.d_vocab if args.d_vocab is not None else vocab_size,
-        act_fn=args.act_fn,
-        device=device,
-        d_head=args.d_head,
-    )
-    model = HookedTransformer(cfg).to(device)
-    ckpt = torch.load(args.model_ckpt, map_location=device, weights_only=False)
-    if isinstance(ckpt.get("config"), dict):
-        cfg_loaded = HookedTransformerConfig.from_dict(ckpt["config"])
-        model = HookedTransformer(cfg_loaded).to(device)
-        cfg = cfg_loaded
-
-    state_dict = ckpt.get("state_dict") or ckpt.get("model_state_dict")
-    if state_dict is None:
-        available = ", ".join(sorted(ckpt.keys()))
-        raise KeyError(
-            "Checkpoint does not contain 'state_dict' or 'model_state_dict'. "
-            f"Available keys: {available}"
-        )
-    missing, unexpected = model.load_state_dict(state_dict, strict=False)  # type: ignore[arg-type]
-    if missing or unexpected:
-        print(
-            "Warning: load_state_dict reported issues",
-            {"missing": missing, "unexpected": unexpected},
-        )
-    model.eval()
-    return model, cfg
-
-
-#%%
-def _select_sites(metrics_summary, requested_sites):
-    available = [site for site in SITE_HOOK_MAP if site in metrics_summary]
-    if requested_sites is None:
-        return available
-    valid = [s for s in requested_sites if s in SITE_HOOK_MAP]
-    missing = sorted(set(requested_sites) - set(valid))
-    if missing:
-        print(f"Warning: ignoring unknown sites {missing}")
-    return [s for s in valid if s in metrics_summary]
-
-
-#%%
-def _sample_tokens(
-    data_source,
-    batch_size: int,
-    sample_len: int,
-    target_len: int,
-    seed: int,
-    device: str,
-) -> torch.Tensor:
-    key = jax.random.PRNGKey(seed)
-    if isinstance(data_source, MultipartiteSampler):
-        key, beliefs, tokens, _ = data_source.sample(key, batch_size, sample_len)
-        _ = beliefs  # unused, but kept for clarity
-        arr = np.array(tokens)
-    else:
-        gen_states = jnp.repeat(data_source.initial_state[None, :], batch_size, axis=0)
-        _, inputs, _ = generate_data_batch(gen_states, data_source, batch_size, sample_len, key)
-        arr = np.array(inputs)
-    if target_len is not None and arr.shape[1] != target_len:
-        if arr.shape[1] < target_len:
-            raise ValueError(
-                f"Sampled sequence length {arr.shape[1]} smaller than target length {target_len}"
-            )
-        arr = arr[:, :target_len]
-    tokens = torch.from_numpy(arr).long().to(device)
-    return tokens
-
-
-def collect_latent_activity_data(
-    model,
-    sae,
-    data_source,
-    hook_name: str,
-    *,
-    batch_size: int,
-    sample_len: int,
-    target_len: int,
-    n_batches: int,
-    seed: int,
-    device: str,
-    activation_eps: float,
-    collect_matrix: bool = False,
-):
-    if n_batches <= 0:
-        raise ValueError("activation sampling requires n_batches >= 1")
-
-    dict_size = sae.W_dec.shape[0]
-    active_counts = torch.zeros(dict_size, dtype=torch.float64)
-    mean_abs_sum = torch.zeros(dict_size, dtype=torch.float64)
-    total_samples = 0
-    binary_batches: list[torch.Tensor] = [] if collect_matrix else []
-
-    for batch_idx in range(n_batches):
-        tokens = _sample_tokens(
-            data_source,
-            batch_size,
-            sample_len,
-            target_len,
-            seed + batch_idx + 1,
-            device,
-        )
-        with torch.no_grad():
-            _, cache = model.run_with_cache(tokens, return_type=None)
-            acts = cache[hook_name].reshape(-1, cache[hook_name].shape[-1]).to(device)
-            feature_acts, _, _ = sae_encode_features(sae, acts)
-        mask = (feature_acts.abs() > activation_eps)
-        active_counts += mask.sum(dim=0).to(torch.float64).cpu()
-        mean_abs_sum += feature_acts.abs().sum(dim=0).to(torch.float64).cpu()
-        total_samples += mask.shape[0]
-
-        if collect_matrix:
-            binary_batches.append(mask.cpu())
-
-        del cache
-        del acts
-        del feature_acts
-        del mask
-        del tokens
-
-    activity_rates = (active_counts / max(total_samples, 1)).numpy()
-    mean_abs_activation = (mean_abs_sum / max(total_samples, 1)).numpy()
-    latent_matrix = None
-    if collect_matrix:
-        latent_matrix = torch.cat(binary_batches, dim=0).numpy()
-    return {
-        "activity_rates": activity_rates,
-        "mean_abs_activation": mean_abs_activation,
-        "latent_matrix": latent_matrix,
-        "total_samples": total_samples,
-    }
 
 
 #%%

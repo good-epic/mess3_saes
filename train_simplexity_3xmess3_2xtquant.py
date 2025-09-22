@@ -253,6 +253,8 @@ mess3_num_states = mess3_processes[0].num_states if n_mess3 > 0 else 1
 tom_quantum_vocab_size = tom_quantum_processes[0].vocab_size if n_tom_quantum > 0 else 1
 tom_quantum_num_states = tom_quantum_processes[0].num_states if n_tom_quantum > 0 else 1
 
+product_vocab_size = (tom_quantum_vocab_size ** n_tom_quantum) * (mess3_vocab_size ** n_mess3)
+
 print(f"mess3 processes: {n_mess3} instances with vocab_size={mess3_vocab_size}, states={mess3_num_states}")
 print(f"tom_quantum processes: {n_tom_quantum} instances with vocab_size={tom_quantum_vocab_size}, states={tom_quantum_num_states}")
 
@@ -267,7 +269,6 @@ print(f"tom_quantum processes: {n_tom_quantum} instances with vocab_size={tom_qu
 # Assuming the product space is formed by combining outputs from one instance of each type
 # The total vocab size will be the product of the vocab sizes of all individual processes.
 # If we are combining one output from *each* mess3 and *each* tom_quantum process:
-product_vocab_size = (tom_quantum_vocab_size ** n_tom_quantum) * (mess3_vocab_size ** n_mess3)
 
 
 print(f"Product space: vocab_size={product_vocab_size}")
@@ -423,6 +424,41 @@ print("Cumulative variance data saved to cumulative_variance_data.pkl")
 print("All layer activations data saved to all_layer_activations.pkl")
 
 
+#%%
+checkpoint_path = 'outputs/checkpoints/multipartite_001'
+ckpt = torch.load(os.path.join(checkpoint_path, f'checkpoint_step_500000_final.pt'))
+
+# Define model and optimizer before loading their states
+cfg = HookedTransformerConfig(
+    d_model=args.d_model,
+    n_heads=args.n_heads,
+    n_layers=args.n_layers,
+    n_ctx=args.n_ctx,
+    d_head=args.d_head,
+    act_fn=args.act_fn,
+    d_vocab=product_vocab_size,  # You may want to set this if needed
+)
+model = HookedTransformer(cfg)
+optimizer = torch.optim.Adam(model.parameters())
+
+model.load_state_dict(ckpt['model_state_dict'])
+optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+losses = ckpt['losses']
+print(f"Loaded model and optimizer state from {os.path.join(checkpoint_path, f'checkpoint_step_500000_final.pt')}")
+print(f"Loaded losses from {os.path.join(checkpoint_path, f'checkpoint_step_500000_final.pt')}")
+print(f"Loaded model and optimizer state from {os.path.join(checkpoint_path, f'checkpoint_step_500000_final.pt')}")
+
+#%%
+print(ckpt.keys())
+print(args.d_model)
+print(args.n_heads)
+print(args.n_layers)
+print(args.n_ctx)
+print(args.d_head)
+print(args.act_fn)
+print(args.fig_out_dir)
+print(args.checkpoint_path)
+
 
 #%%
 # ==== Visualize Loss ==== #
@@ -458,7 +494,7 @@ plt.title('Training Loss on Product Space (multiple processes)')
 ylim_min = 0.9999 * np.min(losses)
 ylim_max = ylim_min + 0.25 * (np.max(losses) - ylim_min)
 plt.ylim([ylim_min, ylim_max])
-plt.xlim(0,80000)
+#plt.xlim(0,80000)
 #plt.yscale('log')  # Set y-axis to logarithmic scale
 # Add vertical dotted lines
 plt.axvline(x=5000, color='gray', linestyle=':', label='6 dims')
@@ -489,32 +525,41 @@ except FileNotFoundError:
     cumulative_variance_data = []
 
 if cumulative_variance_data:
+    # List of target explained variance percentages
+    pct_var_list = [0.90, 0.95, 0.99]
+    colors = ['tab:blue', 'tab:orange', 'tab:green']
+    labels = ['90%', '95%', '99%']
+    dims_to_var_dict = {pct: [] for pct in pct_var_list}
     steps = []
-    dims_to_var = []
 
     for item in cumulative_variance_data:
         step = item['step']
         cumulative_variance = item['cumulative_variance']
-
-        # Find the number of components to reach args.pct_var_explained cumulative variance
-        # np.argmax returns the index of the first occurrence of the maximum value.
-        # We want the first index where cumulative variance is >= args.pct_var_explained
-        # Adding 1 because indices are 0-based and components are 1-based
-        components_needed = np.argmax(cumulative_variance >= args.pct_var_explained) + 1
-
         steps.append(step)
-        dims_to_var.append(components_needed)
+        for pct in pct_var_list:
+            # Find the number of components to reach pct cumulative variance
+            components_needed = np.argmax(cumulative_variance >= pct) + 1
+            dims_to_var_dict[pct].append(components_needed)
 
     plt.figure(figsize=(10, 6))
-    plt.plot(steps, dims_to_var, marker='o', linestyle='-')
+    for pct, color, label in zip(pct_var_list, colors, labels):
+        plt.plot(steps, dims_to_var_dict[pct], marker='o', linestyle='-', color=color, label=f'{label} Variance')
 
     plt.xlabel('Training Step')
-    plt.ylabel(f'Number of Components to Explain {int(args.pct_var_explained*100)}% Variance')
-    plt.title(f'Dimensionality to Explain {int(args.pct_var_explained*100)}% Variance Over Training Time')
+    plt.ylabel('Number of Components')
+    plt.title('Dimensionality to Explain 90%, 95%, 99% Variance Over Training Time')
     plt.grid(True)
+    plt.legend()
+
+    # Force y-axis ticks to be at integer values, but not necessarily every integer labeled
+    import matplotlib.ticker as mticker
+    ax = plt.gca()
+    # Set major ticks to integer values, but let matplotlib choose a reasonable step
+    ax.yaxis.set_major_locator(mticker.MaxNLocator(integer=True, prune='both'))
+
     os.makedirs(args.fig_out_dir, exist_ok=True)
     plt.tight_layout()
-    plt.savefig(os.path.join(args.fig_out_dir, f'dims_to_{int(args.pct_var_explained*100)}_variance_over_time.png'))
+    plt.savefig(os.path.join(args.fig_out_dir, f'dims_to_90_95_99_variance_over_time.png'))
     plt.close()
 else:
     print("No cumulative variance data to plot.")
@@ -616,7 +661,7 @@ else:
 
 key, tom_inputs_list, mess3_inputs_list, tokens = \
     generate_mp_emissions(key,n_tom_quantum, n_mess3, tom_stationaries, mess3_stationaries,
-                            4096, seq_len, tom_quantum_processes, mess3_processes,
+                            16384, seq_len, tom_quantum_processes, mess3_processes,
                             tom_quantum_vocab_size, mess3_vocab_size, product_vocab_size, device)
 
 # Run with cache to get all activations
@@ -925,11 +970,10 @@ def plot_pca_subplots(
 # ==== Plot PC Projections ============================================================= #
 # ==== for All 9 choose 3 and 9 choose 2 combinations of the first 9 indices of PCA ==== #
 ##########################################################################################
-pca_indices = list(range(9))
-comb_3 = list(combinations(pca_indices, 3))
-comb_2 = list(combinations(pca_indices, 2))
+pca_indices = list(range(15))
 
 # 3D plots for all 9 choose 3
+comb_3 = list(combinations(pca_indices, 3))
 for pc_inds in comb_3:
     plot_pca_subplots(
         pca_coords,
@@ -948,7 +992,10 @@ for pc_inds in comb_3:
         tom_label_to_color=tom_label_to_color
     )
 
+
+#%%
 # 2D plots for all 9 choose 2
+comb_2 = list(combinations(pca_indices, 2))
 for pc_inds in comb_2:
     plot_pca_subplots(
         pca_coords,
