@@ -1,8 +1,26 @@
+/usr/local/lib/python3.12/dist-packages/jaxtyping/__init__.py:231: UserWarning: jaxtyping version >=0.2.23 should be used with Equinox version >=0.11.1
+  warnings.warn(
+** Ready! **
+mess3 processes: 3 instances with vocab_size=3, states=3
+tom_quantum processes: 2 instances with vocab_size=4, states=3
+Product space: vocab_size=432
+Model: 708,144 params on cuda
+⚠️ Checkpoint file not found at /workspace/outputs/checkpoints/multipartite_001/checkpoint_step_500000_final.pt. Training will start from scratch.
 Traceback (most recent call last):
-  File "/root/mess3_saes/train_simplexity_3xmess3_2xtquant.py", line 26, in <module>
-    import jax
-ModuleNotFoundError: No module named 'jax'
+  File "/root/mess3_saes/train_simplexity_3xmess3_2xtquant.py", line 302, in <module>
+    torch.save(checkpoint, checkpoint_filename)
+  File "/usr/local/lib/python3.12/dist-packages/torch/serialization.py", line 964, in save
+    with _open_zipfile_writer(f) as opened_zipfile:
+         ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/serialization.py", line 828, in _open_zipfile_writer
+    return container(name_or_buffer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/serialization.py", line 792, in __init__
+    torch._C.PyTorchFileWriter(
+RuntimeError: Parent directory /workspace/outputs/checkpoints/multipartite_001/checkpoint_step_500000_final.pt does not exist.
+/usr/local/lib/python3.12/dist-packages/jaxtyping/__init__.py:231: UserWarning: jaxtyping version >=0.2.23 should be used with Equinox version >=0.11.1
+  warnings.warn(
 Traceback (most recent call last):
-  File "/root/mess3_saes/train_mess3_and_saes.py", line 23, in <module>
-    import jax
-ModuleNotFoundError: No module named 'jax'
+  File "/root/mess3_saes/train_mess3_and_saes.py", line 32, in <module>
+    from multipartite_generation import (
+ModuleNotFoundError: No module named 'multipartite_generation'

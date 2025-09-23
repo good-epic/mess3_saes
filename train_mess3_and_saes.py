@@ -28,8 +28,8 @@ from simplexity.generative_processes.torch_generator import generate_data_batch
 import argparse, sys, os, json
 from copy import deepcopy
 
-from mess3_saes import train_sae_on_site, train_saes_for_sites, check_cuda_memory
-from multipartite_generation import (
+from training_and_analysis_utils import train_saes_for_sites, check_cuda_memory
+from multipartite_utils import (
     build_components_from_config,
     MultipartiteSampler,
 )

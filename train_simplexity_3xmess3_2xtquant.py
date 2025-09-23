@@ -200,18 +200,18 @@ cfg = HookedTransformerConfig(
 model = HookedTransformer(cfg)
 print(f"Model: {sum(p.numel() for p in model.parameters()):,} params on {device}")
 
-# Load model weights from checkpoint
-checkpoint_path = os.path.join(args.checkpoint_path, "checkpoint_step_500000_final.pt")
-if os.path.exists(checkpoint_path):
-    print(f"Loading model and optimizer state from {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
-    # If you want to restore optimizer and losses, you can do so here:
-    # optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    # losses = checkpoint['losses']
-    print("✅ Model (and optionally optimizer/losses) loaded from checkpoint.")
-else:
-    print(f"⚠️ Checkpoint file not found at {checkpoint_path}. Training will start from scratch.")
+# # Load model weights from checkpoint
+# checkpoint_path = os.path.join(args.checkpoint_path, "checkpoint_step_500000_final.pt")
+# if os.path.exists(checkpoint_path):
+#     print(f"Loading model and optimizer state from {checkpoint_path}")
+#     checkpoint = torch.load(checkpoint_path, map_location=device)
+#     model.load_state_dict(checkpoint['model_state_dict'])
+#     # If you want to restore optimizer and losses, you can do so here:
+#     # optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+#     # losses = checkpoint['losses']
+#     print("✅ Model (and optionally optimizer/losses) loaded from checkpoint.")
+# else:
+#     print(f"⚠️ Checkpoint file not found at {checkpoint_path}. Training will start from scratch.")
 
 
 
@@ -301,9 +301,9 @@ for step in progress_bar:
         checkpoint_filename = os.path.join(checkpoint_path, f'checkpoint_step_{step + 1}.pt')
         torch.save(checkpoint, checkpoint_filename)
         print(f"Checkpoint saved at step {step + 1} to {checkpoint_filename}")
-
-    if (step + 1) % miniters == 0:
         progress_bar.set_description(f"Training (Loss: {loss.item():.4f})", refresh=False)
+    #if (step + 1) % miniters == 0:
+    #    progress_bar.set_description(f"Training (Loss: {loss.item():.4f})", refresh=False)
 
 
 # Save the final checkpoint after training is complete
