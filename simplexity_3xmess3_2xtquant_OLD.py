@@ -42,6 +42,7 @@ import plotly.io as pio
 from math import comb
 from itertools import combinations
 
+from training_and_analysis_utils import plot_pca_subplots
 
 #%%
 # ============= Argument parsing ============= #
@@ -118,26 +119,37 @@ def generate_mp_emissions(
     key, *subkeys = jax.random.split(key, 1 + n_tom_quantum + n_mess3)
 
     tom_inputs_list = []
+    tom_belief_states_list = []
     for i in range(n_tom_quantum):
         tom_states = jnp.repeat(tom_stationaries[i][None, :], batch_size, axis=0)
-        _, tom_inputs, _ = generate_data_batch(
+        belief_states, tom_inputs, _ = generate_data_batch(
             tom_states, tom_quantum_processes[i], batch_size, seq_len, subkeys[i]
         )
         if isinstance(tom_inputs, torch.Tensor):
             tom_inputs_list.append(tom_inputs.cpu().numpy())
         else:
             tom_inputs_list.append(np.array(tom_inputs))
+        if isinstance(belief_states, torch.Tensor):
+            tom_belief_states_list.append(belief_states.cpu().numpy())
+        else:
+            tom_belief_states_list.append(np.array(belief_states))
 
     mess3_inputs_list = []
+    mess3_belief_states_list = []
     for i in range(n_mess3):
         mess3_states = jnp.repeat(mess3_stationaries[i][None, :], batch_size, axis=0)
-        _, mess3_inputs, _ = generate_data_batch(
+        belief_states, mess3_inputs, _ = generate_data_batch(
             mess3_states, mess3_processes[i], batch_size, seq_len, subkeys[n_tom_quantum + i]
         )
         if isinstance(mess3_inputs, torch.Tensor):
             mess3_inputs_list.append(mess3_inputs.cpu().numpy())
         else:
             mess3_inputs_list.append(np.array(mess3_inputs))
+        if isinstance(belief_states, torch.Tensor):
+            mess3_belief_states_list.append(belief_states.cpu().numpy())
+        else:
+            mess3_belief_states_list.append(np.array(belief_states))
+
 
     # Combine into product space: token = sum(input_i * base_i)
     # The base for each process will be the product of the vocab sizes of the processes that come after it in the combination.
@@ -166,7 +178,7 @@ def generate_mp_emissions(
 
     tokens = torch.from_numpy(product_tokens).long().to(device)
 
-    return key, tom_inputs_list, mess3_inputs_list, tokens
+    return key, tom_inputs_list, mess3_inputs_list, tokens, tom_belief_states_list, mess3_belief_states_list
 
 
 #%%
@@ -642,11 +654,16 @@ print(f"Loaded model from {os.path.join(args.checkpoint_path, 'checkpoint_step_5
 ############################################
 # Generate a batch for analysis
 
-key, tom_inputs_list, mess3_inputs_list, tokens = \
+key, tom_inputs_list, mess3_inputs_list, tokens, tom_belief_states_list, mess3_belief_states_list = \
     generate_mp_emissions(key,n_tom_quantum, n_mess3, tom_stationaries, mess3_stationaries,
                             4096, seq_len, tom_quantum_processes, mess3_processes,
                             tom_quantum_vocab_size, mess3_vocab_size, product_vocab_size, device)
 
+
+print(f"{tom_belief_states_list[0].shape=}")
+print(f"{mess3_belief_states_list[0].shape=}")
+
+#%%
 # Run with cache to get all activations
 logits, cache = model.run_with_cache(tokens)
 
@@ -750,195 +767,195 @@ print_color_bins("Tom Quantum", tom_point_colors)
 
 #%%
 
-def plot_pca_subplots(
-    pca_coords,
-    mess3_point_colors,
-    tom_point_colors,
-    pc_indices,
-    mess3_label_to_color,
-    tom_label_to_color,
-    marker_size=3,
-    legend_marker_size=8,
-    opacity=0.6,
-    height=1200,
-    width=1200,
-    show=True,
-    title_text=None,
-    output_dir="outputs/reports",
-    save=None
-):
-    """
-    Plots interactive PCA subplots for Mess3 and Tom Quantum labels.
+# def plot_pca_subplots(
+#     pca_coords,
+#     mess3_point_colors,
+#     tom_point_colors,
+#     pc_indices,
+#     mess3_label_to_color,
+#     tom_label_to_color,
+#     marker_size=3,
+#     legend_marker_size=8,
+#     opacity=0.6,
+#     height=1200,
+#     width=1200,
+#     show=True,
+#     title_text=None,
+#     output_dir="outputs/reports",
+#     save=None
+# ):
+#     """
+#     Plots interactive PCA subplots for Mess3 and Tom Quantum labels.
 
-    Args:
-        pca_coords: np.ndarray, shape (n_points, n_pcs)
-        mess3_point_colors: list of lists of color strings, one per Mess3 label set
-        tom_point_colors: list of lists of color strings, one per Tom Quantum label set
-        pc_indices: list or tuple of length 2 or 3, 0-indexed PC indices to plot
-        mess3_label_to_color: dict mapping mess3 labels -> color
-        tom_label_to_color: dict mapping tom labels -> color
-        marker_size: int, size of data point markers
-        legend_marker_size: int, size of legend marker circles
-    """
-    assert len(pc_indices) in (2, 3), "pc_indices must be length 2 or 3"
-    is_3d = len(pc_indices) == 3
+#     Args:
+#         pca_coords: np.ndarray, shape (n_points, n_pcs)
+#         mess3_point_colors: list of lists of color strings, one per Mess3 label set
+#         tom_point_colors: list of lists of color strings, one per Tom Quantum label set
+#         pc_indices: list or tuple of length 2 or 3, 0-indexed PC indices to plot
+#         mess3_label_to_color: dict mapping mess3 labels -> color
+#         tom_label_to_color: dict mapping tom labels -> color
+#         marker_size: int, size of data point markers
+#         legend_marker_size: int, size of legend marker circles
+#     """
+#     assert len(pc_indices) in (2, 3), "pc_indices must be length 2 or 3"
+#     is_3d = len(pc_indices) == 3
 
-    pc_label_str = "-".join([f"{i+1}" for i in pc_indices])
-    subplot_titles = (
-        f"Mess3 #1 Coloring: PCs {pc_label_str}",
-        f"Mess3 #2 Coloring: PCs {pc_label_str}",
-        f"Mess3 #3 Coloring: PCs {pc_label_str}",
-        f"Tom Quantum #1 Coloring: PCs {pc_label_str}",
-        f"Tom Quantum #2 Coloring: PCs {pc_label_str}",
-        "Blank"
-    )
+#     pc_label_str = "-".join([f"{i+1}" for i in pc_indices])
+#     subplot_titles = (
+#         f"Mess3 #1 Coloring: PCs {pc_label_str}",
+#         f"Mess3 #2 Coloring: PCs {pc_label_str}",
+#         f"Mess3 #3 Coloring: PCs {pc_label_str}",
+#         f"Tom Quantum #1 Coloring: PCs {pc_label_str}",
+#         f"Tom Quantum #2 Coloring: PCs {pc_label_str}",
+#         "Blank"
+#     )
 
-    scatter_type = 'scatter3d' if is_3d else 'scatter'
-    specs = [[{'type': scatter_type}, {'type': scatter_type}],
-             [{'type': scatter_type}, {'type': scatter_type}],
-             [{'type': scatter_type}, {'type': scatter_type}]]
+#     scatter_type = 'scatter3d' if is_3d else 'scatter'
+#     specs = [[{'type': scatter_type}, {'type': scatter_type}],
+#              [{'type': scatter_type}, {'type': scatter_type}],
+#              [{'type': scatter_type}, {'type': scatter_type}]]
 
-    fig = make_subplots(rows=3, cols=2, specs=specs, subplot_titles=subplot_titles)
+#     fig = make_subplots(rows=3, cols=2, specs=specs, subplot_titles=subplot_titles)
 
-    def marker_dict(color):
-        return dict(size=marker_size, color=color, opacity=opacity, showscale=False)
+#     def marker_dict(color):
+#         return dict(size=marker_size, color=color, opacity=opacity, showscale=False)
 
-    # --- Mess3 traces ---
-    for i in range(3):
-        if is_3d:
-            trace = go.Scatter3d(
-                x=pca_coords[:, pc_indices[0]],
-                y=pca_coords[:, pc_indices[1]],
-                z=pca_coords[:, pc_indices[2]],
-                mode='markers',
-                marker=marker_dict(mess3_point_colors[i]),
-                showlegend=False
-            )
-        else:
-            trace = go.Scatter(
-                x=pca_coords[:, pc_indices[0]],
-                y=pca_coords[:, pc_indices[1]],
-                mode='markers',
-                marker=marker_dict(mess3_point_colors[i]),
-                showlegend=False
-            )
-        row, col = (1, i+1) if i < 2 else (2, 1)
-        fig.add_trace(trace, row=row, col=col if i < 2 else 1)
+#     # --- Mess3 traces ---
+#     for i in range(3):
+#         if is_3d:
+#             trace = go.Scatter3d(
+#                 x=pca_coords[:, pc_indices[0]],
+#                 y=pca_coords[:, pc_indices[1]],
+#                 z=pca_coords[:, pc_indices[2]],
+#                 mode='markers',
+#                 marker=marker_dict(mess3_point_colors[i]),
+#                 showlegend=False
+#             )
+#         else:
+#             trace = go.Scatter(
+#                 x=pca_coords[:, pc_indices[0]],
+#                 y=pca_coords[:, pc_indices[1]],
+#                 mode='markers',
+#                 marker=marker_dict(mess3_point_colors[i]),
+#                 showlegend=False
+#             )
+#         row, col = (1, i+1) if i < 2 else (2, 1)
+#         fig.add_trace(trace, row=row, col=col if i < 2 else 1)
 
-    # --- Tom Quantum traces ---
-    for i in range(2):
-        if is_3d:
-            trace = go.Scatter3d(
-                x=pca_coords[:, pc_indices[0]],
-                y=pca_coords[:, pc_indices[1]],
-                z=pca_coords[:, pc_indices[2]],
-                mode='markers',
-                marker=marker_dict(tom_point_colors[i]),
-                showlegend=False
-            )
-        else:
-            trace = go.Scatter(
-                x=pca_coords[:, pc_indices[0]],
-                y=pca_coords[:, pc_indices[1]],
-                mode='markers',
-                marker=marker_dict(tom_point_colors[i]),
-                showlegend=False
-            )
-        row, col = (2, 2) if i == 0 else (3, 1)
-        fig.add_trace(trace, row=row, col=col)
+#     # --- Tom Quantum traces ---
+#     for i in range(2):
+#         if is_3d:
+#             trace = go.Scatter3d(
+#                 x=pca_coords[:, pc_indices[0]],
+#                 y=pca_coords[:, pc_indices[1]],
+#                 z=pca_coords[:, pc_indices[2]],
+#                 mode='markers',
+#                 marker=marker_dict(tom_point_colors[i]),
+#                 showlegend=False
+#             )
+#         else:
+#             trace = go.Scatter(
+#                 x=pca_coords[:, pc_indices[0]],
+#                 y=pca_coords[:, pc_indices[1]],
+#                 mode='markers',
+#                 marker=marker_dict(tom_point_colors[i]),
+#                 showlegend=False
+#             )
+#         row, col = (2, 2) if i == 0 else (3, 1)
+#         fig.add_trace(trace, row=row, col=col)
 
-    # --- Legend entries ---
-    # Mess3 first
-    for lbl, colr in mess3_label_to_color.items():
-        name = f"Mess3 Label {lbl}"
-        if is_3d:
-            dummy = go.Scatter3d(
-                x=[None], y=[None], z=[None],
-                mode='markers',
-                marker=dict(size=legend_marker_size, color=colr, opacity=opacity),
-                name=name,
-                showlegend=True
-            )
-        else:
-            dummy = go.Scatter(
-                x=[None], y=[None],
-                mode='markers',
-                marker=dict(size=legend_marker_size, color=colr, opacity=opacity),
-                name=name,
-                showlegend=True
-            )
-        fig.add_trace(dummy, row=1, col=1)
+#     # --- Legend entries ---
+#     # Mess3 first
+#     for lbl, colr in mess3_label_to_color.items():
+#         name = f"Mess3 Label {lbl}"
+#         if is_3d:
+#             dummy = go.Scatter3d(
+#                 x=[None], y=[None], z=[None],
+#                 mode='markers',
+#                 marker=dict(size=legend_marker_size, color=colr, opacity=opacity),
+#                 name=name,
+#                 showlegend=True
+#             )
+#         else:
+#             dummy = go.Scatter(
+#                 x=[None], y=[None],
+#                 mode='markers',
+#                 marker=dict(size=legend_marker_size, color=colr, opacity=opacity),
+#                 name=name,
+#                 showlegend=True
+#             )
+#         fig.add_trace(dummy, row=1, col=1)
 
-    # Tom Quantum second
-    for lbl, colr in tom_label_to_color.items():
-        name = f"TomQ Label {lbl}"
-        if is_3d:
-            dummy = go.Scatter3d(
-                x=[None], y=[None], z=[None],
-                mode='markers',
-                marker=dict(size=legend_marker_size, color=colr, opacity=opacity),
-                name=name,
-                showlegend=True
-            )
-        else:
-            dummy = go.Scatter(
-                x=[None], y=[None],
-                mode='markers',
-                marker=dict(size=legend_marker_size, color=colr, opacity=opacity),
-                name=name,
-                showlegend=True
-            )
-        fig.add_trace(dummy, row=1, col=1)
+#     # Tom Quantum second
+#     for lbl, colr in tom_label_to_color.items():
+#         name = f"TomQ Label {lbl}"
+#         if is_3d:
+#             dummy = go.Scatter3d(
+#                 x=[None], y=[None], z=[None],
+#                 mode='markers',
+#                 marker=dict(size=legend_marker_size, color=colr, opacity=opacity),
+#                 name=name,
+#                 showlegend=True
+#             )
+#         else:
+#             dummy = go.Scatter(
+#                 x=[None], y=[None],
+#                 mode='markers',
+#                 marker=dict(size=legend_marker_size, color=colr, opacity=opacity),
+#                 name=name,
+#                 showlegend=True
+#             )
+#         fig.add_trace(dummy, row=1, col=1)
 
-    # --- Axis labels ---
-    pc_labels = [f"PC{idx+1}" for idx in pc_indices]
-    layout_kwargs = dict(height=height, width=width)
-    if title_text is not None:
-        layout_kwargs['title_text'] = title_text
+#     # --- Axis labels ---
+#     pc_labels = [f"PC{idx+1}" for idx in pc_indices]
+#     layout_kwargs = dict(height=height, width=width)
+#     if title_text is not None:
+#         layout_kwargs['title_text'] = title_text
 
-    if is_3d:
-        for i in range(1, 7):
-            scene_name = f"scene{i}" if i > 1 else "scene"
-            layout_kwargs[scene_name] = dict(
-                xaxis_title=pc_labels[0],
-                yaxis_title=pc_labels[1],
-                zaxis_title=pc_labels[2]
-            )
-    else:
-        for i in range(1, 7):
-            layout_kwargs[f"xaxis{i}"] = dict(title=pc_labels[0])
-            layout_kwargs[f"yaxis{i}"] = dict(title=pc_labels[1])
+#     if is_3d:
+#         for i in range(1, 7):
+#             scene_name = f"scene{i}" if i > 1 else "scene"
+#             layout_kwargs[scene_name] = dict(
+#                 xaxis_title=pc_labels[0],
+#                 yaxis_title=pc_labels[1],
+#                 zaxis_title=pc_labels[2]
+#             )
+#     else:
+#         for i in range(1, 7):
+#             layout_kwargs[f"xaxis{i}"] = dict(title=pc_labels[0])
+#             layout_kwargs[f"yaxis{i}"] = dict(title=pc_labels[1])
 
-    fig.update_layout(**layout_kwargs)
+#     fig.update_layout(**layout_kwargs)
 
-    # --- Save logic ---
-    if save is not None:
-        if not isinstance(save, (list, tuple)):
-            raise ValueError("save must be None or a list/tuple of 'png', 'html', 'json'")
-        save_formats = [str(fmt).lower() for fmt in save]
-        if save_formats:
-            os.makedirs(output_dir, exist_ok=True)
-            if title_text is not None:
-                safe_title = "".join(c if c.isalnum() or c in (' ', '_', '-') else "_" for c in title_text)
-                base_filename = f"pca_subplots_{safe_title.strip().replace(' ', '_')}_PCs_{pc_label_str}"
-            else:
-                base_filename = f"pca_subplots_PCs_{pc_label_str}"
+#     # --- Save logic ---
+#     if save is not None:
+#         if not isinstance(save, (list, tuple)):
+#             raise ValueError("save must be None or a list/tuple of 'png', 'html', 'json'")
+#         save_formats = [str(fmt).lower() for fmt in save]
+#         if save_formats:
+#             os.makedirs(output_dir, exist_ok=True)
+#             if title_text is not None:
+#                 safe_title = "".join(c if c.isalnum() or c in (' ', '_', '-') else "_" for c in title_text)
+#                 base_filename = f"pca_subplots_{safe_title.strip().replace(' ', '_')}_PCs_{pc_label_str}"
+#             else:
+#                 base_filename = f"pca_subplots_PCs_{pc_label_str}"
 
-            for fmt in save_formats:
-                filepath = os.path.join(output_dir, base_filename + f".{fmt}")
-                if fmt == "png":
-                    fig.write_image(filepath)
-                elif fmt == "html":
-                    fig.write_html(filepath, include_plotlyjs=True, full_html=True)
-                elif fmt == "json":
-                    pio.write_json(fig, filepath)
-                else:
-                    print(f"Unknown save format: {fmt}")
-                print(f"Figure saved to {filepath}")
+#             for fmt in save_formats:
+#                 filepath = os.path.join(output_dir, base_filename + f".{fmt}")
+#                 if fmt == "png":
+#                     fig.write_image(filepath)
+#                 elif fmt == "html":
+#                     fig.write_html(filepath, include_plotlyjs=True, full_html=True)
+#                 elif fmt == "json":
+#                     pio.write_json(fig, filepath)
+#                 else:
+#                     print(f"Unknown save format: {fmt}")
+#                 print(f"Figure saved to {filepath}")
 
-    if show:
-        fig.show()
-    return fig
+#     if show:
+#         fig.show()
+#     return fig
 
 
 # Example usage for PCs 6-7 (i.e., indices 5,6):

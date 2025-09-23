@@ -26,10 +26,13 @@ from simplexity.generative_processes.builder import (
 from simplexity.generative_processes.generative_process import GenerativeProcess
 
 
+# Canonical order matching legacy training pipeline: tom components precede mess3
 PROCESS_BUILDERS = {
-    "mess3": build_hidden_markov_model,
     "tom_quantum": build_generalized_hidden_markov_model,
+    "mess3": build_hidden_markov_model,
 }
+
+COMPONENT_TYPE_PRIORITY: dict[str, int] = {"tom_quantum": 0, "mess3": 1}
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,7 @@ class ProcessComponent:
     """Container describing a single generative process instance."""
 
     name: str
+    process_type: str
     process: GenerativeProcess
 
     @property
@@ -97,7 +101,7 @@ def build_components_from_config(config: Sequence[Mapping[str, Any]]) -> list[Pr
             explicit_name = params.pop("name", None)
             name = explicit_name or _ensure_unique_name(name_prefix, type_counts)
             process = builder(process_type, **params)  # type: ignore[arg-type]
-            components.append(ProcessComponent(name=name, process=process))
+            components.append(ProcessComponent(name=name, process_type=process_type, process=process))
 
     if not components:
         raise ValueError("Configuration produced zero process components")
@@ -111,7 +115,16 @@ class MultipartiteSampler:
     def __init__(self, components: Sequence[ProcessComponent]):
         if not components:
             raise ValueError("MultipartiteSampler requires at least one component")
-        self.components = list(components)
+        enumerated = list(enumerate(components))
+        default_priority = len(COMPONENT_TYPE_PRIORITY)
+        ordered = sorted(
+            enumerated,
+            key=lambda pair: (
+                COMPONENT_TYPE_PRIORITY.get(pair[1].process_type, default_priority),
+                pair[0],
+            ),
+        )
+        self.components = [comp for _, comp in ordered]
         self.component_names = [c.name for c in self.components]
         self.component_state_dims = [c.state_dim for c in self.components]
         self.component_vocab_sizes = [c.vocab_size for c in self.components]
@@ -141,34 +154,44 @@ class MultipartiteSampler:
     ) -> tuple[jax.Array, jnp.ndarray, jnp.ndarray, list[jnp.ndarray]]:
         """Return ``(new_rng_key, beliefs, tokens, component_tokens)``.
 
-        ``beliefs`` has shape ``(batch, sequence_len, belief_dim)`` formed by
+        ``beliefs`` has shape ``(batch, sequence_len - 1, belief_dim)`` formed by
         concatenating the belief states of each component along the last axis.
-        ``tokens`` contains the product-space observations encoded lexicographically.
-        ``component_tokens`` retains each component's raw observations.
+        ``tokens`` contains the product-space "input" observations (last time step dropped)
+        encoded lexicographically. ``component_tokens`` retains each component's raw
+        "inputs" so downstream code mirrors :func:`generate_data_batch` semantics.
         """
+        if sequence_len < 2:
+            raise ValueError("sequence_len must be at least 2 so inputs and next tokens can be formed")
 
         keys = jax.random.split(rng_key, len(self.components) + 1)
         new_key, component_keys = keys[0], keys[1:]
 
         beliefs_list: list[jnp.ndarray] = []
-        tokens_list: list[jnp.ndarray] = []
+        inputs_list: list[jnp.ndarray] = []
 
         for comp, comp_key in zip(self.components, component_keys, strict=True):
             batch_keys = jax.random.split(comp_key, batch_size)
             initial_state = jnp.tile(comp.process.initial_state, (batch_size, 1))
             states, obs = comp.process.generate(initial_state, batch_keys, sequence_len, True)
-            if states.ndim == 2:
+
+            if states.ndim == 2:  # single-step fallback shouldn't trigger, but guard just in case
                 states = states[:, None, :]
+
+            # Drop the final time step so the returned tokens align with the "inputs"
+            # convention used throughout the simplexity training utilities.
+            states = states[:, :-1, :]
+            inputs = obs[:, :-1]
+
             beliefs_list.append(states)
-            tokens_list.append(obs)
+            inputs_list.append(inputs)
 
         beliefs = jnp.concatenate(beliefs_list, axis=-1)
 
-        tokens = jnp.zeros_like(tokens_list[0])
-        for obs, base in zip(tokens_list, self._bases, strict=True):
-            tokens = tokens + obs * base
+        tokens = jnp.zeros_like(inputs_list[0])
+        for obs, base in zip(inputs_list, self._bases, strict=True):
+            tokens += obs * base
 
-        return new_key, beliefs, tokens, tokens_list
+        return new_key, beliefs, tokens, inputs_list
 
 
 def build_multipartite_sampler(config: Sequence[Mapping[str, Any]]) -> MultipartiteSampler:

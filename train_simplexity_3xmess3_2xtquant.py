@@ -41,6 +41,7 @@ import plotly.express as px # Import plotly.express for categorical colors
 import plotly.io as pio
 from math import comb
 from itertools import combinations
+from training_and_analysis_utils import generate_mp_emissions
 
 
 #%%
@@ -72,101 +73,6 @@ args = _parse_args()
 if os.path.isfile(args.fig_out_dir):
     raise ValueError(f"fig_out_dir points to a file: {args.fig_out_dir}")
 os.makedirs(args.fig_out_dir, exist_ok=True)
-
-
-#%%
-def generate_mp_emissions(
-    key,
-    n_tom_quantum,
-    n_mess3,
-    tom_stationaries,
-    mess3_stationaries,
-    batch_size,
-    seq_len,
-    tom_quantum_processes,
-    mess3_processes,
-    tom_quantum_vocab_size,
-    mess3_vocab_size,
-    product_vocab_size,
-    device,
-):
-    """
-    Generate a new batch of factored inputs for tom_quantum and mess3 processes,
-    and combine them into product space tokens.
-
-    Args:
-        key: JAX PRNGKey
-        n_tom_quantum: int, number of tom_quantum processes
-        n_mess3: int, number of mess3 processes
-        tom_stationaries: list of stationary distributions for tom_quantum
-        mess3_stationaries: list of stationary distributions for mess3
-        batch_size: int, batch size
-        seq_len: int, sequence length
-        tom_quantum_processes: list of tom_quantum process objects
-        mess3_processes: list of mess3 process objects
-        tom_quantum_vocab_size: int, vocab size for tom_quantum
-        mess3_vocab_size: int, vocab size for mess3
-        product_vocab_size: int, total product vocab size
-        device: torch device
-
-    Returns:
-        key: new JAX PRNGKey after split
-        tom_inputs_list: list of np.ndarray, one per tom_quantum process
-        mess3_inputs_list: list of np.ndarray, one per mess3 process
-        tokens: torch.LongTensor, combined product tokens on device
-    """
-    key, *subkeys = jax.random.split(key, 1 + n_tom_quantum + n_mess3)
-
-    tom_inputs_list = []
-    for i in range(n_tom_quantum):
-        tom_states = jnp.repeat(tom_stationaries[i][None, :], batch_size, axis=0)
-        _, tom_inputs, _ = generate_data_batch(
-            tom_states, tom_quantum_processes[i], batch_size, seq_len, subkeys[i]
-        )
-        if isinstance(tom_inputs, torch.Tensor):
-            tom_inputs_list.append(tom_inputs.cpu().numpy())
-        else:
-            tom_inputs_list.append(np.array(tom_inputs))
-
-    mess3_inputs_list = []
-    for i in range(n_mess3):
-        mess3_states = jnp.repeat(mess3_stationaries[i][None, :], batch_size, axis=0)
-        _, mess3_inputs, _ = generate_data_batch(
-            mess3_states, mess3_processes[i], batch_size, seq_len, subkeys[n_tom_quantum + i]
-        )
-        if isinstance(mess3_inputs, torch.Tensor):
-            mess3_inputs_list.append(mess3_inputs.cpu().numpy())
-        else:
-            mess3_inputs_list.append(np.array(mess3_inputs))
-
-    # Combine into product space: token = sum(input_i * base_i)
-    # The base for each process will be the product of the vocab sizes of the processes that come after it in the combination.
-    # For example, if we have tom1, tom2, mess3_1, mess3_2 with vocab sizes T1, T2, M1, M2
-    # token = tom1 * (T2 * M1 * M2) + tom2 * (M1 * M2) + mess3_1 * M2 + mess3_2
-    # Assuming all tom_quantum have the same vocab size (tom_quantum_vocab_size) and all mess3 have the same (mess3_vocab_size)
-    # token = tom1 * (tom_quantum_vocab_size**(n_tom_quantum-1) * mess3_vocab_size**n_mess3) + ... + mess3_2
-
-    # Initialize product_tokens based on whether there are any inputs
-    if n_tom_quantum > 0:
-        product_tokens = np.zeros_like(tom_inputs_list[0])
-    elif n_mess3 > 0:
-        product_tokens = np.zeros_like(mess3_inputs_list[0])
-    else:
-        raise ValueError("Both n_tom_quantum and n_mess3 are zero. Cannot generate data.")
-
-    # Add tom_quantum contributions
-    for i in range(n_tom_quantum):
-        base_for_tom = (tom_quantum_vocab_size ** (n_tom_quantum - 1 - i)) * (mess3_vocab_size ** n_mess3)
-        product_tokens += tom_inputs_list[i] * base_for_tom
-
-    # Add mess3 contributions
-    for i in range(n_mess3):
-        base_for_mess3 = (mess3_vocab_size ** (n_mess3 - 1 - i))
-        product_tokens += mess3_inputs_list[i] * base_for_mess3
-
-    tokens = torch.from_numpy(product_tokens).long().to(device)
-
-    return key, tom_inputs_list, mess3_inputs_list, tokens
 
 
 #%%
@@ -209,7 +115,9 @@ m3_x = [round(x, 3) for x in np.linspace(0.1, 0.4, n_mess3)]
 m3_a = [round(x, 3) for x in np.linspace(0.2, 0.8, n_mess3)]
 m3_a[:-1] = m3_a[1:]
 m3_a[n_mess3-1] = 0.2
-mess3_processes = [build_hidden_markov_model(f"mess3", x=x, a=a) for x, a in zip(m3_x, m3_a)]
+mess3_processes = [build_hidden_markov_model(f"mess3", x=0.12, a=0.55),
+                   build_hidden_markov_model(f"mess3", x=0.14, a=0.7),
+                   build_hidden_markov_model(f"mess3", x=0.18, a=0.75)]
 # Figure out what the ranges are for alpha and beta that are acceptable. Found this in
 # simplexity/simplexity/generative_processes/transition_matrices.py:
 # def tom_quantum(alpha: float, beta: float) -> jax.Array:
@@ -244,7 +152,8 @@ mess3_processes = [build_hidden_markov_model(f"mess3", x=x, a=a) for x, a in zip
 #         ]
 #     )
 #     return transition_matrices
-tom_quantum_processes = [build_generalized_hidden_markov_model(f"tom_quantum", alpha=1., beta=np.sqrt(51)) for i in range(n_tom_quantum)]
+tom_quantum_processes = [build_generalized_hidden_markov_model(f"tom_quantum", alpha=1.12, beta=5.64),
+                         build_generalized_hidden_markov_model(f"tom_quantum", alpha=0.88, beta=8.64)]
 
 # Assuming all instances of a type have the same vocab size and states
 # Handle the case where n_mess3 or n_tom_quantum is 0
@@ -327,6 +236,9 @@ all_layer_activations = {} # Dictionary to store activations for each layer
 num_steps = args.num_steps
 progress_bar = tqdm(range(num_steps), desc="Training", miniters=100)
 
+checkpoints_to_save = [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 12500, 15000, 17500, 20000, 23000, 24000, 25000,
+                       30000, 35000, 40000, 45000, 50000, 55000, 60000, 65000, 70000, 75000, 80000, 85000, 90000, 95000, 100000]
+
 for step in progress_bar:
     key, tom_inputs_list, mess3_inputs_list, tokens = \
         generate_mp_emissions(key,n_tom_quantum, n_mess3, tom_stationaries, mess3_stationaries,
@@ -378,8 +290,7 @@ for step in progress_bar:
              print(f"Warning: Activations for layer {cfg.n_layers - 1} not found in cache for PCA.")
 
     # Save a checkpoint every 5% of the way through training (but not the final checkpoint here)
-    checkpoint_interval = max(1, int(0.05 * num_steps))
-    if (step + 1) % checkpoint_interval == 0:
+    if (step + 1) in checkpoints_to_save:
         checkpoint = {
             'step': step + 1,
             'model_state_dict': model.state_dict(),
@@ -654,366 +565,6 @@ else:
 # print(product_tokens_example)
 
 
-#%%
-# ==== Generate PCA of Residual Stream ==== #
-############################################
-# Generate a batch for analysis
-
-key, tom_inputs_list, mess3_inputs_list, tokens = \
-    generate_mp_emissions(key,n_tom_quantum, n_mess3, tom_stationaries, mess3_stationaries,
-                            16384, seq_len, tom_quantum_processes, mess3_processes,
-                            tom_quantum_vocab_size, mess3_vocab_size, product_vocab_size, device)
-
-# Run with cache to get all activations
-logits, cache = model.run_with_cache(tokens)
-
-# Extract residual stream activations
-# Automatically extract all residual streams based on n_layers from command line arguments
-residual_streams = {'embeddings': cache['hook_embed']}
-for i in range(args.n_layers):
-    residual_streams[f'layer_{i}'] = cache[f'blocks.{i}.hook_resid_post']
-
-print("Activation shapes:")
-for name, acts in residual_streams.items():
-    print(f"  {name}: {acts.shape}")
-
-# Flatten for PCA
-token_inds = [5, 8, 11, 14]
-activations_flat = {}
-for name, acts in residual_streams.items():
-    acts_reshaped = acts[:,[token_inds], :].reshape(-1, acts.shape[-1]).cpu().numpy()
-    activations_flat[name] = acts_reshaped
-
-print("Flattened activation shapes:")
-for name, acts in activations_flat.items():
-    print(f"  {name}: {acts.shape}")
-
-
-# Create labels for visualization
-print(f"{tom_inputs_list[0].shape=}")
-tom_labels_flat = []
-for i in range(len(tom_inputs_list)):
-    tom_labels_flat.append(tom_inputs_list[i][:,token_inds])
-    tom_labels_flat[-1] = tom_labels_flat[-1].reshape(-1)
-
-print("Flattened tom_inputs shapes:")
-for i in range(len(tom_labels_flat)):
-    print(f"  {i}: {tom_labels_flat[i].shape}")
-
-print(f"{mess3_inputs_list[0].shape=}")
-mess3_labels_flat = []
-for i in range(len(mess3_inputs_list)):
-    mess3_labels_flat.append(mess3_inputs_list[i][:,token_inds])
-    mess3_labels_flat[-1] = mess3_labels_flat[-1].reshape(-1)
-
-print("Flattened mess3_inputs shapes:")
-for i in range(len(mess3_labels_flat)):
-    print(f"  {i}: {mess3_labels_flat[i].shape}")
-
-print(f"\nTotal points for PCA: {activations_flat['layer_0'].shape[0]}")
-#print(f"Token distribution: {np.bincount(token_labels)}")
-
-
-# Perform PCA on the final layer activations (6 components for four 3D plots)
-pca = PCA(n_components=15, whiten=True)
-pca_coords = pca.fit_transform(activations_flat['layer_2'])
-
-print(f"PCA explained variance ratio: {pca.explained_variance_ratio_}")
-print(f"Total variance explained: {sum(pca.explained_variance_ratio_):.2%}")
-
-#%%
-
-# Define categorical colors with maximal separation per set
-# Mess3: red, yellow, purple
-_mess3_base = ["#d62728", "#ffd92f", "#9467bd"]
-# Tom Quantum: dark blue, light blue, light green, dark green
-_tom_base = ["#1f77b4", "#aec7e8", "#98df8a", "#2ca02c"]
-
-mess3_colors = [_mess3_base[i % len(_mess3_base)] for i in range(mess3_vocab_size)]
-tom_colors = [_tom_base[i % len(_tom_base)] for i in range(tom_quantum_vocab_size)]
-
-# Create label-to-color dicts (hex strings)
-mess3_label_to_color = {int(label): mess3_colors[label] for label in range(mess3_vocab_size)}
-tom_label_to_color = {int(label): tom_colors[label] for label in range(tom_quantum_vocab_size)}
-
-# Map labels to colors
-mess3_point_colors = [[mess3_label_to_color[label] for label in mess3_labels] for mess3_labels in mess3_labels_flat]
-tom_point_colors = [[tom_label_to_color[label] for label in tom_labels] for tom_labels in tom_labels_flat]
-
-print(mess3_label_to_color)
-print(tom_label_to_color)
-
-#%%
-print(tom_quantum_vocab_size)
-print(mess3_vocab_size)
-print(product_vocab_size)
-
-# For each array in tom_point_colors and mess3_point_colors, print the unique values and their counts
-
-def print_color_bins(label, color_arrays):
-    for i, arr in enumerate(color_arrays):
-        arr_np = np.array(arr)
-        unique, counts = np.unique(arr_np, return_counts=True)
-        print(f"{label} #{i+1}:")
-        for u, c in zip(unique, counts):
-            print(f"  Color: {u}, Count: {c}")
-        print()
-
-print("Bins/counts for mess3_point_colors:")
-print_color_bins("Mess3", mess3_point_colors)
-
-print("Bins/counts for tom_point_colors:")
-print_color_bins("Tom Quantum", tom_point_colors)
-
-#%%
-
-def plot_pca_subplots(
-    pca_coords,
-    mess3_point_colors,
-    tom_point_colors,
-    pc_indices,
-    mess3_label_to_color,
-    tom_label_to_color,
-    marker_size=3,
-    legend_marker_size=8,
-    opacity=0.6,
-    height=1200,
-    width=1200,
-    show=True,
-    title_text=None,
-    output_dir="outputs/reports",
-    save=None
-):
-    """
-    Plots interactive PCA subplots for Mess3 and Tom Quantum labels.
-
-    Args:
-        pca_coords: np.ndarray, shape (n_points, n_pcs)
-        mess3_point_colors: list of lists of color strings, one per Mess3 label set
-        tom_point_colors: list of lists of color strings, one per Tom Quantum label set
-        pc_indices: list or tuple of length 2 or 3, 0-indexed PC indices to plot
-        mess3_label_to_color: dict mapping mess3 labels -> color
-        tom_label_to_color: dict mapping tom labels -> color
-        marker_size: int, size of data point markers
-        legend_marker_size: int, size of legend marker circles
-    """
-    assert len(pc_indices) in (2, 3), "pc_indices must be length 2 or 3"
-    is_3d = len(pc_indices) == 3
-
-    pc_label_str = "-".join([f"{i+1}" for i in pc_indices])
-    subplot_titles = (
-        f"Mess3 #1 Coloring: PCs {pc_label_str}",
-        f"Mess3 #2 Coloring: PCs {pc_label_str}",
-        f"Mess3 #3 Coloring: PCs {pc_label_str}",
-        f"Tom Quantum #1 Coloring: PCs {pc_label_str}",
-        f"Tom Quantum #2 Coloring: PCs {pc_label_str}",
-        "Blank"
-    )
-
-    scatter_type = 'scatter3d' if is_3d else 'scatter'
-    specs = [[{'type': scatter_type}, {'type': scatter_type}],
-             [{'type': scatter_type}, {'type': scatter_type}],
-             [{'type': scatter_type}, {'type': scatter_type}]]
-
-    fig = make_subplots(rows=3, cols=2, specs=specs, subplot_titles=subplot_titles)
-
-    def marker_dict(color):
-        return dict(size=marker_size, color=color, opacity=opacity, showscale=False)
-
-    # --- Mess3 traces ---
-    for i in range(3):
-        if is_3d:
-            trace = go.Scatter3d(
-                x=pca_coords[:, pc_indices[0]],
-                y=pca_coords[:, pc_indices[1]],
-                z=pca_coords[:, pc_indices[2]],
-                mode='markers',
-                marker=marker_dict(mess3_point_colors[i]),
-                showlegend=False
-            )
-        else:
-            trace = go.Scatter(
-                x=pca_coords[:, pc_indices[0]],
-                y=pca_coords[:, pc_indices[1]],
-                mode='markers',
-                marker=marker_dict(mess3_point_colors[i]),
-                showlegend=False
-            )
-        row, col = (1, i+1) if i < 2 else (2, 1)
-        fig.add_trace(trace, row=row, col=col if i < 2 else 1)
-
-    # --- Tom Quantum traces ---
-    for i in range(2):
-        if is_3d:
-            trace = go.Scatter3d(
-                x=pca_coords[:, pc_indices[0]],
-                y=pca_coords[:, pc_indices[1]],
-                z=pca_coords[:, pc_indices[2]],
-                mode='markers',
-                marker=marker_dict(tom_point_colors[i]),
-                showlegend=False
-            )
-        else:
-            trace = go.Scatter(
-                x=pca_coords[:, pc_indices[0]],
-                y=pca_coords[:, pc_indices[1]],
-                mode='markers',
-                marker=marker_dict(tom_point_colors[i]),
-                showlegend=False
-            )
-        row, col = (2, 2) if i == 0 else (3, 1)
-        fig.add_trace(trace, row=row, col=col)
-
-    # --- Legend entries ---
-    # Mess3 first
-    for lbl, colr in mess3_label_to_color.items():
-        name = f"Mess3 Label {lbl}"
-        if is_3d:
-            dummy = go.Scatter3d(
-                x=[None], y=[None], z=[None],
-                mode='markers',
-                marker=dict(size=legend_marker_size, color=colr, opacity=opacity),
-                name=name,
-                showlegend=True
-            )
-        else:
-            dummy = go.Scatter(
-                x=[None], y=[None],
-                mode='markers',
-                marker=dict(size=legend_marker_size, color=colr, opacity=opacity),
-                name=name,
-                showlegend=True
-            )
-        fig.add_trace(dummy, row=1, col=1)
-
-    # Tom Quantum second
-    for lbl, colr in tom_label_to_color.items():
-        name = f"TomQ Label {lbl}"
-        if is_3d:
-            dummy = go.Scatter3d(
-                x=[None], y=[None], z=[None],
-                mode='markers',
-                marker=dict(size=legend_marker_size, color=colr, opacity=opacity),
-                name=name,
-                showlegend=True
-            )
-        else:
-            dummy = go.Scatter(
-                x=[None], y=[None],
-                mode='markers',
-                marker=dict(size=legend_marker_size, color=colr, opacity=opacity),
-                name=name,
-                showlegend=True
-            )
-        fig.add_trace(dummy, row=1, col=1)
-
-    # --- Axis labels ---
-    pc_labels = [f"PC{idx+1}" for idx in pc_indices]
-    layout_kwargs = dict(height=height, width=width)
-    if title_text is not None:
-        layout_kwargs['title_text'] = title_text
-
-    if is_3d:
-        for i in range(1, 7):
-            scene_name = f"scene{i}" if i > 1 else "scene"
-            layout_kwargs[scene_name] = dict(
-                xaxis_title=pc_labels[0],
-                yaxis_title=pc_labels[1],
-                zaxis_title=pc_labels[2]
-            )
-    else:
-        for i in range(1, 7):
-            layout_kwargs[f"xaxis{i}"] = dict(title=pc_labels[0])
-            layout_kwargs[f"yaxis{i}"] = dict(title=pc_labels[1])
-
-    fig.update_layout(**layout_kwargs)
-
-    # --- Save logic ---
-    if save is not None:
-        if not isinstance(save, (list, tuple)):
-            raise ValueError("save must be None or a list/tuple of 'png', 'html', 'json'")
-        save_formats = [str(fmt).lower() for fmt in save]
-        if save_formats:
-            os.makedirs(output_dir, exist_ok=True)
-            if title_text is not None:
-                safe_title = "".join(c if c.isalnum() or c in (' ', '_', '-') else "_" for c in title_text)
-                base_filename = f"pca_subplots_{safe_title.strip().replace(' ', '_')}_PCs_{pc_label_str}"
-            else:
-                base_filename = f"pca_subplots_PCs_{pc_label_str}"
-
-            for fmt in save_formats:
-                filepath = os.path.join(output_dir, base_filename + f".{fmt}")
-                if fmt == "png":
-                    fig.write_image(filepath)
-                elif fmt == "html":
-                    fig.write_html(filepath, include_plotlyjs=True, full_html=True)
-                elif fmt == "json":
-                    pio.write_json(fig, filepath)
-                else:
-                    print(f"Unknown save format: {fmt}")
-                print(f"Figure saved to {filepath}")
-
-    if show:
-        fig.show()
-    return fig
-
-
-# Example usage for PCs 6-7 (i.e., indices 5,6):
-# plot_pca_subplots(
-#     pca_coords,
-#     mess3_point_colors,
-#     tom_point_colors,
-#     pc_indices=[5,6],
-#     title_text='2D PCA of Residual Stream (Layer 1)'
-# )
-#%%
-# ==== Plot PC Projections ============================================================= #
-# ==== for All 9 choose 3 and 9 choose 2 combinations of the first 9 indices of PCA ==== #
-##########################################################################################
-pca_indices = list(range(15))
-
-# 3D plots for all 9 choose 3
-comb_3 = list(combinations(pca_indices, 3))
-for pc_inds in comb_3:
-    plot_pca_subplots(
-        pca_coords,
-        mess3_point_colors,
-        tom_point_colors,
-        pc_indices=list(pc_inds),
-        marker_size=2,
-        opacity=0.6,
-        height=900,
-        width=900,
-        show=False,
-        title_text=f"3D PCA PCs {pc_inds[0]+1},{pc_inds[1]+1},{pc_inds[2]+1}",
-        output_dir="outputs/reports/multipartite_001",
-        save=["html"],
-        mess3_label_to_color=mess3_label_to_color,
-        tom_label_to_color=tom_label_to_color
-    )
-
-
-#%%
-# 2D plots for all 9 choose 2
-comb_2 = list(combinations(pca_indices, 2))
-for pc_inds in comb_2:
-    plot_pca_subplots(
-        pca_coords,
-        mess3_point_colors,
-        tom_point_colors,
-        pc_indices=list(pc_inds),
-        marker_size=2,
-        opacity=0.6,
-        height=700,
-        width=700,
-        show=False,
-        title_text=f"2D PCA PCs {pc_inds[0]+1},{pc_inds[1]+1}",
-        output_dir="outputs/reports/multipartite_001",
-        save=["html"],
-        mess3_label_to_color=mess3_label_to_color,
-        tom_label_to_color=tom_label_to_color
-    )
-print("9 choose 2 =", comb(9, 2))
 
 # #%%
 

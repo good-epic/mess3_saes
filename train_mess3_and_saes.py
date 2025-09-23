@@ -48,16 +48,16 @@ PRESET_PROCESS_CONFIGS = {
         {
             "type": "mess3",
             "instances": [
-                {"x": 0.1, "a": 0.8},
-                {"x": 0.25, "a": 0.2},
-                {"x": 0.4, "a": 0.5},
+                {"x": 0.12, "a": 0.55},
+                {"x": 0.14, "a": 0.7},
+                {"x": 0.18, "a": 0.75},
             ],
         },
         {
             "type": "tom_quantum",
             "instances": [
-                {"alpha": 0.9, "beta": float(1.3)},
-                {"alpha": 1.0, "beta": float(np.sqrt(51))},
+                {"alpha": 1.12, "beta": float(5.64)},
+                {"alpha": 0.88, "beta": float(8.64)},
             ],
         },
     ],

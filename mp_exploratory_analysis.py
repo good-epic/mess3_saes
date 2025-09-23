@@ -28,7 +28,6 @@ import jax.numpy as jnp
 import numpy as np
 import torch
 from sklearn.decomposition import PCA
-from sklearn.linear_model import LinearRegression
 from tqdm import tqdm
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 
@@ -38,7 +37,18 @@ from multipartite_utils import (
     MultipartiteSampler,
     build_components_from_config,
 )
-from training_and_analysis_utils import plot_pca_subplots
+from training_and_analysis_utils import (
+    plot_pca_subplots,
+    evaluate_belief_state_linear_models,
+    project_vectors_onto_simplex,
+    enforce_tom_quantum_physicality,
+    project_simplex3_to_2d,
+    plot_mess3_belief_grid,
+    plot_tom_quantum_coherence,
+    plot_tom_quantum_coherence_grid,
+)
+import os
+import matplotlib.pyplot as plt
 
 jax.config.update("jax_platform_name", "cpu")
 
@@ -49,6 +59,14 @@ PRESET_PROCESS_CONFIGS = {
     ],
     "3xmess3_2xtquant": [
         {
+            "type": "tom_quantum",
+            "instances": [
+                #{"alpha": 0.8, "beta": float(1.3)},
+                {"alpha": 1.0, "beta": float(np.sqrt(51))},
+                {"alpha": 1.0, "beta": float(np.sqrt(51))},
+            ],
+        },
+        {
             "type": "mess3",
             "instances": [
                 {"x": 0.1, "a": 0.8},
@@ -56,22 +74,12 @@ PRESET_PROCESS_CONFIGS = {
                 {"x": 0.4, "a": 0.5},
             ],
         },
-        {
-            "type": "tom_quantum",
-            "instances": [
-                {"alpha": 0.9, "beta": float(1.3)},
-                {"alpha": 1.0, "beta": float(np.sqrt(51))},
-            ],
-        },
     ],
 }
-
-
-
 #%%
 # CLI arguments
 device_default = "cuda" if torch.cuda.is_available() else "cpu"
-parser = argparse.ArgumentParser(description="Train Transformer on mess3 and SAEs")
+parser = argparse.ArgumentParser(description="Train Transformer on mess3 and SAEs", allow_abbrev=False)
 
 # HookedTransformerConfig parameters
 parser.add_argument("--d_model", type=int, default=128)
@@ -114,6 +122,8 @@ parser.add_argument(
     help="Batch size for exploratory sampling from the multipartite stack",
 )
 parser.add_argument("--sae_output_dir", type=str, default="outputs/saes/multipartite_001", help="Directory to save trained SAEs and metrics")
+parser.add_argument("--fig_out_dir", type=str, default="outputs/reports/multipartite_001", help="Directory to save matplotlib figures")
+
 
 # Model loading
 #parser.add_argument("--load_model", type=str, default=None, help="Path to a saved model checkpoint (.pt). If provided, skip training and load this model.")
@@ -145,6 +155,8 @@ if len(components) == 1:
 else:
     sampler = MultipartiteSampler(components)
     data_source = sampler
+
+
 
 if isinstance(data_source, MultipartiteSampler):
     vocab_size = data_source.vocab_size
@@ -204,140 +216,53 @@ print(f"Loaded model from {args.load_model}")
 
 
 #%%
+# ==== Plot Moving Average of Losses ==== #
+#########################################
+# Visualization of loss
+# Calculate moving average
+window_size = 50 # You can adjust the window size
+moving_average = np.convolve(losses, np.ones(window_size)/window_size, mode='valid')
+
+# Plot original loss with transparency
+plt.figure()
+plt.plot(losses, alpha=0.5, label='Original Loss') 
+# Plot moving average
+plt.plot(range(window_size - 1, len(losses)), moving_average,
+         label=f'Moving Average (window={window_size})') 
+
+plt.xlabel('Step')
+plt.ylabel('Loss')
+plt.title('Training Loss on Product Space (multiple processes)')
+
+# Calculate ylim based on percentiles
+ylim_min = 0.9999 * np.min(losses)
+ylim_max = ylim_min + 0.25 * (np.max(losses) - ylim_min)
+plt.ylim([ylim_min, ylim_max])
+#plt.yscale('log')  # Set y-axis to logarithmic scale
+# Add vertical dotted lines
+plt.axvline(x=1000, color='gray', linestyle=':', label='6 dims')
+plt.axvline(x=5000, color='gray', linestyle=':', label='6 dims')
+plt.axvline(x=10000, color='gray', linestyle=':', label='10 dims')
+plt.axvline(x=24000, color='gray', linestyle=':', label='10 dims')
+plt.legend()
+os.makedirs(args.fig_out_dir, exist_ok=True)
+plt.tight_layout()
+plt.savefig(os.path.join(args.fig_out_dir, 'loss_moving_average.png'))
+
+plt.axvline(x=2000, color='gray', linestyle=':', label='6 dims')
+plt.axvline(x=3000, color='gray', linestyle=':', label='6 dims')
+plt.axvline(x=4000, color='gray', linestyle=':', label='6 dims')
+plt.xlim(0,80000)
+plt.savefig(os.path.join(args.fig_out_dir, 'loss_moving_average_xlim_100k.png'))
+plt.close()
+
+
+#%%
 # ==== Generate PCA of Residual Stream ==== #
 ############################################
 # Generate a batch for analysis using the multipartite sampler utilities
 
-# ### Old Version
-
-# n_tom_quantum = 2
-# n_mess3 = 3
-# tom_quantum_processes = [c.process for c in components[3:5]]
-# mess3_processes = [c.process for c in components[0:3]]
-
-# tom_stationaries = [tom_quantum_processes[i].initial_state for i in range(n_tom_quantum)]
-# mess3_stationaries = [mess3_processes[i].initial_state for i in range(n_mess3)]
-# tom_quantum_vocab_size = tom_quantum_processes[0].vocab_size
-# mess3_vocab_size = mess3_processes[0].vocab_size
-# product_vocab_size = (tom_quantum_vocab_size ** n_tom_quantum) * mess3_vocab_size ** n_mess3
-
-# from training_and_analysis_utils import generate_mp_emissions
-# key, tom_inputs_list, mess3_inputs_list, tokens = \
-#     generate_mp_emissions(key,n_tom_quantum, n_mess3, tom_stationaries, mess3_stationaries,
-#                             8192, seq_len, tom_quantum_processes, mess3_processes,
-#                             tom_quantum_vocab_size, mess3_vocab_size, product_vocab_size, device)
-
-# # Run with cache to get all activations
-# logits, cache = model.run_with_cache(tokens)
-
-# # Extract residual stream activations
-# # Automatically extract all residual streams based on n_layers from command line arguments
-# residual_streams = {'embeddings': cache['hook_embed']}
-# for i in range(args.n_layers):
-#     residual_streams[f'layer_{i}'] = cache[f'blocks.{i}.hook_resid_post']
-
-# print("Activation shapes:")
-# for name, acts in residual_streams.items():
-#     print(f"  {name}: {acts.shape}")
-
-# # Flatten for PCA
-# token_inds = [5, 8, 11, 14]
-# activations_flat = {}
-# for name, acts in residual_streams.items():
-#     acts_reshaped = acts[:,token_inds, :].reshape(-1, acts.shape[-1]).cpu().numpy()
-#     activations_flat[name] = acts_reshaped
-
-# print("Flattened activation shapes:")
-# for name, acts in activations_flat.items():
-#     print(f"  {name}: {acts.shape}")
-
-
-# # Create labels for visualization
-# print(f"{tom_inputs_list[0].shape=}")
-# tom_labels_flat = []
-# for i in range(len(tom_inputs_list)):
-#     tom_labels_flat.append(tom_inputs_list[i][:,token_inds])
-#     tom_labels_flat[-1] = tom_labels_flat[-1].reshape(-1)
-
-# print("Flattened tom_inputs shapes:")
-# for i in range(len(tom_labels_flat)):
-#     print(f"  {i}: {tom_labels_flat[i].shape}")
-
-# print(f"{mess3_inputs_list[0].shape=}")
-# mess3_labels_flat = []
-# for i in range(len(mess3_inputs_list)):
-#     mess3_labels_flat.append(mess3_inputs_list[i][:,token_inds])
-#     mess3_labels_flat[-1] = mess3_labels_flat[-1].reshape(-1)
-
-# print("Flattened mess3_inputs shapes:")
-# for i in range(len(mess3_labels_flat)):
-#     print(f"  {i}: {mess3_labels_flat[i].shape}")
-
-# print(f"\nTotal points for PCA: {activations_flat['layer_0'].shape[0]}")
-# #print(f"Token distribution: {np.bincount(token_labels)}")
-
-
-# # Perform PCA on the final layer activations (6 components for four 3D plots)
-# #pca = PCA(n_components=15, whiten=True)
-# pca = PCA(n_components=15, whiten=True)
-# pca_coords = pca.fit_transform(activations_flat['layer_2'])
-
-# print(f"PCA explained variance ratio: {pca.explained_variance_ratio_}")
-# print(f"Total variance explained: {sum(pca.explained_variance_ratio_):.2%}")
-
-# #%%
-
-# # Define categorical colors with maximal separation per set
-# # Mess3: red, yellow, purple
-# _mess3_base = ["#d62728", "#ffd92f", "#9467bd"]
-# # Tom Quantum: dark blue, light blue, light green, dark green
-# _tom_base = ["#1f77b4", "#aec7e8", "#98df8a", "#2ca02c"]
-
-# mess3_colors = [_mess3_base[i % len(_mess3_base)] for i in range(mess3_vocab_size)]
-# tom_colors = [_tom_base[i % len(_tom_base)] for i in range(tom_quantum_vocab_size)]
-
-# # Create label-to-color dicts (hex strings)
-# mess3_label_to_color = {int(label): mess3_colors[label] for label in range(mess3_vocab_size)}
-# tom_label_to_color = {int(label): tom_colors[label] for label in range(tom_quantum_vocab_size)}
-
-# # Map labels to colors
-# mess3_point_colors = [[mess3_label_to_color[label] for label in mess3_labels] for mess3_labels in mess3_labels_flat]
-# tom_point_colors = [[tom_label_to_color[label] for label in tom_labels] for tom_labels in tom_labels_flat]
-
-# print(mess3_label_to_color)
-# print(tom_label_to_color)
-
-# # 1) lengths match
-# assert pca_coords.shape[0] == len(mess3_point_colors[0]) == len(tom_point_colors[0])
-
-# # 2) deterministic alignment spot-check: the first few rows should agree
-# for arr in (mess3_point_colors + tom_point_colors):
-#     assert isinstance(arr, list) and len(arr) == pca_coords.shape[0]
-
-#%%
-
-
-
-###
-### Codex fucked version
-# =========================
-# Fixed "Codex" version
-# =========================
-
 analysis_batch_size = args.analysis_batch_size
-
-# Work out component types in order
-component_type_sequence: list[str] = []
-for entry in process_config:
-    t = entry["type"]
-    if "instances" in entry:
-        component_type_sequence.extend([t] * len(entry["instances"]))
-    else:
-        count = int(entry.get("count", 1))
-        component_type_sequence.extend([t] * count)
-if len(component_type_sequence) != len(components):
-    # fall back to names if config & components mismatch
-    component_type_sequence = [comp.name.split("_")[0] for comp in components]
 
 # Sample one analysis batch
 component_token_arrays: list[np.ndarray] = []
@@ -357,6 +282,7 @@ if isinstance(data_source, MultipartiteSampler):
         component_belief_arrays.append(beliefs_np[..., cursor: cursor + dim])
         cursor += dim
     component_vocab_sizes = list(data_source.component_vocab_sizes)
+    ordered_components = list(data_source.components)
 else:
     raise TypeError("Data source is not a MultipartiteSampler")
     # key, subkey = jax.random.split(key)
@@ -372,8 +298,13 @@ else:
 
 # Component metadata (name/type/vocab/belief_dim)
 component_metadata: list[dict[str, object]] = []
-for idx, comp in enumerate(components):
-    comp_type = component_type_sequence[idx] if idx < len(component_type_sequence) else comp.name.split("_")[0]
+if isinstance(data_source, MultipartiteSampler):
+    component_iter = enumerate(ordered_components)
+else:
+    component_iter = enumerate(components)
+
+for idx, comp in component_iter:
+    comp_type = getattr(comp, "process_type", comp.name.split("_")[0])
     vocab_size = component_vocab_sizes[idx] if idx < len(component_vocab_sizes) else getattr(comp.process, "vocab_size", product_vocab_size)
     belief_dim = int(component_belief_arrays[idx].shape[-1]) if idx < len(component_belief_arrays) else int(getattr(comp.process, "num_states", 0))
     component_metadata.append(
@@ -397,7 +328,7 @@ for name, acts in residual_streams.items():
 
 
 # ---- PCA data prep (select specific token positions then flatten) ----
-token_inds = [5, 8, 11, 14]  # positions to visualize
+token_inds = [4, 9, 14]  # positions (0-indexed) to visualize / probe
 activations_flat: dict[str, np.ndarray] = {}
 for name, acts in residual_streams.items():
     # acts: [batch, seq, d_model] -> take columns at token_inds -> [batch, len(token_inds), d_model]
@@ -436,14 +367,14 @@ def flatten_bt_labels(obs_np: np.ndarray) -> np.ndarray:
     return sel.contiguous().view(-1).cpu().numpy().astype(int)   # (B*K,)
 
 # Pair observations with their metadata to preserve alignment
-mess3_labels_flat: list[np.ndarray] = []
-tom_labels_flat:   list[np.ndarray] = []
+mess3_label_entries: list[tuple[str, np.ndarray]] = []
+tom_label_entries: list[tuple[str, np.ndarray]] = []
 for meta, obs_np in zip(component_metadata, component_token_arrays):
     flat = flatten_bt_labels(obs_np)
     if meta["type"] == "mess3":
-        mess3_labels_flat.append(flat)
+        mess3_label_entries.append((meta["name"], flat))
     elif meta["type"] == "tom_quantum":
-        tom_labels_flat.append(flat)
+        tom_label_entries.append((meta["name"], flat))
 
 # palettes
 _mess3_base = ["#d62728", "#ffd92f", "#9467bd"]
@@ -454,9 +385,25 @@ tom_vocab   = max((int(m["vocab_size"]) for m in component_metadata if m["type"]
 mess3_label_to_color   = {i: _mess3_base[i % len(_mess3_base)] for i in range(mess3_vocab)}
 tom_label_to_color     = {i: _tom_base[i % len(_tom_base)]     for i in range(tom_vocab)}
 
-# color arrays: one per component instance, each aligned 1:1 to pca_coords rows
-mess3_point_colors = [[mess3_label_to_color[int(v)] for v in lab] for lab in mess3_labels_flat]
-tom_point_colors   = [[tom_label_to_color[int(v)]   for v in lab] for lab in tom_labels_flat]
+# Derive deterministic ordering consistent with the original configuration
+mess3_order = [comp.name for comp in components if getattr(comp, "process_type", comp.name.split("_")[0]) == "mess3"]
+tom_order   = [comp.name for comp in components if getattr(comp, "process_type", comp.name.split("_")[0]) == "tom_quantum"]
+
+mess3_label_map = {name: lab for name, lab in mess3_label_entries}
+tom_label_map   = {name: lab for name, lab in tom_label_entries}
+
+mess3_point_colors = [
+    [mess3_label_to_color[int(v)] for v in mess3_label_map[name]]
+    for name in mess3_order
+]
+tom_point_colors = [
+    [tom_label_to_color[int(v)] for v in tom_label_map[name]]
+    for name in tom_order
+]
+
+# keep flattened label arrays for downstream checks if needed
+mess3_labels_flat = [mess3_label_map[name] for name in mess3_order]
+tom_labels_flat   = [tom_label_map[name]   for name in tom_order]
 
 # sanity
 N = pca_coords.shape[0]
@@ -466,114 +413,356 @@ for i, arr in enumerate(tom_point_colors):
     assert len(arr) == N, f"tom[{i}] color length {len(arr)} != {N}"
 
 
-#%%
-cta = [c[:,token_inds] for c in component_token_arrays]
-print(f"{product_tokens.shape=}")
-print(f"{product_tokens[:6]=}")
-print(f"{cta[0][:6]=}")
-print(f"{mess3_labels_flat[0][:32]=}")
-print(f"{mess3_point_colors[0][:16]=}")
-print(f"{cta[1][:6]=}")
-print(f"{mess3_labels_flat[1][:32]=}")
-print(f"{mess3_point_colors[1][:16]=}")
-print(f"{cta[2][:6]=}")
-print(f"{mess3_labels_flat[2][:32]=}")
-print(f"{mess3_point_colors[2][:16]=}")
 
-#print(f"{type(residual_streams['layer_0'])=}")
+# ==== Belief-State Linear Probing ============================================ #
 
-# # ---- Build point-wise labels aligned to the SAME flatten order ----
-# # We need one flat array per chosen component (not a list-of-arrays).
-# component_names = [meta["name"] for meta in component_metadata]
-# mess3_indices = [i for i, name in enumerate(component_names) if "mess3" in name]
-# tom_quantum_indices = [i for i, name in enumerate(component_names) if "tom_quantum" in name]
+# Use the same positions as PCA sampling to keep comparisons consistent
+evaluation_positions = token_inds
+final_layer_name = f"layer_{args.n_layers - 1}"
+if final_layer_name not in residual_streams:
+    available = ", ".join(sorted(residual_streams.keys()))
+    raise KeyError(f"Expected residual stream '{final_layer_name}' not found. Have: {available}")
 
-# # Use list comprehension and flatten each observation
-# mess3_obs = [torch.Tensor(component_observations[i])[:,token_inds].reshape(-1) for i in mess3_indices]
-# tom_quantum_obs = [torch.Tensor(component_observations[i])[:,token_inds].reshape(-1) for i in tom_quantum_indices]
-# print(f"mess3_obs lens={[x.shape for x in mess3_obs]}")
-# print(f"tom_quantum_obs lens={[x.shape for x in tom_quantum_obs]}")
+final_layer_activations = residual_streams[final_layer_name]
 
-# # ---- Color maps ----
-# _mess3_base = ["#d62728", "#ffd92f", "#9467bd"]
-# _tom_base   = ["#1f77b4", "#aec7e8", "#98df8a", "#2ca02c"]
-
-# mess3_vocab_candidates = [meta["vocab_size"] for meta in component_metadata if meta["type"] == "mess3"]
-# tom_vocab_candidates   = [meta["vocab_size"] for meta in component_metadata if meta["type"] == "tom_quantum"]
-# mess3_vocab_size = int(max(mess3_vocab_candidates)) if mess3_vocab_candidates else 0
-# tom_vocab_size   = int(max(tom_vocab_candidates)) if tom_vocab_candidates else 0
-
-# mess3_colors = [_mess3_base[i % len(_mess3_base)] for i in range(mess3_vocab_size)] if mess3_vocab_size else []
-# tom_colors   = [_tom_base[i % len(_tom_base)]     for i in range(tom_vocab_size)]     if tom_vocab_size   else []
-
-# mess3_label_to_color = {int(label): mess3_colors[label] for label in range(mess3_vocab_size)}
-# tom_label_to_color = {int(label): tom_colors[label] for label in range(tom_vocab_size)}
-
-# # Map labels to colors
-# mess3_point_colors = [[mess3_label_to_color[label] for label in np.array(mess3_labels)] for mess3_labels in mess3_obs]
-# tom_point_colors = [[tom_label_to_color[label] for label in np.array(tom_labels)] for tom_labels in tom_quantum_obs]
-
-
-# # Sanity check: color arrays must match pca_coords rows
-# assert (not mess3_point_colors) or (len(mess3_point_colors) == pca_coords.shape[0])
-# assert (not tom_point_colors)   or (len(tom_point_colors)   == pca_coords.shape[0])
-
-# # Optional: quick histogram to confirm label balance
-# def _print_color_hist(label, arr):
-#     if not arr:
-#         return
-#     vals, counts = np.unique(np.array(arr), return_counts=True)
-#     print(label, dict(zip(vals, counts)))
-# _print_color_hist("Mess3 colors", mess3_point_colors)
-# _print_color_hist("TomQ colors",  tom_point_colors)
-
-
-# N = pca_coords.shape[0]
-# assert len(mess3_point_colors) in (0, N), (len(mess3_point_colors), N)
-# assert len(tom_point_colors)   in (0, N), (len(tom_point_colors), N)
-
-
-
-# Example usage for PCs 6-7 (i.e., indices 5,6):
-# plot_pca_subplots(
-#     pca_coords,
-#     mess3_point_colors,
-#     tom_point_colors,
-#     pc_indices=[5,6],
-#     title_text='2D PCA of Residual Stream (Layer 1)'
-# )
-#%%
-# Test. Don't delete
-test_inds = [1,2]
-if len(test_inds) == 2:
-    test_title = f"PCA PCs {test_inds[0]+1},{test_inds[1]+1}"
-elif len(test_inds) == 3:
-    test_title = f"3D PCA PCs {test_inds[0]+1},{test_inds[1]+1},{test_inds[2]+1}"
-else:
-    raise ValueError(f"Invalid number of indices: {len(test_inds)}")
-plot_pca_subplots(
-    pca_coords,
-    mess3_point_colors,
-    tom_point_colors,
-    pc_indices=test_inds,
-    marker_size=2,
-    opacity=0.6,
-    height=900,
-    width=900,
-    show=True,
-    title_text=test_title,
-    output_dir="outputs/reports/multipartite_001",
-    save=None,
-    mess3_label_to_color=mess3_label_to_color,
-    tom_label_to_color=tom_label_to_color
+belief_regression_metrics = evaluate_belief_state_linear_models(
+    activations=final_layer_activations,
+    component_belief_arrays=component_belief_arrays,
+    component_metadata=component_metadata,
+    seq_positions=evaluation_positions,
+    skip_dims_by_type={"tom_quantum": [0]},
+    postprocess_by_type={
+        "mess3": lambda arr: project_vectors_onto_simplex(arr, axis=-1),
+        "tom_quantum": enforce_tom_quantum_physicality,
+    },
+    store_predictions=True,
 )
-n = 1
+
+print("\n=== Linear Regression: belief prediction at final layer ===")
+for comp_name, info in belief_regression_metrics.items():
+    comp_type = info.get("type", "unknown")
+    belief_dim = info.get("belief_dim")
+    print(f"  {comp_name} [{comp_type}] belief_dim={belief_dim}")
+    metrics_by_pos = info.get("metrics", {})
+    for pos in evaluation_positions:
+        metrics = metrics_by_pos.get(pos)
+        if metrics is None:
+            print(f"    pos {pos}: metrics not available")
+            continue
+        target_dims = metrics.get("target_dims", [])
+        if not target_dims:
+            note = metrics.get("note", "no usable belief dims")
+            dropped_explicit = metrics.get("explicitly_dropped_dims", [])
+            dropped_auto = metrics.get("dropped_low_variance_dims", [])
+            print(
+                f"    pos {pos}: {note} (explicitly dropped={dropped_explicit}, auto-dropped={dropped_auto})"
+            )
+            continue
+
+        r2_mean = metrics.get("r2_mean", float("nan"))
+        rmse = metrics.get("rmse", float("nan"))
+        mae = metrics.get("mae", float("nan"))
+        per_dim_r2 = metrics.get("r2_per_dim", {})
+        per_dim_corr = metrics.get("pearson_per_dim", {})
+
+        dims_repr = ",".join(str(d) for d in target_dims)
+        r2_repr = ", ".join(f"{dim}:{per_dim_r2.get(dim, float('nan')):.3f}" for dim in target_dims)
+        corr_repr = ", ".join(f"{dim}:{per_dim_corr.get(dim, float('nan')):.3f}" for dim in target_dims)
+
+        print(
+            f"    pos {pos}: dims[{dims_repr}] r2_mean={r2_mean:.3f} rmse={rmse:.5f} mae={mae:.5f}"
+        )
+        print(f"        r2_per_dim: {r2_repr}")
+        print(f"        pearson_per_dim: {corr_repr}")
+
+#%%
+# ==== 2D Simplex Plots of Mess3 Predicted Beliefs ===================================== #
+# Project 3D belief vectors to the 2-simplex in 2D and color like PCA subplots.
+
+# Choose positions already used for PCA/regression for consistency
+prediction_positions = evaluation_positions
+
+# Triangle border for plotting
+tri_vertices = np.array([[0.0, 0.0], [1.0, 0.0], [0.5, float(np.sqrt(3)/2.0)]])
+tri_x = np.r_[tri_vertices[:, 0], tri_vertices[0, 0]]
+tri_y = np.r_[tri_vertices[:, 1], tri_vertices[0, 1]]
+
+for idx, meta in enumerate(component_metadata):
+    if meta["type"] != "mess3":
+        continue
+    comp_name = str(meta["name"])
+    beliefs_np = np.asarray(component_belief_arrays[idx])  # (B, T, 3)
+    obs_np = np.asarray(component_token_arrays[idx])       # (B, T)
+    if beliefs_np.shape[-1] != 3:
+        # Only handle 3-state Mess3 here
+        continue
+
+    for pos in prediction_positions:
+        if pos < 0 or pos >= beliefs_np.shape[1]:
+            continue
+        metrics_pos = belief_regression_metrics.get(comp_name, {}).get("metrics", {}).get(pos)
+        if not metrics_pos or "predictions" not in metrics_pos:
+            continue
+
+        y_true = np.asarray(metrics_pos["targets"])
+        y_pred = np.asarray(metrics_pos["predictions"])
+
+        xs_true, ys_true = project_simplex3_to_2d(y_true)
+        xs_pred, ys_pred = project_simplex3_to_2d(y_pred)
+
+        mess3_rgb = np.array([
+            [0xD6, 0x27, 0x28],
+            [0xFF, 0xD9, 0x2F],
+            [0x94, 0x67, 0xBD],
+        ], dtype=np.float64) / 255.0
+        color_true = np.clip(y_true @ mess3_rgb, 0.0, 1.0)
+        color_pred = np.clip(y_pred @ mess3_rgb, 0.0, 1.0)
+
+        rng = np.random.default_rng(0)
+        sample_size = min(4000, xs_true.shape[0])
+        sample_idx = rng.choice(xs_true.shape[0], size=sample_size, replace=False)
+
+        fig, axes = plt.subplots(1, 2, figsize=(10.5, 5.2))
+        for ax, xs, ys, cols, title in zip(
+            axes,
+            (xs_true[sample_idx], xs_pred[sample_idx]),
+            (ys_true[sample_idx], ys_pred[sample_idx]),
+            (color_true[sample_idx], color_pred[sample_idx]),
+            ("Ground truth", "Linear probe prediction"),
+        ):
+            ax.plot(tri_x, tri_y, color="black", linewidth=1.0)
+            ax.scatter(xs, ys, c=cols, s=10, alpha=0.8, edgecolors="none")
+            ax.set_aspect('equal', adjustable='box')
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_title(title)
+
+        fig.suptitle(f"Mess3 {comp_name}: belief simplex (pos {pos})", fontsize=13)
+        fig.tight_layout()
+        os.makedirs(args.fig_out_dir, exist_ok=True)
+        safe_name = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in comp_name)
+        out_path = os.path.join(args.fig_out_dir, f"mess3_pred_simplex2d_{safe_name}_pos{pos}_beliefrgb.png")
+        fig.savefig(out_path, dpi=160)
+        plt.close(fig)
+        print(f"Saved Mess3 simplex comparison (belief RGB) → {out_path}")
+
+        # Label-colored versions (true vs predicted argmax)
+        label_colors = np.array([mess3_label_to_color.get(int(l), "#000000") for l in obs_np[:, pos]])
+        pred_labels = np.argmax(y_pred, axis=1)
+        pred_label_colors = np.array([mess3_label_to_color.get(int(l), "#000000") for l in pred_labels])
+
+        fig_lbl, axes_lbl = plt.subplots(1, 2, figsize=(10.5, 5.2))
+        for ax, xs, ys, cols, title in zip(
+            axes_lbl,
+            (xs_true[sample_idx], xs_pred[sample_idx]),
+            (ys_true[sample_idx], ys_pred[sample_idx]),
+            (label_colors[sample_idx], pred_label_colors[sample_idx]),
+            ("Ground truth (tokens)", "Linear probe prediction (argmax)"),
+        ):
+            ax.plot(tri_x, tri_y, color="black", linewidth=1.0)
+            ax.scatter(xs, ys, c=cols, s=10, alpha=0.8, edgecolors="none")
+            ax.set_aspect('equal', adjustable='box')
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_title(title)
+
+        fig_lbl.suptitle(f"Mess3 {comp_name}: belief simplex (pos {pos})", fontsize=13)
+        fig_lbl.tight_layout()
+        out_path_lbl = os.path.join(args.fig_out_dir, f"mess3_pred_simplex2d_{safe_name}_pos{pos}_labels.png")
+        fig_lbl.savefig(out_path_lbl, dpi=160)
+        plt.close(fig_lbl)
+        print(f"Saved Mess3 simplex comparison (token vs argmax colors) → {out_path_lbl}")
+
+#%%
+# ==== 2D Prediction Plots for Tom Quantum (scatter P(s0) vs P(s1)) ===================== #
+
+for idx, meta in enumerate(component_metadata):
+    if meta["type"] != "tom_quantum":
+        print(f"  {meta['name']} ({meta['type']}): skipping")
+        continue
+    comp_name = str(meta["name"])
+    beliefs_np = np.asarray(component_belief_arrays[idx])  # (B, T, 3)
+    obs_np = np.asarray(component_token_arrays[idx])       # (B, T)
+    if beliefs_np.shape[-1] != 3:
+        print(f"  {meta['name']} ({meta['type']}): skipping")
+        continue
+
+    for pos in evaluation_positions:
+        if pos < 0 or pos >= beliefs_np.shape[1]:
+            continue
+        metrics_pos = belief_regression_metrics.get(comp_name, {}).get("metrics", {}).get(pos)
+        if not metrics_pos or "predictions" not in metrics_pos:
+            continue
+
+        y_true_params = np.asarray(metrics_pos["targets"])
+        y_pred_params = np.asarray(metrics_pos["predictions"])
+
+        angles_true = np.arctan2(y_true_params[:, 2], y_true_params[:, 1])
+        angles_pred = np.arctan2(y_pred_params[:, 2], y_pred_params[:, 1])
+        cmap = plt.get_cmap("twilight")
+        color_true = cmap((angles_true + np.pi) / (2 * np.pi))
+        color_pred = cmap((angles_pred + np.pi) / (2 * np.pi))
+
+        rng = np.random.default_rng(0)
+        sample_size = min(4000, y_true_params.shape[0])
+        sample_idx = rng.choice(y_true_params.shape[0], size=sample_size, replace=False)
+
+        fig, axes = plt.subplots(1, 2, figsize=(10.5, 5.0))
+        data_pairs = (
+            (y_true_params[sample_idx, 1], y_true_params[sample_idx, 2], color_true[sample_idx], "Ground truth"),
+            (y_pred_params[sample_idx, 1], y_pred_params[sample_idx, 2], color_pred[sample_idx], "Linear probe prediction"),
+        )
+
+        for ax, (xs, ys, cols, title) in zip(axes, data_pairs):
+            ax.scatter(xs, ys, c=cols, s=14, alpha=0.85, edgecolors="none")
+            ax.set_xlabel("Re coherence")
+            ax.set_ylabel("Im coherence")
+            ax.set_xlim(-0.35, 0.35)
+            ax.set_ylim(-0.35, 0.35)
+            ax.set_aspect('equal', adjustable='box')
+            ax.set_title(title)
+            ax.grid(True, linewidth=0.3, alpha=0.5)
+
+        fig.suptitle(f"TomQ {comp_name}: coherence plane (pos {pos})", fontsize=13)
+        fig.tight_layout()
+        os.makedirs(args.fig_out_dir, exist_ok=True)
+        safe_name = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in comp_name)
+        out_path = os.path.join(args.fig_out_dir, f"tomq_coherence_{safe_name}_pos{pos}_angle.png")
+        fig.savefig(out_path, dpi=170)
+        plt.close(fig)
+        print(f"Saved Tom Quantum coherence plot (angle colors) → {out_path}")
+
+        label_colors = np.array([tom_label_to_color.get(int(v), "#000000") for v in obs_np[:, pos]])
+        pred_labels = np.argmax(y_pred_params, axis=1)
+        pred_label_colors = np.array([tom_label_to_color.get(int(v), "#000000") for v in pred_labels])
+        fig_lbl, axes_lbl = plt.subplots(1, 2, figsize=(10.5, 5.0))
+        data_pairs_lbl = (
+            (y_true_params[sample_idx, 1], y_true_params[sample_idx, 2], label_colors[sample_idx], "Ground truth (tokens)",),
+            (y_pred_params[sample_idx, 1], y_pred_params[sample_idx, 2], pred_label_colors[sample_idx], "Linear probe prediction (argmax)"),
+        )
+
+        for ax, (xs, ys, cols, title) in zip(axes_lbl, data_pairs_lbl):
+            ax.scatter(xs, ys, c=cols, s=14, alpha=0.85, edgecolors="none")
+            ax.set_xlabel("Re coherence")
+            ax.set_ylabel("Im coherence")
+            ax.set_xlim(-0.35, 0.35)
+            ax.set_ylim(-0.35, 0.35)
+            ax.set_aspect('equal', adjustable='box')
+            ax.set_title(title)
+            ax.grid(True, linewidth=0.3, alpha=0.5)
+
+        fig_lbl.suptitle(f"TomQ {comp_name}: coherence plane (pos {pos})", fontsize=13)
+        fig_lbl.tight_layout()
+        out_path_lbl = os.path.join(args.fig_out_dir, f"tomq_coherence_{safe_name}_pos{pos}_labels.png")
+        fig_lbl.savefig(out_path_lbl, dpi=170)
+        plt.close(fig_lbl)
+        print(f"Saved Tom Quantum coherence plot (token vs argmax colors) → {out_path_lbl}")
+
+
+
+#%%
+# ==== Ground-truth Belief Geometry Sweeps ============================================= #
+
+os.makedirs(args.fig_out_dir, exist_ok=True)
+
+mess3_x_grid = np.linspace(0.10, 0.22, 7)
+mess3_a_grid = np.linspace(0.45, 0.80, 8)
+mess3_grid_fig = plot_mess3_belief_grid(
+    x_values=mess3_x_grid,
+    a_values=mess3_a_grid,
+    seq_position=9,
+    batch_size=4096,
+    seq_len=seq_len,
+    seed=123,
+    sample_size=2500,
+)
+mess3_grid_path = os.path.join(args.fig_out_dir, "mess3_belief_grid_pos9.png")
+mess3_grid_fig.savefig(mess3_grid_path, dpi=170)
+plt.close(mess3_grid_fig)
+print(f"Saved Mess3 parameter grid → {mess3_grid_path}")
+
+tomq_08013_fig = plot_tom_quantum_coherence(
+    alpha=0.8,
+    beta=1.3,
+    seq_position=9,
+    batch_size=4096,
+    seq_len=seq_len,
+    seed=432,
+    sample_size=4000,
+)
+tomq_08013_path = os.path.join(args.fig_out_dir, "tomq_true_geometry_alpha0.8_beta1.3_pos9.png")
+tomq_08013_fig.savefig(tomq_08013_path, dpi=180)
+plt.close(tomq_08013_fig)
+print(f"Saved TomQ true geometry (alpha=0.8, beta=1.3) → {tomq_08013_path}")
+
+central_tomq_fig = plot_tom_quantum_coherence(
+    alpha=1.0,
+    beta=float(np.sqrt(51)),
+    seq_position=9,
+    batch_size=4096,
+    seq_len=seq_len,
+    seed=456,
+    sample_size=4000,
+)
+tomq_central_path = os.path.join(args.fig_out_dir, "tomq_true_geometry_alpha1.0_beta_sqrt51_pos9.png")
+central_tomq_fig.savefig(tomq_central_path, dpi=180)
+plt.close(central_tomq_fig)
+print(f"Saved TomQ true geometry (alpha=1.0, beta=sqrt(51)) → {tomq_central_path}")
+
+alpha_center = 1.0
+beta_center = float(np.sqrt(51))
+tomq_alpha_grid = np.linspace(alpha_center - 0.12, alpha_center + 0.12, 5)
+tomq_beta_grid = np.linspace(beta_center - 1.5, beta_center + 1.5, 5)
+tomq_grid_sweep_fig = plot_tom_quantum_coherence_grid(
+    alpha_values=tomq_alpha_grid,
+    beta_values=tomq_beta_grid,
+    seq_position=9,
+    batch_size=4096,
+    seq_len=seq_len,
+    seed=789,
+    sample_size=3500,
+)
+tomq_grid_sweep_path = os.path.join(args.fig_out_dir, "tomq_coherence_grid_pos9.png")
+tomq_grid_sweep_fig.savefig(tomq_grid_sweep_path, dpi=170)
+plt.close(tomq_grid_sweep_fig)
+print(f"Saved TomQ parameter grid → {tomq_grid_sweep_path}")
 
 
 #%%
 # ==== Plot PC Projections ============================================================= #
 # ==== for All 9 choose 3 and 9 choose 2 combinations of the first 9 indices of PCA ==== #
 ##########################################################################################
+
+
+# # Test. Don't delete
+# test_inds = [1,2]
+# if len(test_inds) == 2:
+#     test_title = f"PCA PCs {test_inds[0]+1},{test_inds[1]+1}"
+# elif len(test_inds) == 3:
+#     test_title = f"3D PCA PCs {test_inds[0]+1},{test_inds[1]+1},{test_inds[2]+1}"
+# else:
+#     raise ValueError(f"Invalid number of indices: {len(test_inds)}")
+# plot_pca_subplots(
+#     pca_coords,
+#     mess3_point_colors,
+#     tom_point_colors,
+#     pc_indices=test_inds,
+#     marker_size=3,
+#     opacity=0.6,
+#     height=900,
+#     width=900,
+#     show=True,
+#     title_text=test_title,
+#     output_dir=args.fig_out_dir,
+#     save=None,
+#     mess3_label_to_color=mess3_label_to_color,
+#     tom_label_to_color=tom_label_to_color,
+#     n_points_to_plot=3000
+# )
+# n = 1
+
+
+#%%
 pca_indices = list(range(pca_coords.shape[1]))
 if len(pca_indices) >= 3:
     comb_3 = list(combinations(pca_indices, 3))
@@ -589,7 +778,7 @@ if len(pca_indices) >= 3:
             width=900,
             show=False,
             title_text=f"3D PCA PCs {pc_inds[0]+1},{pc_inds[1]+1},{pc_inds[2]+1}",
-            output_dir="outputs/reports/multipartite_001",
+            output_dir=args.fig_out_dir,
             save=["html"],
             mess3_label_to_color=mess3_label_to_color,
             tom_label_to_color=tom_label_to_color
@@ -604,16 +793,17 @@ if len(pca_indices) >= 2:
             mess3_point_colors,
             tom_point_colors,
             pc_indices=list(pc_inds),
-            marker_size=2,
+            marker_size=3,
             opacity=0.6,
             height=700,
             width=700,
             show=False,
             title_text=f"2D PCA PCs {pc_inds[0]+1},{pc_inds[1]+1}",
-            output_dir="outputs/reports/multipartite_001",
+            output_dir=args.fig_out_dir,
             save=["html"],
             mess3_label_to_color=mess3_label_to_color,
-            tom_label_to_color=tom_label_to_color
+            tom_label_to_color=tom_label_to_color,
+            n_points_to_plot=3000
         )
     print(f"{len(pca_indices)} choose 2 =", comb(len(pca_indices), 2))
 #%%

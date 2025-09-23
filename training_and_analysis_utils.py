@@ -6,7 +6,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Sequence, Mapping, Any, Callable
 import itertools
 from itertools import combinations
 import warnings
@@ -24,10 +24,12 @@ from scipy.spatial import ConvexHull
 from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score
 
 from simplexity.generative_processes.torch_generator import generate_data_batch
 from BatchTopK.sae import VanillaSAE, TopKSAE
-from multipartite_utils import MultipartiteSampler
+from multipartite_utils import MultipartiteSampler, build_components_from_config
 
 
 
@@ -945,7 +947,8 @@ def plot_pca_subplots(
     show=True,
     title_text=None,
     output_dir="outputs/reports",
-    save=None
+    save=None,
+    n_points_to_plot=2000
 ):
     """
     Plots interactive PCA subplots for Mess3 and Tom Quantum labels.
@@ -959,9 +962,22 @@ def plot_pca_subplots(
         tom_label_to_color: dict mapping tom labels -> color
         marker_size: int, size of data point markers
         legend_marker_size: int, size of legend marker circles
+        n_points_to_plot: int, number of points to randomly sample for plotting
     """
+    import numpy as np
+
     assert len(pc_indices) in (2, 3), "pc_indices must be length 2 or 3"
     is_3d = len(pc_indices) == 3
+
+    n_total_points = pca_coords.shape[0]
+    n_points = min(n_points_to_plot, n_total_points)
+    rng = np.random.default_rng()
+    sample_indices = rng.choice(n_total_points, size=n_points, replace=False)
+
+    # Subset all relevant arrays/lists to the sampled indices
+    pca_coords_sampled = pca_coords[sample_indices, :]
+    mess3_point_colors_sampled = [np.array(color_list)[sample_indices] for color_list in mess3_point_colors]
+    tom_point_colors_sampled = [np.array(color_list)[sample_indices] for color_list in tom_point_colors]
 
     pc_label_str = "-".join([f"{i+1}" for i in pc_indices])
     subplot_titles = (
@@ -987,19 +1003,19 @@ def plot_pca_subplots(
     for i in range(3):
         if is_3d:
             trace = go.Scatter3d(
-                x=pca_coords[:, pc_indices[0]],
-                y=pca_coords[:, pc_indices[1]],
-                z=pca_coords[:, pc_indices[2]],
+                x=pca_coords_sampled[:, pc_indices[0]],
+                y=pca_coords_sampled[:, pc_indices[1]],
+                z=pca_coords_sampled[:, pc_indices[2]],
                 mode='markers',
-                marker=marker_dict(mess3_point_colors[i]),
+                marker=marker_dict(mess3_point_colors_sampled[i]),
                 showlegend=False
             )
         else:
             trace = go.Scatter(
-                x=pca_coords[:, pc_indices[0]],
-                y=pca_coords[:, pc_indices[1]],
+                x=pca_coords_sampled[:, pc_indices[0]],
+                y=pca_coords_sampled[:, pc_indices[1]],
                 mode='markers',
-                marker=marker_dict(mess3_point_colors[i]),
+                marker=marker_dict(mess3_point_colors_sampled[i]),
                 showlegend=False
             )
         row, col = (1, i+1) if i < 2 else (2, 1)
@@ -1009,19 +1025,19 @@ def plot_pca_subplots(
     for i in range(2):
         if is_3d:
             trace = go.Scatter3d(
-                x=pca_coords[:, pc_indices[0]],
-                y=pca_coords[:, pc_indices[1]],
-                z=pca_coords[:, pc_indices[2]],
+                x=pca_coords_sampled[:, pc_indices[0]],
+                y=pca_coords_sampled[:, pc_indices[1]],
+                z=pca_coords_sampled[:, pc_indices[2]],
                 mode='markers',
-                marker=marker_dict(tom_point_colors[i]),
+                marker=marker_dict(tom_point_colors_sampled[i]),
                 showlegend=False
             )
         else:
             trace = go.Scatter(
-                x=pca_coords[:, pc_indices[0]],
-                y=pca_coords[:, pc_indices[1]],
+                x=pca_coords_sampled[:, pc_indices[0]],
+                y=pca_coords_sampled[:, pc_indices[1]],
                 mode='markers',
-                marker=marker_dict(tom_point_colors[i]),
+                marker=marker_dict(tom_point_colors_sampled[i]),
                 showlegend=False
             )
         row, col = (2, 2) if i == 0 else (3, 1)
@@ -1791,3 +1807,484 @@ def spectral_clustering_with_eigengap(sim_matrix, max_clusters=10, random_state=
     labels = kmeans.fit_predict(embedding)
 
     return labels, best_k
+
+
+def _hex_to_rgb(hex_color: str) -> np.ndarray:
+    hex_color = hex_color.lstrip("#")
+    if len(hex_color) != 6:
+        raise ValueError(f"Expected 6-digit hex color, got '{hex_color}'")
+    r = int(hex_color[0:2], 16) / 255.0
+    g = int(hex_color[2:4], 16) / 255.0
+    b = int(hex_color[4:6], 16) / 255.0
+    return np.array([r, g, b], dtype=np.float64)
+
+
+def project_simplex3_to_2d(probs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Map 3-simplex points to 2D barycentric coordinates."""
+
+    arr = _to_numpy_array(probs)
+    if arr.ndim != 2 or arr.shape[1] != 3:
+        raise ValueError(f"Expected (N, 3) array; got shape {arr.shape}.")
+    v1 = np.array([0.0, 0.0])
+    v2 = np.array([1.0, 0.0])
+    v3 = np.array([0.5, float(np.sqrt(3.0) / 2.0)])
+    x = arr[:, 0] * v1[0] + arr[:, 1] * v2[0] + arr[:, 2] * v3[0]
+    y = arr[:, 0] * v1[1] + arr[:, 1] * v2[1] + arr[:, 2] * v3[1]
+    return x, y
+
+
+def _to_numpy_array(array: Any) -> np.ndarray:
+    """Best-effort conversion of tensors/arrays to a float numpy array."""
+
+    if isinstance(array, torch.Tensor):
+        return array.detach().cpu().numpy()
+    if isinstance(array, jax.Array):
+        return np.asarray(array)
+    return np.asarray(array)
+
+
+def project_vectors_onto_simplex(vectors: Any, axis: int = -1, eps: float = 1e-12) -> np.ndarray:
+    """Project each vector onto the probability simplex along ``axis``.
+
+    Uses the algorithm from [Wang & Carreira-Perpiñán, 2013]. Handles arbitrary
+    leading dimensions by working on a reshaped view.
+    """
+
+    arr = _to_numpy_array(vectors).astype(np.float64, copy=True)
+    if arr.ndim == 1:
+        arr = arr[np.newaxis, :]
+        reshape_back = True
+    else:
+        reshape_back = False
+        if axis != -1:
+            arr = np.moveaxis(arr, axis, -1)
+
+    flat = arr.reshape(-1, arr.shape[-1])
+    sorted_vec = np.sort(flat, axis=1)[:, ::-1]
+    cssv = np.cumsum(sorted_vec, axis=1)
+    rhos = np.sum(sorted_vec * np.arange(1, flat.shape[1] + 1) > (cssv - 1), axis=1) - 1
+    theta = (cssv[np.arange(flat.shape[0]), rhos] - 1) / (rhos + 1)
+    projected = np.maximum(flat - theta[:, None], 0.0)
+    projected = np.maximum(projected, 0.0)
+    projected /= np.maximum(projected.sum(axis=1, keepdims=True), eps)
+    projected = projected.reshape(arr.shape)
+
+    if axis != -1 and not reshape_back:
+        projected = np.moveaxis(projected, -1, axis)
+
+    if reshape_back:
+        projected = projected[0]
+    return projected
+
+
+def enforce_tom_quantum_physicality(params: Any, eps: float = 1e-9) -> np.ndarray:
+    """Clamp Tom Quantum belief parameters to represent a valid density matrix."""
+
+    arr = _to_numpy_array(params).astype(np.float64, copy=True)
+    if arr.shape[-1] != 3:
+        raise ValueError("Tom Quantum beliefs are expected to have last dimension size 3")
+
+    a = np.clip(arr[..., 0], eps, 1.0 - eps)
+    coherence = arr[..., 1:3]
+    max_coh = np.sqrt(np.maximum(a * (1.0 - a), eps))
+    coh_norm = np.linalg.norm(coherence, axis=-1)
+    scale = np.ones_like(coh_norm)
+    mask = coh_norm > max_coh
+    scale[mask] = max_coh[mask] / coh_norm[mask]
+    coherence = coherence * scale[..., None]
+
+    arr[..., 0] = a
+    arr[..., 1:3] = coherence
+    return arr
+
+
+def tom_quantum_params_to_bloch(coords: Any) -> np.ndarray:
+    """Convert Tom Quantum belief parameters to Bloch sphere coordinates."""
+
+    arr = _to_numpy_array(coords).astype(np.float64)
+    if arr.shape[-1] != 3:
+        raise ValueError("Expected Tom Quantum params with last dimension 3")
+    x = 2.0 * arr[..., 1]
+    y = -2.0 * arr[..., 2]
+    z = 2.0 * arr[..., 0] - 1.0
+    return np.stack([x, y, z], axis=-1)
+
+
+def evaluate_belief_state_linear_models(
+    activations: Any,
+    component_belief_arrays: Sequence[Any],
+    component_metadata: Sequence[Mapping[str, Any]],
+    seq_positions: Sequence[int],
+    *,
+    skip_dims_by_type: Mapping[str, Sequence[int]] | None = None,
+    min_variance: float = 1e-8,
+    postprocess_by_type: Mapping[str, Callable[[np.ndarray], np.ndarray]] | None = None,
+    store_predictions: bool = False,
+) -> Dict[str, Dict[str, Any]]:
+    """Fit linear models that predict belief states from activations.
+
+    Args:
+        activations: Array-like of shape ``(batch, seq, hidden_dim)`` representing
+            activations (typically the final residual stream) for an evaluation batch.
+        component_belief_arrays: List of arrays, one per component, each of shape
+            ``(batch, seq, belief_dim)`` holding the true belief states.
+        component_metadata: Metadata describing each component. Each entry must at
+            minimum provide ``{"name": str, "type": str}``.
+        seq_positions: Iterable of sequence indices (0-based) at which to compute
+            regressions.
+        skip_dims_by_type: Optional mapping ``component_type -> iterable of belief
+            dimension indices`` to exclude before fitting. Useful for known-constant
+            coordinates.
+        min_variance: If the variance of a belief coordinate at a given position
+            falls below this threshold it will be skipped to avoid numerical issues.
+        postprocess_by_type: Optional mapping from component type to a callable
+            that is applied to the full belief prediction (e.g. simplex projection).
+        store_predictions: If True, include the post-processed predictions and
+            the corresponding targets for each component/position in the returned
+            metrics dictionary (useful for downstream visualizations).
+
+    Returns:
+        Dictionary keyed by component name. Each entry contains the component type,
+        original belief dimensionality, and a nested dictionary of per-position
+        regression metrics (average R^2, per-dimension R^2 and correlation, RMSE,
+        MAE, and bookkeeping on skipped dimensions).
+    """
+
+    skip_dims_by_type = skip_dims_by_type or {}
+    postprocess_by_type = postprocess_by_type or {}
+
+    acts_np = _to_numpy_array(activations)
+    if acts_np.ndim != 3:
+        raise ValueError(
+            f"Expected activations with shape (batch, seq, hidden_dim); got {acts_np.shape}."
+        )
+
+    batch_size, seq_len, hidden_dim = acts_np.shape
+    positions = list(seq_positions)
+    for pos in positions:
+        if pos < 0 or pos >= seq_len:
+            raise IndexError(
+                f"Sequence position {pos} is out of bounds for activations with length {seq_len}."
+            )
+
+    if len(component_belief_arrays) != len(component_metadata):
+        raise ValueError(
+            "component_belief_arrays and component_metadata must have the same length."
+        )
+
+    results: Dict[str, Dict[str, Any]] = {}
+
+    for beliefs_arr, meta in zip(component_belief_arrays, component_metadata, strict=True):
+        beliefs_np = _to_numpy_array(beliefs_arr)
+        if beliefs_np.ndim != 3:
+            raise ValueError(
+                f"Belief array for component {meta.get('name', '<unknown>')} must have shape"
+                f" (batch, seq, belief_dim); got {beliefs_np.shape}."
+            )
+        if beliefs_np.shape[0] != batch_size:
+            raise ValueError(
+                f"Batch size mismatch between activations ({batch_size}) and beliefs"
+                f" ({beliefs_np.shape[0]}) for component {meta.get('name', '<unknown>')}."
+            )
+        if beliefs_np.shape[1] <= max(positions):
+            raise ValueError(
+                f"Belief sequence length {beliefs_np.shape[1]} is insufficient for requested"
+                f" positions {positions}."
+            )
+
+        comp_name = str(meta.get("name", "<unknown>"))
+        comp_type = str(meta.get("type", "unknown"))
+        belief_dim = int(beliefs_np.shape[-1])
+
+        explicit_skip = set(skip_dims_by_type.get(comp_type, ()))
+        valid_candidates = [idx for idx in range(belief_dim) if idx not in explicit_skip]
+
+        per_position: Dict[int, Dict[str, Any]] = {}
+
+        for pos in positions:
+            X = acts_np[:, pos, :]
+            belief_slice = beliefs_np[:, pos, :]
+
+            usable_dims: list[int] = []
+            auto_skip: list[int] = []
+            for dim_idx in valid_candidates:
+                if float(np.var(belief_slice[:, dim_idx])) > float(min_variance):
+                    usable_dims.append(dim_idx)
+                else:
+                    auto_skip.append(dim_idx)
+
+            if not usable_dims:
+                per_position[pos] = {
+                    "target_dims": [],
+                    "explicitly_dropped_dims": sorted(explicit_skip),
+                    "dropped_low_variance_dims": sorted(auto_skip),
+                    "note": "No belief dimensions with variance above threshold",
+                }
+                continue
+
+            y = belief_slice[:, usable_dims]
+            model = LinearRegression()
+            model.fit(X, y)
+
+            prediction_full = belief_slice.copy()
+            prediction_full[:, usable_dims] = model.predict(X)
+            post_fn = postprocess_by_type.get(comp_type)
+            if post_fn is not None:
+                prediction_full = post_fn(prediction_full)
+
+            y_pred = prediction_full[:, usable_dims]
+            residual = y - y_pred
+
+            rmse = float(np.sqrt(np.mean(residual ** 2)))
+            mae = float(np.mean(np.abs(residual)))
+
+            r2_per_dim: Dict[int, float] = {}
+            corr_per_dim: Dict[int, float] = {}
+            for local_idx, original_dim in enumerate(usable_dims):
+                true_vals = y[:, local_idx]
+                pred_vals = y_pred[:, local_idx]
+                try:
+                    r2_val = float(r2_score(true_vals, pred_vals))
+                except ValueError:
+                    r2_val = float("nan")
+                with np.errstate(invalid="ignore"):
+                    corr_matrix = np.corrcoef(true_vals, pred_vals)
+                    corr_val = corr_matrix[0, 1] if corr_matrix.ndim == 2 else float("nan")
+                r2_per_dim[original_dim] = r2_val
+                corr_per_dim[original_dim] = float(corr_val)
+
+            r2_values = [val for val in r2_per_dim.values() if np.isfinite(val)]
+            r2_mean = float(np.mean(r2_values)) if r2_values else float("nan")
+
+            entry: Dict[str, Any] = {
+                "target_dims": usable_dims,
+                "explicitly_dropped_dims": sorted(explicit_skip),
+                "dropped_low_variance_dims": sorted(auto_skip),
+                "r2_mean": r2_mean,
+                "r2_per_dim": r2_per_dim,
+                "pearson_per_dim": corr_per_dim,
+                "rmse": rmse,
+                "mae": mae,
+                "coef_norm": float(np.linalg.norm(model.coef_)),
+            }
+
+            if store_predictions:
+                entry["predictions"] = prediction_full.astype(np.float32, copy=False)
+                entry["targets"] = belief_slice.astype(np.float32, copy=False)
+
+            per_position[pos] = entry
+
+        results[comp_name] = {
+            "type": comp_type,
+            "belief_dim": belief_dim,
+            "activation_dim": hidden_dim,
+            "positions_evaluated": positions,
+            "metrics": per_position,
+        }
+
+    return results
+
+
+def _sample_single_component_beliefs(
+    component_config: Mapping[str, Any],
+    *,
+    batch_size: int = 4096,
+    seq_len: int = 16,
+    seed: int = 0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Sample beliefs and observations for a single-component process configuration."""
+
+    components = build_components_from_config([component_config])
+    sampler = MultipartiteSampler(components)
+    key = jax.random.PRNGKey(seed)
+    key, beliefs, _, component_obs = sampler.sample(key, batch_size, seq_len)
+    beliefs_np = np.asarray(beliefs)
+    obs_np = np.asarray(component_obs[0]) if component_obs else np.empty((batch_size, seq_len - 1))
+    return beliefs_np, obs_np
+
+
+def plot_mess3_belief_grid(
+    x_values: Sequence[float],
+    a_values: Sequence[float],
+    *,
+    seq_position: int,
+    batch_size: int = 4096,
+    seq_len: int = 16,
+    seed: int = 0,
+    sample_size: int = 2000,
+) -> plt.Figure:
+    """Plot Mess3 belief simplices for a grid of ``(x, a)`` parameter choices."""
+
+    x_list = list(x_values)
+    a_list = list(a_values)
+    if not x_list or not a_list:
+        raise ValueError("x_values and a_values must be non-empty sequences")
+
+    fig, axes = plt.subplots(len(x_list), len(a_list), figsize=(3.2 * len(a_list), 3.2 * len(x_list)))
+    if len(x_list) == 1 and len(a_list) == 1:
+        axes = np.array([[axes]])
+    elif len(x_list) == 1 or len(a_list) == 1:
+        axes = np.atleast_2d(axes)
+
+    tri_vertices = np.array([[0.0, 0.0], [1.0, 0.0], [0.5, float(np.sqrt(3.0) / 2.0)]])
+    tri_x = np.r_[tri_vertices[:, 0], tri_vertices[0, 0]]
+    tri_y = np.r_[tri_vertices[:, 1], tri_vertices[0, 1]]
+    base_palette = ["#d62728", "#ffd92f", "#9467bd"]
+    base_rgb = np.stack([_hex_to_rgb(color) for color in base_palette], axis=0)
+
+    for i, x in enumerate(x_list):
+        for j, a in enumerate(a_list):
+            beliefs_np, obs_np = _sample_single_component_beliefs(
+                {"type": "mess3", "instances": [{"x": float(x), "a": float(a)}]},
+                batch_size=batch_size,
+                seq_len=seq_len,
+                seed=seed + i * len(a_list) + j,
+            )
+            if beliefs_np.ndim != 3 or beliefs_np.shape[-1] != 3:
+                raise ValueError(f"Unexpected Mess3 belief shape {beliefs_np.shape}")
+            seq_idx = min(seq_position, beliefs_np.shape[1] - 1)
+            simplex_pts = beliefs_np[:, seq_idx, :]
+            # Continuous color blending using barycentric coordinates
+            color_vectors = simplex_pts @ base_rgb
+            color_vectors = np.clip(color_vectors, 0.0, 1.0)
+
+            rng = np.random.default_rng(seed + 17 * (i * len(a_list) + j))
+            n_points = simplex_pts.shape[0]
+            sample_idx = rng.choice(n_points, size=min(sample_size, n_points), replace=False)
+
+            xs, ys = project_simplex3_to_2d(simplex_pts[sample_idx, :])
+            ax = axes[i, j]
+            ax.plot(tri_x, tri_y, color="black", linewidth=0.8)
+            ax.scatter(xs, ys, c=color_vectors[sample_idx], s=10, alpha=0.9, edgecolors="none")
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.set_aspect("equal", adjustable="box")
+            ax.set_title(f"x={x:.2f}, a={a:.2f}")
+
+    fig.suptitle(f"Mess3 belief geometry @ position {seq_position}", fontsize=14)
+    fig.tight_layout(rect=(0, 0.02, 1, 0.97))
+    return fig
+
+
+def plot_tom_quantum_coherence(
+    alpha: float,
+    beta: float,
+    *,
+    seq_position: int,
+    batch_size: int = 4096,
+    seq_len: int = 16,
+    seed: int = 0,
+    sample_size: int = 4000,
+) -> plt.Figure:
+    """Plot Tom Quantum coherence plane (real vs imaginary) for given parameters."""
+
+    beliefs_np, obs_np = _sample_single_component_beliefs(
+        {"type": "tom_quantum", "instances": [{"alpha": float(alpha), "beta": float(beta)}]},
+        batch_size=batch_size,
+        seq_len=seq_len,
+        seed=seed,
+    )
+    if beliefs_np.ndim != 3 or beliefs_np.shape[-1] != 3:
+        raise ValueError(f"Unexpected Tom Quantum belief shape {beliefs_np.shape}")
+
+    seq_idx = min(seq_position, beliefs_np.shape[1] - 1)
+    coherence = beliefs_np[:, seq_idx, 1:3]
+    obs = obs_np[:, seq_idx] if obs_np.size else np.zeros(coherence.shape[0], dtype=int)
+
+    rng = np.random.default_rng(seed)
+    n_points = coherence.shape[0]
+    sample_idx = rng.choice(n_points, size=min(sample_size, n_points), replace=False)
+
+    # Continuous color based on azimuthal angle
+    angles = np.arctan2(coherence[:, 1], coherence[:, 0])
+    angle_norm = (angles + np.pi) / (2 * np.pi)
+    cmap = plt.get_cmap("twilight")
+    fig, ax = plt.subplots(figsize=(6.0, 6.0))
+    ax.scatter(
+        coherence[sample_idx, 0],
+        coherence[sample_idx, 1],
+        c=cmap(angle_norm[sample_idx]),
+        s=16,
+        alpha=0.85,
+        edgecolors="none",
+    )
+    ax.set_xlabel("Re coherence")
+    ax.set_ylabel("Im coherence")
+    lim = np.max(np.abs(coherence[sample_idx])) * 1.05
+    lim = max(lim, 0.05)
+    ax.set_xlim(-lim, lim)
+    ax.set_ylim(-lim, lim)
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(True, linewidth=0.4, alpha=0.4)
+    ax.set_title(f"TomQ coherence (alpha={alpha:.2f}, beta={beta:.2f}, pos {seq_position})")
+    fig.tight_layout()
+    return fig
+
+
+def plot_tom_quantum_coherence_grid(
+    alpha_values: Sequence[float],
+    beta_values: Sequence[float],
+    *,
+    seq_position: int,
+    batch_size: int = 4096,
+    seq_len: int = 16,
+    seed: int = 0,
+    sample_size: int = 3000,
+) -> plt.Figure:
+    """Plot a grid of Tom Quantum coherence scatter plots across parameter choices."""
+
+    alphas = list(alpha_values)
+    betas = list(beta_values)
+    if not alphas or not betas:
+        raise ValueError("alpha_values and beta_values must both be non-empty sequences")
+
+    fig, axes = plt.subplots(
+        len(alphas),
+        len(betas),
+        figsize=(3.2 * len(betas), 3.2 * len(alphas)),
+        squeeze=False,
+    )
+
+    for i, alpha in enumerate(alphas):
+        for j, beta in enumerate(betas):
+            beliefs_np, obs_np = _sample_single_component_beliefs(
+                {"type": "tom_quantum", "instances": [{"alpha": float(alpha), "beta": float(beta)}]},
+                batch_size=batch_size,
+                seq_len=seq_len,
+                seed=seed + i * len(betas) + j,
+            )
+
+            if beliefs_np.ndim != 3 or beliefs_np.shape[-1] != 3:
+                raise ValueError(f"Unexpected Tom Quantum belief shape {beliefs_np.shape}")
+
+            seq_idx = min(seq_position, beliefs_np.shape[1] - 1)
+            coherence = beliefs_np[:, seq_idx, 1:3]
+
+            rng = np.random.default_rng(seed + 23 * (i * len(betas) + j))
+            n_points = coherence.shape[0]
+            sample_idx = rng.choice(n_points, size=min(sample_size, n_points), replace=False)
+            sub = coherence[sample_idx]
+
+            angles = np.arctan2(sub[:, 1], sub[:, 0])
+            cmap = plt.get_cmap("twilight")
+            colors = cmap((angles + np.pi) / (2 * np.pi))
+
+            ax = axes[i, j]
+            ax.scatter(sub[:, 0], sub[:, 1], c=colors, s=12, alpha=0.85, edgecolors="none")
+            ax.set_xlim(-0.35, 0.35)
+            ax.set_ylim(-0.35, 0.35)
+            ax.set_aspect("equal", adjustable="box")
+            ax.grid(True, linewidth=0.25, alpha=0.35)
+            if i == len(alphas) - 1:
+                ax.set_xlabel("Re coherence")
+            else:
+                ax.set_xticklabels([])
+            if j == 0:
+                ax.set_ylabel("Im coherence")
+            else:
+                ax.set_yticklabels([])
+            ax.set_title(f"α={alpha:.2f}, β={beta:.2f}", fontsize=9)
+
+    fig.suptitle(f"TomQ coherence grid @ position {seq_position}", fontsize=14)
+    fig.tight_layout(rect=(0, 0.03, 1, 0.97))
+    return fig
