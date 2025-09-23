@@ -15,7 +15,6 @@ Original file is located at
 # %pip -q install "einops>=0.7.0" "jaxtyping>=0.2.28" "beartype>=0.14" better_abc
 # %pip -q install --no-deps "transformer-lens>=2.16.1"
 # %pip -q install "git+https://github.com/Astera-org/simplexity.git@MATS_2025_app"
-print("✅ Ready!")
 
 # Cell 2: Setup - Product of tom_quantum and mess3
 import os
@@ -43,6 +42,7 @@ from math import comb
 from itertools import combinations
 from training_and_analysis_utils import generate_mp_emissions
 
+print("** Ready! **")
 
 #%%
 # ============= Argument parsing ============= #
@@ -237,8 +237,8 @@ num_steps = args.num_steps
 progress_bar = tqdm(range(num_steps), desc="Training", miniters=100)
 
 checkpoints_to_save = [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 12500, 15000, 17500, 20000, 23000, 24000, 25000,
-                       30000, 35000, 40000, 45000, 50000, 55000, 60000, 65000, 70000, 75000, 80000, 85000, 90000, 95000, 100000]
-
+                       30000, 35000, 40000, 45000, 50000, 55000, 60000, 65000, 70000, 75000, 80000, 85000, 90000, 95000, 100000,
+                       125000, 150000, 175000, 200000, 230000, 240000, 250000, 300000, 350000, 400000, 450000, 500000, 550000, 600000]
 for step in progress_bar:
     key, tom_inputs_list, mess3_inputs_list, tokens = \
         generate_mp_emissions(key,n_tom_quantum, n_mess3, tom_stationaries, mess3_stationaries,
