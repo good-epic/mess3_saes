@@ -237,9 +237,11 @@ def train_saes_for_sites(
             },
             "beliefs": {name: {"loss": [], "l2_loss": [], "l1_loss": [], "l0_norm": [], "l1_norm": [], "active_latents": [], "active_counts": [], "active_sums": []} for name in true_coord_saes_all[site_name].keys()},
         }
-
+    
+    miniters = 500 if steps > 500 else steps
+    progress_bar = tqdm(range(steps), desc="SAEs (all sites)", miniters=miniters, disable=not sys.stderr.isatty())
     # Training loop
-    for ii in tqdm(range(steps), desc="SAEs (all sites)"):
+    for ii in progress_bar:
         rng_key, states, observations = _generate_sequences(
             rng_key,
             batch_size=batch_size,
@@ -352,6 +354,9 @@ def train_saes_for_sites(
                             mr["active_latents"].append(mask)
                             mr["active_counts"].append(counts)
                             mr["active_sums"].append(sums)
+        if (ii + 1) % miniters == 0:
+            progress_bar.set_description(f"SAEs (all sites) (Loss: {loss.item():.4f})", refresh=False)
+
 
     # Evaluate reconstruction errors on finalized SAEs
     reconstruction_error_accumulators: Dict[str, Dict] = {

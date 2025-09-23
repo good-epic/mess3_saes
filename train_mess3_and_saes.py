@@ -180,7 +180,7 @@ if args.load_model is None:
     # Get stationary distribution for initial states
     stationary = data_source.initial_state
     # Create the tqdm progress bar object
-    progress_bar = tqdm(range(25000), desc="Training")
+    progress_bar = tqdm(range(25000), desc="Training", miniters=1_000, disable=not sys.stderr.isatty())
     for step in progress_bar:
         key, subkey = jax.random.split(key)
         gen_states = jnp.repeat(stationary[None, :], batch_size, axis=0)
@@ -194,7 +194,7 @@ if args.load_model is None:
         loss.backward()
         optimizer.step()
         losses.append(loss.item())
-        progress_bar.set_description(f"Training (Loss: {loss.item():.4f})")
+        progress_bar.set_description(f"Training (Loss: {loss.item():.4f})", refresh=False)
     print(f"\nFinal loss: {losses[-1]:.4f} (started at {losses[0]:.4f})")
 
     # Quick visualization

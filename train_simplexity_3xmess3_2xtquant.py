@@ -17,7 +17,7 @@ Original file is located at
 # %pip -q install "git+https://github.com/Astera-org/simplexity.git@MATS_2025_app"
 
 # Cell 2: Setup - Product of tom_quantum and mess3
-import os
+import os, sys
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 import argparse
 import torch
@@ -234,7 +234,8 @@ all_layer_activations = {} # Dictionary to store activations for each layer
 
 # Create the tqdm progress bar object
 num_steps = args.num_steps
-progress_bar = tqdm(range(num_steps), desc="Training", miniters=100)
+miniters = 30_000 if num_steps > 30_000 else num_steps
+progress_bar = tqdm(range(num_steps), desc="Training", miniters=miniters, disable=not sys.stderr.isatty())
 
 checkpoints_to_save = [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 12500, 15000, 17500, 20000, 23000, 24000, 25000,
                        30000, 35000, 40000, 45000, 50000, 55000, 60000, 65000, 70000, 75000, 80000, 85000, 90000, 95000, 100000,
@@ -301,8 +302,9 @@ for step in progress_bar:
         torch.save(checkpoint, checkpoint_filename)
         print(f"Checkpoint saved at step {step + 1} to {checkpoint_filename}")
 
+    if (step + 1) % miniters == 0:
+        progress_bar.set_description(f"Training (Loss: {loss.item():.4f})", refresh=False)
 
-    progress_bar.set_description(f"Training (Loss: {loss.item():.4f})")
 
 # Save the final checkpoint after training is complete
 final_checkpoint = {
