@@ -21,7 +21,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import jax
-jax.config.update("jax_platform_name", "cpu")
+#jax.config.update("jax_platform_name", "cpu")
 import jax.numpy as jnp
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 from simplexity.generative_processes.torch_generator import generate_data_batch
