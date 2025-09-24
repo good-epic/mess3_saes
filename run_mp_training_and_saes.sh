@@ -8,8 +8,8 @@ python -u train_simplexity_3xmess3_2xtquant.py \
     --d_head 32 \
     --n_mess3 3 \
     --n_tom_quantum 2 \
-    --checkpoint_path /workspace/outputs/checkpoints/multipartite_001 \
-    --fig_out_dir /workspace/outputs/reports/multipartite_001 \
+    --checkpoint_path /workspace/outputs/checkpoints/multipartite_002 \
+    --fig_out_dir /workspace/outputs/reports/multipartite_002 \
     --num_steps 600000 \
     --act_fn relu \
     --device auto \
@@ -39,7 +39,7 @@ python -u train_mess3_and_saes.py \
     --sae_batch_size 2048 \
     --sae_seq_len None \
     --seq_len None \
-    --sae_output_dir /workspace/outputs/saes/multipartite_001 \
+    --sae_output_dir /workspace/outputs/saes/multipartite_002 \
     --load_model /workspace/outputs/checkpoints/multipartite_001/checkpoint_step_600000_final.pt \
     --process_config None \
     --process_preset 3xmess3_2xtquant
