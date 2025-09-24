@@ -18,6 +18,7 @@ Original file is located at
 
 # Cell 2: Setup - Product of tom_quantum and mess3
 import os, sys
+os.environ["JAX_PLATFORMS"] = "cpu"
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 import argparse
 import torch
@@ -182,6 +183,20 @@ print(f"tom_quantum processes: {n_tom_quantum} instances with vocab_size={tom_qu
 
 print(f"Product space: vocab_size={product_vocab_size}")
 
+
+# ---- 1) Enable fast paths (do this once, BEFORE model init) ----
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
+torch.set_float32_matmul_precision("high")
+
+torch.backends.cuda.enable_flash_sdp(True)
+torch.backends.cuda.enable_mem_efficient_sdp(True)
+torch.backends.cuda.enable_math_sdp(False)
+
+
+scaler_enabled = True  # bfloat16 autocast; set False to disable
+
+
 # Create TransformerLens model for product space
 if args.device == "auto":
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -218,8 +233,8 @@ print(f"Model: {sum(p.numel() for p in model.parameters()):,} params on {device}
 #%%
 # ==== Train Model ===== #
 ##########################
-
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, fused=True)
+#optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 losses = []
 batch_size, seq_len = args.batch_size, cfg.n_ctx
 key = jax.random.PRNGKey(42)
@@ -247,7 +262,9 @@ for step in progress_bar:
                               tom_quantum_vocab_size, mess3_vocab_size, product_vocab_size, device)
 
     # Train step
-    loss = model(tokens, return_type="loss")
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=scaler_enabled):
+        loss = model(tokens, return_type="loss")
+    #loss = model(tokens, return_type="loss")
     optimizer.zero_grad()
     loss.backward()
     optimizer.step()
@@ -255,9 +272,9 @@ for step in progress_bar:
 
     # Save cumulative variance and activations every 100 steps
     if (step + 1) % 5000 == 0:
-        # Run with cache to get activations for PCA
-        with torch.no_grad(): # No need to track gradients for this
-            logits, cache = model.run_with_cache(tokens)
+        with torch.no_grad():
+            toks_small = tokens[:128]  # or random index subset
+            _, cache = model.run_with_cache(toks_small, return_type=None)
 
         # Store activations for each layer
         current_step_activations = {}
@@ -295,7 +312,7 @@ for step in progress_bar:
         checkpoint = {
             'step': step + 1,
             'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
+            #'optimizer_state_dict': optimizer.state_dict(),
             'losses': losses,
         }
         checkpoint_filename = os.path.join(checkpoint_path, f'checkpoint_step_{step + 1}.pt')
@@ -310,7 +327,7 @@ for step in progress_bar:
 final_checkpoint = {
     'step': num_steps,
     'model_state_dict': model.state_dict(),
-    'optimizer_state_dict': optimizer.state_dict(),
+    #'optimizer_state_dict': optimizer.state_dict(),
     'losses': losses,
 }
 final_checkpoint_filename = os.path.join(checkpoint_path, f'checkpoint_step_{num_steps}_final.pt')

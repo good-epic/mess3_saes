@@ -1,51 +1,41 @@
 /usr/local/lib/python3.12/dist-packages/jaxtyping/__init__.py:231: UserWarning: jaxtyping version >=0.2.23 should be used with Equinox version >=0.11.1
   warnings.warn(
 ** Ready! **
-cuda_plugin_extension is not found.
-2025-09-24 05:58:44.516178: W external/xla/xla/service/gpu/nvptx_compiler.cc:765] The NVIDIA driver's CUDA version is 12.8 which is older than the ptxas CUDA version (12.9.86). Because the driver is older than the ptxas version, XLA is disabling parallel compilation, which may slow down compilation. You should update your NVIDIA driver or use the NVIDIA-provided CUDA forward compatibility packages.
 Traceback (most recent call last):
-  File "/root/mess3_saes/train_simplexity_3xmess3_2xtquant.py", line 118, in <module>
-    mess3_processes = [build_hidden_markov_model(f"mess3", x=0.12, a=0.55),
-  File "/usr/local/lib/python3.12/dist-packages/simplexity/generative_processes/builder.py", line 51, in build_hidden_markov_model
-    return HiddenMarkovModel(transition_matrices, initial_state)
-  File "/usr/local/lib/python3.12/dist-packages/equinox/_module/_module.py", line 414, in __call__
-    self = super().__call__(*args, **kwargs)  # pyright: ignore[reportAttributeAccessIssue]
-  File "/usr/local/lib/python3.12/dist-packages/equinox/_module/_better_abstract.py", line 233, in __call__
-    self = super().__call__(*args, **kwargs)
-  File "/usr/local/lib/python3.12/dist-packages/simplexity/generative_processes/hidden_markov_model.py", line 19, in __init__
-    eigenvalues, _ = jnp.linalg.eig(state_transition_matrix)
-  File "/usr/local/lib/python3.12/dist-packages/jax/_src/numpy/linalg.py", line 746, in eig
-    w, v = lax_linalg.eig(a, compute_left_eigenvectors=False)
-jax._src.source_info_util.JaxStackTraceBeforeTransformation: NotImplementedError: Nonsymmetric eigendecomposition is only implemented on the CPU backend. If your matrix is symmetric or Hermitian, you should use eigh instead.
+  File "/usr/local/lib/python3.12/dist-packages/jax/_src/xla_bridge.py", line 879, in backends
+    backend = _init_backend(platform)
+              ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/jax/_src/xla_bridge.py", line 970, in _init_backend
+    backend = registration.factory()
+              ^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/jax/_src/xla_bridge.py", line 435, in make_gpu_client
+    _check_cuda_versions()
+  File "/usr/local/lib/python3.12/dist-packages/jax/_src/xla_bridge.py", line 284, in _check_cuda_versions
+    assert cuda_versions is not None
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+AssertionError
 
-The preceding stack trace is the source of the JAX operation that, once transformed by JAX, triggered the following exception.
-
---------------------
-
-The above exception was the direct cause of the following exception:
+During handling of the above exception, another exception occurred:
 
 Traceback (most recent call last):
   File "/root/mess3_saes/train_simplexity_3xmess3_2xtquant.py", line 118, in <module>
     mess3_processes = [build_hidden_markov_model(f"mess3", x=0.12, a=0.55),
                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/dist-packages/simplexity/generative_processes/builder.py", line 51, in build_hidden_markov_model
-    return HiddenMarkovModel(transition_matrices, initial_state)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/dist-packages/equinox/_module/_module.py", line 414, in __call__
-    self = super().__call__(*args, **kwargs)  # pyright: ignore[reportAttributeAccessIssue]
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/dist-packages/equinox/_module/_better_abstract.py", line 233, in __call__
-    self = super().__call__(*args, **kwargs)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/dist-packages/simplexity/generative_processes/hidden_markov_model.py", line 19, in __init__
-    eigenvalues, _ = jnp.linalg.eig(state_transition_matrix)
-                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/dist-packages/jax/_src/numpy/linalg.py", line 746, in eig
-    w, v = lax_linalg.eig(a, compute_left_eigenvectors=False)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/dist-packages/jax/_src/lax/linalg.py", line 115, in eig
-    return eig_p.bind(x, compute_left_eigenvectors=compute_left_eigenvectors,
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/simplexity/generative_processes/builder.py", line 50, in build_hidden_markov_model
+    transition_matrices = build_transition_matrices(HMM_MATRIX_FUNCTIONS, process_name, **kwargs)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/simplexity/generative_processes/builder.py", line 28, in build_transition_matrices
+    transition_matrices = matrix_function(**kwargs)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/simplexity/generative_processes/transition_matrices.py", line 125, in mess3
+    return jnp.array(
+           ^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/jax/_src/numpy/lax_numpy.py", line 3214, in array
+    out_array: Array = lax_internal._convert_element_type(
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/jax/_src/lax/lax.py", line 559, in _convert_element_type
+    return convert_element_type_p.bind(operand, new_dtype=new_dtype,
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/usr/local/lib/python3.12/dist-packages/jax/_src/core.py", line 416, in bind
     return self.bind_with_trace(find_top_trace(args), args, params)
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -55,33 +45,27 @@ Traceback (most recent call last):
   File "/usr/local/lib/python3.12/dist-packages/jax/_src/core.py", line 921, in process_primitive
     return primitive.impl(*tracers, **params)
            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/dist-packages/jax/_src/lax/linalg.py", line 566, in eig_impl
-    return dispatch.apply_primitive(
-           ^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/usr/local/lib/python3.12/dist-packages/jax/_src/dispatch.py", line 87, in apply_primitive
     outs = fun(*args)
            ^^^^^^^^^^
-NotImplementedError: Nonsymmetric eigendecomposition is only implemented on the CPU backend. If your matrix is symmetric or Hermitian, you should use eigh instead.
+RuntimeError: Unable to initialize backend 'cuda':  (set JAX_PLATFORMS='' to automatically choose an available backend)
 --------------------
 For simplicity, JAX has removed its internal frames from the traceback of the following exception. Set JAX_TRACEBACK_FILTERING=off to include these.
 /usr/local/lib/python3.12/dist-packages/jaxtyping/__init__.py:231: UserWarning: jaxtyping version >=0.2.23 should be used with Equinox version >=0.11.1
   warnings.warn(
-usage: train_mess3_and_saes.py [-h] [--d_model D_MODEL] [--n_heads N_HEADS]
-                               [--n_layers N_LAYERS] [--n_ctx N_CTX]
-                               [--d_vocab D_VOCAB] [--act_fn ACT_FN]
-                               [--device DEVICE] [--d_head D_HEAD]
-                               [--dict_mul DICT_MUL] [--k K [K ...]]
-                               [--l1_coeff_seq L1_COEFF_SEQ [L1_COEFF_SEQ ...]]
-                               [--l1_coeff_beliefs L1_COEFF_BELIEFS [L1_COEFF_BELIEFS ...]]
-                               [--input_unit_norm] [--no_input_unit_norm]
-                               [--n_batches_to_dead N_BATCHES_TO_DEAD]
-                               [--top_k_aux TOP_K_AUX]
-                               [--aux_penalty AUX_PENALTY]
-                               [--bandwidth BANDWIDTH] [--sae_steps SAE_STEPS]
-                               [--sae_batch_size SAE_BATCH_SIZE]
-                               [--sae_seq_len SAE_SEQ_LEN] [--seq_len SEQ_LEN]
-                               [--sae_output_dir SAE_OUTPUT_DIR]
-                               [--load_model LOAD_MODEL]
-                               [--process_config PROCESS_CONFIG]
-                               [--process_preset PROCESS_PRESET]
-train_mess3_and_saes.py: error: argument --d_vocab: invalid int value: 'None'
+Multipartite process with components ['tom_quantum', 'tom_quantum_1', 'mess3', 'mess3_1', 'mess3_2'] → vocab_size=432, belief_dim=15
+Model: 708,144 params on cuda
+Traceback (most recent call last):
+  File "/root/mess3_saes/train_mess3_and_saes.py", line 220, in <module>
+    ckpt = torch.load(args.load_model, map_location=device, weights_only=False)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/serialization.py", line 1479, in load
+    with _open_file_like(f, "rb") as opened_file:
+         ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/serialization.py", line 759, in _open_file_like
+    return _open_file(name_or_buffer, mode)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/dist-packages/torch/serialization.py", line 740, in __init__
+    super().__init__(open(name, mode))
+                     ^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: '/workspace/outputs/checkpoints/multipartite_001/checkpoint_step_600000_final.pt'

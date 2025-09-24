@@ -1,5 +1,6 @@
 import os
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
+os.environ["JAX_PLATFORMS"] = "cpu"
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -843,6 +844,7 @@ def plot_decoder_projections(
 
 
 
+# inside training_and_analysis_utils.py
 def generate_mp_emissions(
     key,
     n_tom_quantum,
@@ -855,86 +857,148 @@ def generate_mp_emissions(
     mess3_processes,
     tom_quantum_vocab_size,
     mess3_vocab_size,
-    product_vocab_size,
+    product_vocab_size,  # unused, but keep for signature compatibility
     device,
 ):
-    """
-    Generate a new batch of factored inputs for tom_quantum and mess3 processes,
-    and combine them into product space tokens.
-
-    Args:
-        key: JAX PRNGKey
-        n_tom_quantum: int, number of tom_quantum processes
-        n_mess3: int, number of mess3 processes
-        tom_stationaries: list of stationary distributions for tom_quantum
-        mess3_stationaries: list of stationary distributions for mess3
-        batch_size: int, batch size
-        seq_len: int, sequence length
-        tom_quantum_processes: list of tom_quantum process objects
-        mess3_processes: list of mess3 process objects
-        tom_quantum_vocab_size: int, vocab size for tom_quantum
-        mess3_vocab_size: int, vocab size for mess3
-        product_vocab_size: int, total product vocab size
-        device: torch device
-
-    Returns:
-        key: new JAX PRNGKey after split
-        tom_inputs_list: list of np.ndarray, one per tom_quantum process
-        mess3_inputs_list: list of np.ndarray, one per mess3 process
-        tokens: torch.LongTensor, combined product tokens on device
-    """
     key, *subkeys = jax.random.split(key, 1 + n_tom_quantum + n_mess3)
+
+    def _to_long_on_dev(x):
+        if isinstance(x, torch.Tensor):
+            return x.to(device=device, dtype=torch.long)
+        # JAX array -> NumPy (CPU) -> torch on GPU (single host→device copy)
+        return torch.from_numpy(np.asarray(x)).to(device=device, dtype=torch.long)
 
     tom_inputs_list = []
     for i in range(n_tom_quantum):
         tom_states = jnp.repeat(tom_stationaries[i][None, :], batch_size, axis=0)
-        _, tom_inputs, _ = generate_data_batch(
+        _, tom_inp, _ = generate_data_batch(
             tom_states, tom_quantum_processes[i], batch_size, seq_len, subkeys[i]
         )
-        if isinstance(tom_inputs, torch.Tensor):
-            tom_inputs_list.append(tom_inputs.cpu().numpy())
-        else:
-            tom_inputs_list.append(np.array(tom_inputs))
+        tom_inputs_list.append(_to_long_on_dev(tom_inp))
 
     mess3_inputs_list = []
     for i in range(n_mess3):
         mess3_states = jnp.repeat(mess3_stationaries[i][None, :], batch_size, axis=0)
-        _, mess3_inputs, _ = generate_data_batch(
+        _, m3_inp, _ = generate_data_batch(
             mess3_states, mess3_processes[i], batch_size, seq_len, subkeys[n_tom_quantum + i]
         )
-        if isinstance(mess3_inputs, torch.Tensor):
-            mess3_inputs_list.append(mess3_inputs.cpu().numpy())
-        else:
-            mess3_inputs_list.append(np.array(mess3_inputs))
+        mess3_inputs_list.append(_to_long_on_dev(m3_inp))
 
-    # Combine into product space: token = sum(input_i * base_i)
-    # The base for each process will be the product of the vocab sizes of the processes that come after it in the combination.
-    # For example, if we have tom1, tom2, mess3_1, mess3_2 with vocab sizes T1, T2, M1, M2
-    # token = tom1 * (T2 * M1 * M2) + tom2 * (M1 * M2) + mess3_1 * M2 + mess3_2
-    # Assuming all tom_quantum have the same vocab size (tom_quantum_vocab_size) and all mess3 have the same (mess3_vocab_size)
-    # token = tom1 * (tom_quantum_vocab_size**(n_tom_quantum-1) * mess3_vocab_size**n_mess3) + ... + mess3_2
-
-    # Initialize product_tokens based on whether there are any inputs
+    # Compose product tokens directly on GPU
     if n_tom_quantum > 0:
-        product_tokens = np.zeros_like(tom_inputs_list[0])
+        product_tokens = torch.zeros_like(tom_inputs_list[0], dtype=torch.long, device=device)
     elif n_mess3 > 0:
-        product_tokens = np.zeros_like(mess3_inputs_list[0])
+        product_tokens = torch.zeros_like(mess3_inputs_list[0], dtype=torch.long, device=device)
     else:
-        raise ValueError("Both n_tom_quantum and n_mess3 are zero. Cannot generate data.")
+        raise ValueError("Both n_tom_quantum and n_mess3 are zero.")
 
-    # Add tom_quantum contributions
+    # Combine factors into product-space ids (torch ops on GPU)
     for i in range(n_tom_quantum):
         base_for_tom = (tom_quantum_vocab_size ** (n_tom_quantum - 1 - i)) * (mess3_vocab_size ** n_mess3)
         product_tokens += tom_inputs_list[i] * base_for_tom
 
-    # Add mess3 contributions
     for i in range(n_mess3):
         base_for_mess3 = (mess3_vocab_size ** (n_mess3 - 1 - i))
         product_tokens += mess3_inputs_list[i] * base_for_mess3
 
-    tokens = torch.from_numpy(product_tokens).long().to(device)
-
+    tokens = product_tokens  # torch.long on `device`
     return key, tom_inputs_list, mess3_inputs_list, tokens
+
+
+# def generate_mp_emissions(
+#     key,
+#     n_tom_quantum,
+#     n_mess3,
+#     tom_stationaries,
+#     mess3_stationaries,
+#     batch_size,
+#     seq_len,
+#     tom_quantum_processes,
+#     mess3_processes,
+#     tom_quantum_vocab_size,
+#     mess3_vocab_size,
+#     product_vocab_size,
+#     device,
+# ):
+#     """
+#     Generate a new batch of factored inputs for tom_quantum and mess3 processes,
+#     and combine them into product space tokens.
+
+#     Args:
+#         key: JAX PRNGKey
+#         n_tom_quantum: int, number of tom_quantum processes
+#         n_mess3: int, number of mess3 processes
+#         tom_stationaries: list of stationary distributions for tom_quantum
+#         mess3_stationaries: list of stationary distributions for mess3
+#         batch_size: int, batch size
+#         seq_len: int, sequence length
+#         tom_quantum_processes: list of tom_quantum process objects
+#         mess3_processes: list of mess3 process objects
+#         tom_quantum_vocab_size: int, vocab size for tom_quantum
+#         mess3_vocab_size: int, vocab size for mess3
+#         product_vocab_size: int, total product vocab size
+#         device: torch device
+
+#     Returns:
+#         key: new JAX PRNGKey after split
+#         tom_inputs_list: list of np.ndarray, one per tom_quantum process
+#         mess3_inputs_list: list of np.ndarray, one per mess3 process
+#         tokens: torch.LongTensor, combined product tokens on device
+#     """
+#     key, *subkeys = jax.random.split(key, 1 + n_tom_quantum + n_mess3)
+
+#     tom_inputs_list = []
+#     for i in range(n_tom_quantum):
+#         tom_states = jnp.repeat(tom_stationaries[i][None, :], batch_size, axis=0)
+#         _, tom_inputs, _ = generate_data_batch(
+#             tom_states, tom_quantum_processes[i], batch_size, seq_len, subkeys[i]
+#         )
+#         if isinstance(tom_inputs, torch.Tensor):
+#             tom_inputs_list.append(tom_inputs.cpu().numpy())
+#         else:
+#             tom_inputs_list.append(np.array(tom_inputs))
+
+#     mess3_inputs_list = []
+#     for i in range(n_mess3):
+#         mess3_states = jnp.repeat(mess3_stationaries[i][None, :], batch_size, axis=0)
+#         _, mess3_inputs, _ = generate_data_batch(
+#             mess3_states, mess3_processes[i], batch_size, seq_len, subkeys[n_tom_quantum + i]
+#         )
+#         if isinstance(mess3_inputs, torch.Tensor):
+#             mess3_inputs_list.append(mess3_inputs.cpu().numpy())
+#         else:
+#             mess3_inputs_list.append(np.array(mess3_inputs))
+
+#     # Combine into product space: token = sum(input_i * base_i)
+#     # The base for each process will be the product of the vocab sizes of the processes that come after it in the combination.
+#     # For example, if we have tom1, tom2, mess3_1, mess3_2 with vocab sizes T1, T2, M1, M2
+#     # token = tom1 * (T2 * M1 * M2) + tom2 * (M1 * M2) + mess3_1 * M2 + mess3_2
+#     # Assuming all tom_quantum have the same vocab size (tom_quantum_vocab_size) and all mess3 have the same (mess3_vocab_size)
+#     # token = tom1 * (tom_quantum_vocab_size**(n_tom_quantum-1) * mess3_vocab_size**n_mess3) + ... + mess3_2
+
+#     # Initialize product_tokens based on whether there are any inputs
+#     if n_tom_quantum > 0:
+#         product_tokens = np.zeros_like(tom_inputs_list[0])
+#     elif n_mess3 > 0:
+#         product_tokens = np.zeros_like(mess3_inputs_list[0])
+#     else:
+#         raise ValueError("Both n_tom_quantum and n_mess3 are zero. Cannot generate data.")
+
+#     # Add tom_quantum contributions
+#     for i in range(n_tom_quantum):
+#         base_for_tom = (tom_quantum_vocab_size ** (n_tom_quantum - 1 - i)) * (mess3_vocab_size ** n_mess3)
+#         product_tokens += tom_inputs_list[i] * base_for_tom
+
+#     # Add mess3 contributions
+#     for i in range(n_mess3):
+#         base_for_mess3 = (mess3_vocab_size ** (n_mess3 - 1 - i))
+#         product_tokens += mess3_inputs_list[i] * base_for_mess3
+
+#     tokens = torch.from_numpy(product_tokens).long().to(device)
+
+#     return key, tom_inputs_list, mess3_inputs_list, tokens
+
+
 
 
 def plot_pca_subplots(

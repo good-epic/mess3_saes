@@ -34,7 +34,7 @@ python -u train_mess3_and_saes.py \
     --input_unit_norm True \
     --no_input_unit_norm False \
     --n_batches_to_dead 5 \
-    --aux_penalty 1.0/32.0 \
+    --aux_penalty 0.03125 \
     --bandwidth 0.001 \
     --sae_steps 10000 \
     --sae_batch_size 2048 \

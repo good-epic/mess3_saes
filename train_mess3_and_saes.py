@@ -17,6 +17,9 @@ nOriginal file is located at
 
 #%%
 # Cell 2: Setup
+import os
+os.environ["JAX_PLATFORMS"] = "cpu"
+os.environ["JAX_PLATFORM_NAME"] = "cpu"
 import torch
 import torch.nn.functional as F
 import numpy as np
