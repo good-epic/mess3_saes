@@ -24,6 +24,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 import jax
+#jax.config.update("jax_disable_jit", True)
 #jax.config.update("jax_platform_name", "cpu")
 import jax.numpy as jnp
 from transformer_lens import HookedTransformer, HookedTransformerConfig
@@ -147,6 +148,7 @@ else:
     num_states = data_source.num_states
     print(f"Process: vocab_size={vocab_size}, states={num_states}")
 
+print("2")
 # Create TransformerLens model
 device = args.device
 cfg = HookedTransformerConfig(
@@ -224,7 +226,7 @@ else:
         model = HookedTransformer(cfg_loaded).to(device)
     state_dict = ckpt.get("state_dict") or ckpt.get("model_state_dict")
     if state_dict is None:
-        raise KeyError("Checkpoint missing Transformer state dict")
+        raise KeyError("Checkpoint missing Transformer state ")
     if cfg_loaded is None:
         model = HookedTransformer(cfg).to(device)
     model.load_state_dict(state_dict)  # type: ignore[arg-type]
