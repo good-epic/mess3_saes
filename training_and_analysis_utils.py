@@ -1,6 +1,7 @@
 import os
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 os.environ["JAX_PLATFORMS"] = "cpu"
+import sys
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -233,13 +234,14 @@ def train_saes_for_sites(
     for site_name in site_to_hook.keys():
         metrics_raw_all[site_name] = {
             "sequence": {
-                "top_k": {name: {"loss": [], "l2_loss": [], "l1_loss": [], "l0_norm": [], "l1_norm": [], "aux_loss": [], "num_dead_features": [], "active_latents": [], "active_counts": [], "active_sums": []} for name in seq_topk_all[site_name].keys()},
-                "vanilla": {name: {"loss": [], "l2_loss": [], "l1_loss": [], "l0_norm": [], "l1_norm": [], "active_latents": [], "active_counts": [], "active_sums": []} for name in seq_vanilla_all[site_name].keys()},
+                "top_k": {name: {"loss": [], "l2_loss": [], "l1_loss": [], "l0_norm": [], "l1_norm": [], "aux_loss": [], "num_dead_features": [], "active_latents": [], "active_counts": [], "active_sums": [], "iteration": []} for name in seq_topk_all[site_name].keys()},
+                "vanilla": {name: {"loss": [], "l2_loss": [], "l1_loss": [], "l0_norm": [], "l1_norm": [], "active_latents": [], "active_counts": [], "active_sums": [], "iteration": []} for name in seq_vanilla_all[site_name].keys()},
             },
-            "beliefs": {name: {"loss": [], "l2_loss": [], "l1_loss": [], "l0_norm": [], "l1_norm": [], "active_latents": [], "active_counts": [], "active_sums": []} for name in true_coord_saes_all[site_name].keys()},
+            "beliefs": {name: {"loss": [], "l2_loss": [], "l1_loss": [], "l0_norm": [], "l1_norm": [], "active_latents": [], "active_counts": [], "active_sums": [], "iteration": []} for name in true_coord_saes_all[site_name].keys()},
         }
     
-    miniters = 500 if steps > 500 else steps
+    print("Starting SAE training")
+    miniters = 250 if steps > 250 else steps
     progress_bar = tqdm(range(steps), desc="SAEs (all sites)", miniters=miniters, disable=not sys.stderr.isatty())
     # Training loop
     for ii in progress_bar:
@@ -252,7 +254,7 @@ def train_saes_for_sites(
         tokens = _tokens_from_observations(observations, device=device)
 
         with torch.no_grad():
-            _, cache = model.run_with_cache(tokens, return_type=None)
+            _, cache = model.run_with_cache(tokens, return_type=None, names_filter=list(site_to_hook.values()))
 
         beliefs_tensor = None
         if has_beliefs:
@@ -290,15 +292,17 @@ def train_saes_for_sites(
                     v = out["num_dead_features"]
                     v = v.item() if hasattr(v, "item") else int(v)
                     mr["num_dead_features"].append(int(v))
-                with torch.no_grad():
-                    acts_f = out.get("feature_acts")
-                    if acts_f is not None:
-                        mask = (acts_f > 0).any(dim=0).detach().cpu().numpy().astype(bool)
-                        counts = (acts_f > 0).sum(dim=0).detach().cpu().numpy()
-                        sums = acts_f.clamp(min=0).sum(dim=0).detach().cpu().numpy()
-                        mr["active_latents"].append(mask)
-                        mr["active_counts"].append(counts)
-                        mr["active_sums"].append(sums)
+                if (ii + 1) % 100 == 0:
+                    with torch.no_grad():
+                        acts_f = out.get("feature_acts")
+                        if acts_f is not None:
+                            mask = (acts_f > 0).any(dim=0).detach().cpu().numpy().astype(bool)
+                            counts = (acts_f > 0).sum(dim=0).detach().cpu().numpy()
+                            sums = acts_f.clamp(min=0).sum(dim=0).detach().cpu().numpy()
+                            mr["active_latents"].append(mask)
+                            mr["active_counts"].append(counts)
+                            mr["active_sums"].append(sums)
+                            mr["iteration"].append(ii + 1)
 
             # Sequence Vanilla
             for name, sae in seq_vanilla_all[site_name].items():
@@ -316,19 +320,20 @@ def train_saes_for_sites(
                 for key in ("l2_loss", "l1_loss", "l0_norm", "l1_norm"):
                     if key in out:
                         mr[key].append(float(out[key].detach().item()))
-                with torch.no_grad():
-                    acts_f = out.get("feature_acts")
-                    if acts_f is not None:
-                        mask = (acts_f > 0).any(dim=0).detach().cpu().numpy().astype(bool)
-                        counts = (acts_f > 0).sum(dim=0).detach().cpu().numpy()
-                        sums = acts_f.clamp(min=0).sum(dim=0).detach().cpu().numpy()
-                        mr["active_latents"].append(mask)
-                        mr["active_counts"].append(counts)
-                        mr["active_sums"].append(sums)
+                if (ii + 1) % 100 == 0:
+                    with torch.no_grad():
+                        acts_f = out.get("feature_acts")
+                        if acts_f is not None:
+                            mask = (acts_f > 0).any(dim=0).detach().cpu().numpy().astype(bool)
+                            counts = (acts_f > 0).sum(dim=0).detach().cpu().numpy()
+                            sums = acts_f.clamp(min=0).sum(dim=0).detach().cpu().numpy()
+                            mr["active_latents"].append(mask)
+                            mr["active_counts"].append(counts)
+                            mr["active_sums"].append(sums)
+                            mr["iteration"].append(ii + 1)
 
-        # Beliefs SAEs (per site)
-        if has_beliefs:
-            for site_name in site_to_hook.keys():
+            # Beliefs SAEs (per site)
+            if has_beliefs:
                 for name, sae in true_coord_saes_all[site_name].items():
                     if beliefs_tensor is None:
                         raise RuntimeError("Belief SAEs requested but belief tensor was not computed.")
@@ -346,17 +351,20 @@ def train_saes_for_sites(
                     for key in ("l2_loss", "l1_loss", "l0_norm", "l1_norm"):
                         if key in out:
                             mr[key].append(float(out[key].detach().item()))
-                    with torch.no_grad():
-                        acts_f = out.get("feature_acts")
-                        if acts_f is not None:
-                            mask = (acts_f > 0).any(dim=0).detach().cpu().numpy().astype(bool)
-                            counts = (acts_f > 0).sum(dim=0).detach().cpu().numpy()
-                            sums = acts_f.clamp(min=0).sum(dim=0).detach().cpu().numpy()
-                            mr["active_latents"].append(mask)
-                            mr["active_counts"].append(counts)
-                            mr["active_sums"].append(sums)
+                    if (ii + 1) % 100 == 0:
+                        with torch.no_grad():
+                            acts_f = out.get("feature_acts")
+                            if acts_f is not None:
+                                mask = (acts_f > 0).any(dim=0).detach().cpu().numpy().astype(bool)
+                                counts = (acts_f > 0).sum(dim=0).detach().cpu().numpy()
+                                sums = acts_f.clamp(min=0).sum(dim=0).detach().cpu().numpy()
+                                mr["active_latents"].append(mask)
+                                mr["active_counts"].append(counts)
+                                mr["active_sums"].append(sums)
+                                mr["iteration"].append(ii + 1)
         if (ii + 1) % miniters == 0:
             progress_bar.set_description(f"SAEs (all sites) (Loss: {loss.item():.4f})", refresh=False)
+            print(f"Done {ii + 1} iterations. SAEs (all sites) (Loss: {loss.item():.4f})")
 
 
     # Evaluate reconstruction errors on finalized SAEs
@@ -399,7 +407,7 @@ def train_saes_for_sites(
                 source=data_source,
             )
             tokens_eval = _tokens_from_observations(observations_eval, device=device)
-            _, cache_eval = model.run_with_cache(tokens_eval, return_type=None)
+            _, cache_eval = model.run_with_cache(tokens_eval, return_type=None, names_filter=list(site_to_hook.values()))
 
             beliefs_eval_tensor = None
             belief_element_count = 0

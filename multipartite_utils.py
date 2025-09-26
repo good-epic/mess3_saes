@@ -1,4 +1,4 @@
-"""Utilities for sampling from multipartite generative processes.
+ """Utilities for sampling from multipartite generative processes.
 
 This module provides lightweight helpers that combine multiple simplexity
 generative processes (e.g. mess3 and tom_quantum) into a single sampler that
@@ -139,6 +139,10 @@ class MultipartiteSampler:
         self._bases = self._compute_bases(self.component_vocab_sizes)
         self.vocab_size = reduce(mul, self.component_vocab_sizes, 1)
         self.belief_dim = sum(self.component_state_dims)
+        # Keep tuples for JIT so component count remains static
+        self._components_tuple = tuple(self.components)
+        self._bases_tuple = tuple(int(b) for b in self._bases)
+        self._jax_sampler = self._build_jax_sampler()
 
     @staticmethod
     def _compute_bases(vocab_sizes: Sequence[int]) -> list[int]:
@@ -154,7 +158,7 @@ class MultipartiteSampler:
                 running //= vocab_sizes[idx + 1]
         return bases
 
-    def sample(
+    def sample_python(
         self,
         rng_key: jax.Array,
         batch_size: int,
@@ -199,6 +203,52 @@ class MultipartiteSampler:
         for obs, base in zip(inputs_list, self._bases, strict=True):
             tokens += obs * base
 
+        return new_key, beliefs, tokens, inputs_list
+
+    def _build_jax_sampler(self):
+        components = self._components_tuple
+        bases = self._bases_tuple
+        num_components = len(components)
+
+        def _jax_sample_impl(
+            rng_key: jax.Array,
+            batch_size: int,
+            sequence_len: int,
+        ) -> tuple[jax.Array, jnp.ndarray, jnp.ndarray, tuple[jnp.ndarray, ...]]:
+            keys = jax.random.split(rng_key, num_components + 1)
+            new_key = keys[0]
+            component_keys = keys[1:]
+
+            beliefs_list = []
+            inputs_list = []
+            for comp, comp_key in zip(components, component_keys, strict=True):
+                initial_state = jnp.tile(comp.process.initial_state, (batch_size, 1))
+                batch_keys = jax.random.split(comp_key, batch_size)
+                states, obs = comp.process.generate(initial_state, batch_keys, sequence_len, True)
+                states = states[:, :-1, :]
+                inputs = obs[:, :-1]
+                beliefs_list.append(states)
+                inputs_list.append(inputs)
+
+            beliefs = jnp.concatenate(beliefs_list, axis=-1)
+            tokens = jnp.zeros_like(inputs_list[0])
+            for obs, base in zip(inputs_list, bases, strict=True):
+                tokens = tokens + obs * base
+
+            return new_key, beliefs, tokens, tuple(inputs_list)
+
+        return jax.jit(_jax_sample_impl, static_argnums=(1, 2))
+
+    def sample(
+        self,
+        rng_key: jax.Array,
+        batch_size: int,
+        sequence_len: int,
+    ) -> tuple[jax.Array, jnp.ndarray, jnp.ndarray, list[jnp.ndarray]]:
+        if sequence_len < 2:
+            raise ValueError("sequence_len must be at least 2 so inputs and next tokens can be formed")
+        new_key, beliefs, tokens, inputs_tuple = self._jax_sampler(rng_key, batch_size, sequence_len)
+        inputs_list = [jnp.asarray(arr) for arr in inputs_tuple]
         return new_key, beliefs, tokens, inputs_list
 
 

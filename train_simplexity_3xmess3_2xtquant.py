@@ -355,8 +355,8 @@ print("All layer activations data saved to all_layer_activations.pkl")
 
 
 #%%
-checkpoint_path = 'outputs/checkpoints/multipartite_001'
-ckpt = torch.load(os.path.join(checkpoint_path, f'checkpoint_step_500000_final.pt'))
+final_checkpoint_filename = os.path.join(checkpoint_path, f'checkpoint_step_{num_steps}_final.pt')
+ckpt = torch.load(final_checkpoint_filename)
 
 # Define model and optimizer before loading their states
 cfg = HookedTransformerConfig(
@@ -369,26 +369,14 @@ cfg = HookedTransformerConfig(
     d_vocab=product_vocab_size,  # You may want to set this if needed
 )
 model = HookedTransformer(cfg)
-optimizer = torch.optim.Adam(model.parameters())
+#optimizer = torch.optim.Adam(model.parameters())
 
 model.load_state_dict(ckpt['model_state_dict'])
-optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+#optimizer.load_state_dict(ckpt['optimizer_state_dict'])
 losses = ckpt['losses']
-print(f"Loaded model and optimizer state from {os.path.join(checkpoint_path, f'checkpoint_step_500000_final.pt')}")
-print(f"Loaded losses from {os.path.join(checkpoint_path, f'checkpoint_step_500000_final.pt')}")
-print(f"Loaded model and optimizer state from {os.path.join(checkpoint_path, f'checkpoint_step_500000_final.pt')}")
-
-#%%
-print(ckpt.keys())
-print(args.d_model)
-print(args.n_heads)
-print(args.n_layers)
-print(args.n_ctx)
-print(args.d_head)
-print(args.act_fn)
-print(args.fig_out_dir)
-print(args.checkpoint_path)
-
+#print(f"Loaded model and optimizer state from {final_checkpoint_filename}")
+print(f"Loaded model state from {final_checkpoint_filename}")
+print(f"Loaded losses from {final_checkpoint_filename}")
 
 #%%
 # ==== Visualize Loss ==== #
@@ -434,14 +422,7 @@ os.makedirs(args.fig_out_dir, exist_ok=True)
 plt.tight_layout()
 plt.savefig(os.path.join(args.fig_out_dir, 'loss_moving_average.png'))
 plt.close()
-
-#%%
-n = 9
-k = 2
-from math import comb
-nine_choose_two = comb(n, k)
-print(f"9 choose 2 is {nine_choose_two}")
-
+print("Saved loss moving average plot to ", os.path.join(args.fig_out_dir, 'loss_moving_average.png'))
 
 #%%
 # ==== Plot Cumulative Variance ==== #
@@ -493,6 +474,7 @@ if cumulative_variance_data:
     plt.close()
 else:
     print("No cumulative variance data to plot.")
+print("Saved cumulative variance plot to ", os.path.join(args.fig_out_dir, f'dims_to_90_95_99_variance_over_time.png'))
 
 
 
@@ -545,6 +527,8 @@ if cumulative_variance_data:
     plt.close()
 else:
     print("No cumulative variance data to plot.")
+print("Saved cumulative variance plot to ", os.path.join(args.fig_out_dir, f'cumvar_by_components_over_steps.png'))
+
 
 #%%
 
