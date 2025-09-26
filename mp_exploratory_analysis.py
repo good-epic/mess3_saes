@@ -20,6 +20,7 @@ nOriginal file is located at
 import argparse
 import json
 from copy import deepcopy
+from collections import defaultdict
 from itertools import combinations
 from math import comb
 
@@ -49,6 +50,7 @@ from training_and_analysis_utils import (
 )
 import os
 import matplotlib.pyplot as plt
+from matplotlib import colors as mcolors
 
 jax.config.update("jax_platform_name", "cpu")
 
@@ -69,9 +71,9 @@ PRESET_PROCESS_CONFIGS = {
         {
             "type": "mess3",
             "instances": [
-                {"x": 0.1, "a": 0.8},
-                {"x": 0.25, "a": 0.2},
-                {"x": 0.4, "a": 0.5},
+                {"x": 0.10, "a": 0.50},
+                {"x": 0.25, "a": 0.80},
+                {"x": 0.40, "a": 0.20},
             ],
         },
     ],
@@ -109,18 +111,8 @@ parser.add_argument("--bandwidth", type=float, default=0.001)
 parser.add_argument("--sae_steps", type=int, default=10000)
 parser.add_argument("--sae_batch_size", type=int, default=1024)
 parser.add_argument("--sae_seq_len", type=int, default=None)
-parser.add_argument(
-    "--seq_len",
-    type=int,
-    default=None,
-    help="Sequence length used for analysis/visualization batches; defaults to n_ctx",
-)
-parser.add_argument(
-    "--analysis_batch_size",
-    type=int,
-    default=8192,
-    help="Batch size for exploratory sampling from the multipartite stack",
-)
+parser.add_argument("--seq_len", type=int, default=None, help="Sequence length used for analysis/visualization batches; defaults to n_ctx",)
+parser.add_argument("--analysis_batch_size", type=int, default=8192, help="Batch size for exploratory sampling from the multipartite stack",)
 parser.add_argument("--sae_output_dir", type=str, default="outputs/saes/multipartite_001", help="Directory to save trained SAEs and metrics")
 parser.add_argument("--fig_out_dir", type=str, default="outputs/reports/multipartite_001", help="Directory to save matplotlib figures")
 
@@ -377,8 +369,10 @@ for meta, obs_np in zip(component_metadata, component_token_arrays):
         tom_label_entries.append((meta["name"], flat))
 
 # palettes
-_mess3_base = ["#d62728", "#ffd92f", "#9467bd"]
-_tom_base   = ["#1f77b4", "#aec7e8", "#98df8a", "#2ca02c"]
+_mess3_base = ["#ff595e", "#1982c4", "#8ac926"]
+_tom_base   = ["#ff1744", "#00c853", "#2962ff", "#ffd600"]
+MESS3_RGB = np.array([mcolors.to_rgb(hex_code) for hex_code in _mess3_base], dtype=np.float64)
+TOM_RGB = np.array([mcolors.to_rgb(hex_code) for hex_code in ["#ff1744", "#00c853", "#2962ff", "#ffd600"]], dtype=np.float64)
 
 mess3_vocab = max((int(m["vocab_size"]) for m in component_metadata if m["type"]=="mess3"), default=0)
 tom_vocab   = max((int(m["vocab_size"]) for m in component_metadata if m["type"]=="tom_quantum"), default=0)
@@ -404,6 +398,9 @@ tom_point_colors = [
 # keep flattened label arrays for downstream checks if needed
 mess3_labels_flat = [mess3_label_map[name] for name in mess3_order]
 tom_labels_flat   = [tom_label_map[name]   for name in tom_order]
+
+# Cache per-component belief/prediction geometry for later composite figures
+belief_plot_cache: dict[str, dict[int, dict[str, np.ndarray]]] = defaultdict(dict)
 
 # sanity
 N = pca_coords.shape[0]
@@ -433,7 +430,7 @@ belief_regression_metrics = evaluate_belief_state_linear_models(
     skip_dims_by_type={"tom_quantum": [0]},
     postprocess_by_type={
         "mess3": lambda arr: project_vectors_onto_simplex(arr, axis=-1),
-        "tom_quantum": enforce_tom_quantum_physicality,
+        # Intentionally skip Tom Quantum clamping so we can inspect raw predictions.
     },
     store_predictions=True,
 )
@@ -510,13 +507,17 @@ for idx, meta in enumerate(component_metadata):
         xs_true, ys_true = project_simplex3_to_2d(y_true)
         xs_pred, ys_pred = project_simplex3_to_2d(y_pred)
 
-        mess3_rgb = np.array([
-            [0xD6, 0x27, 0x28],
-            [0xFF, 0xD9, 0x2F],
-            [0x94, 0x67, 0xBD],
-        ], dtype=np.float64) / 255.0
-        color_true = np.clip(y_true @ mess3_rgb, 0.0, 1.0)
-        color_pred = np.clip(y_pred @ mess3_rgb, 0.0, 1.0)
+        color_true_mix = np.clip(y_true @ MESS3_RGB, 0.0, 1.0)
+        color_pred_mix = np.clip(y_pred @ MESS3_RGB, 0.0, 1.0)
+
+        belief_plot_cache[comp_name][pos] = {
+            "type": "mess3",
+            "xs_true": xs_true.copy(),
+            "ys_true": ys_true.copy(),
+            "xs_pred": xs_pred.copy(),
+            "ys_pred": ys_pred.copy(),
+            "colors": color_true_mix.copy(),
+        }
 
         rng = np.random.default_rng(0)
         sample_size = min(4000, xs_true.shape[0])
@@ -527,7 +528,7 @@ for idx, meta in enumerate(component_metadata):
             axes,
             (xs_true[sample_idx], xs_pred[sample_idx]),
             (ys_true[sample_idx], ys_pred[sample_idx]),
-            (color_true[sample_idx], color_pred[sample_idx]),
+            (color_true_mix[sample_idx], color_pred_mix[sample_idx]),
             ("Ground truth", "Linear probe prediction"),
         ):
             ax.plot(tri_x, tri_y, color="black", linewidth=1.0)
@@ -546,18 +547,14 @@ for idx, meta in enumerate(component_metadata):
         plt.close(fig)
         print(f"Saved Mess3 simplex comparison (belief RGB) → {out_path}")
 
-        # Label-colored versions (true vs predicted argmax)
-        label_colors = np.array([mess3_label_to_color.get(int(l), "#000000") for l in obs_np[:, pos]])
-        pred_labels = np.argmax(y_pred, axis=1)
-        pred_label_colors = np.array([mess3_label_to_color.get(int(l), "#000000") for l in pred_labels])
-
+        # True-belief colors placed at predicted locations
         fig_lbl, axes_lbl = plt.subplots(1, 2, figsize=(10.5, 5.2))
         for ax, xs, ys, cols, title in zip(
             axes_lbl,
             (xs_true[sample_idx], xs_pred[sample_idx]),
             (ys_true[sample_idx], ys_pred[sample_idx]),
-            (label_colors[sample_idx], pred_label_colors[sample_idx]),
-            ("Ground truth (tokens)", "Linear probe prediction (argmax)"),
+            (color_true_mix[sample_idx], color_true_mix[sample_idx]),
+            ("Ground truth (belief colors)", "Prediction (true colors @ predicted pos)"),
         ):
             ax.plot(tri_x, tri_y, color="black", linewidth=1.0)
             ax.scatter(xs, ys, c=cols, s=10, alpha=0.8, edgecolors="none")
@@ -568,10 +565,10 @@ for idx, meta in enumerate(component_metadata):
 
         fig_lbl.suptitle(f"Mess3 {comp_name}: belief simplex (pos {pos})", fontsize=13)
         fig_lbl.tight_layout()
-        out_path_lbl = os.path.join(args.fig_out_dir, f"mess3_pred_simplex2d_{safe_name}_pos{pos}_labels.png")
+        out_path_lbl = os.path.join(args.fig_out_dir, f"mess3_pred_simplex2d_{safe_name}_pos{pos}_truecolors.png")
         fig_lbl.savefig(out_path_lbl, dpi=160)
         plt.close(fig_lbl)
-        print(f"Saved Mess3 simplex comparison (token vs argmax colors) → {out_path_lbl}")
+        print(f"Saved Mess3 simplex comparison (true colors @ predicted positions) → {out_path_lbl}")
 
 #%%
 # ==== 2D Prediction Plots for Tom Quantum (scatter P(s0) vs P(s1)) ===================== #
@@ -594,14 +591,43 @@ for idx, meta in enumerate(component_metadata):
         if not metrics_pos or "predictions" not in metrics_pos:
             continue
 
-        y_true_params = np.asarray(metrics_pos["targets"])
-        y_pred_params = np.asarray(metrics_pos["predictions"])
+        y_true_params = np.asarray(metrics_pos["targets"], dtype=np.float64)
+        y_pred_params = np.asarray(metrics_pos["predictions"], dtype=np.float64)
 
-        angles_true = np.arctan2(y_true_params[:, 2], y_true_params[:, 1])
-        angles_pred = np.arctan2(y_pred_params[:, 2], y_pred_params[:, 1])
-        cmap = plt.get_cmap("twilight")
-        color_true = cmap((angles_true + np.pi) / (2 * np.pi))
-        color_pred = cmap((angles_pred + np.pi) / (2 * np.pi))
+        if idx >= len(ordered_components):
+            print(f"  {comp_name}: missing component reference for emission coloring, skipping")
+            continue
+
+        process = ordered_components[idx].process
+        vocab = getattr(process, "vocab_size", 0)
+        if vocab <= 0:
+            print(f"  {comp_name}: invalid vocab size {vocab}, skipping")
+            continue
+
+        obs_probs_true = np.array(
+            jax.vmap(process.observation_probability_distribution)(
+                jnp.asarray(y_true_params, dtype=jnp.float32)
+            )
+        )
+        obs_probs_true = np.nan_to_num(obs_probs_true, nan=0.0, posinf=0.0, neginf=0.0)
+        obs_true_sums = obs_probs_true.sum(axis=1, keepdims=True)
+        valid_true = np.squeeze(obs_true_sums > 0, axis=-1)
+        if valid_true.any():
+            obs_probs_true[valid_true] /= obs_true_sums[valid_true, 0][:, None]
+        if (~valid_true).any():
+            obs_probs_true[~valid_true] = 1.0 / vocab
+
+        color_true_mix = np.clip(obs_probs_true @ TOM_RGB, 0.0, 1.0)
+        color_pred_mix = color_true_mix.copy()
+
+        belief_plot_cache[comp_name][pos] = {
+            "type": "tom_quantum",
+            "xs_true": y_true_params[:, 1].copy(),
+            "ys_true": y_true_params[:, 2].copy(),
+            "xs_pred": y_pred_params[:, 1].copy(),
+            "ys_pred": y_pred_params[:, 2].copy(),
+            "colors": color_true_mix.copy(),
+        }
 
         rng = np.random.default_rng(0)
         sample_size = min(4000, y_true_params.shape[0])
@@ -609,8 +635,8 @@ for idx, meta in enumerate(component_metadata):
 
         fig, axes = plt.subplots(1, 2, figsize=(10.5, 5.0))
         data_pairs = (
-            (y_true_params[sample_idx, 1], y_true_params[sample_idx, 2], color_true[sample_idx], "Ground truth"),
-            (y_pred_params[sample_idx, 1], y_pred_params[sample_idx, 2], color_pred[sample_idx], "Linear probe prediction"),
+            (y_true_params[sample_idx, 1], y_true_params[sample_idx, 2], color_true_mix[sample_idx], "Ground truth"),
+            (y_pred_params[sample_idx, 1], y_pred_params[sample_idx, 2], color_pred_mix[sample_idx], "Linear probe prediction"),
         )
 
         for ax, (xs, ys, cols, title) in zip(axes, data_pairs):
@@ -627,18 +653,15 @@ for idx, meta in enumerate(component_metadata):
         fig.tight_layout()
         os.makedirs(args.fig_out_dir, exist_ok=True)
         safe_name = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in comp_name)
-        out_path = os.path.join(args.fig_out_dir, f"tomq_coherence_{safe_name}_pos{pos}_angle.png")
+        out_path = os.path.join(args.fig_out_dir, f"tomq_coherence_{safe_name}_pos{pos}_emissionmix.png")
         fig.savefig(out_path, dpi=170)
         plt.close(fig)
-        print(f"Saved Tom Quantum coherence plot (angle colors) → {out_path}")
+        print(f"Saved Tom Quantum coherence plot (emission-weighted colors) → {out_path}")
 
-        label_colors = np.array([tom_label_to_color.get(int(v), "#000000") for v in obs_np[:, pos]])
-        pred_labels = np.argmax(y_pred_params, axis=1)
-        pred_label_colors = np.array([tom_label_to_color.get(int(v), "#000000") for v in pred_labels])
         fig_lbl, axes_lbl = plt.subplots(1, 2, figsize=(10.5, 5.0))
         data_pairs_lbl = (
-            (y_true_params[sample_idx, 1], y_true_params[sample_idx, 2], label_colors[sample_idx], "Ground truth (tokens)",),
-            (y_pred_params[sample_idx, 1], y_pred_params[sample_idx, 2], pred_label_colors[sample_idx], "Linear probe prediction (argmax)"),
+            (y_true_params[sample_idx, 1], y_true_params[sample_idx, 2], color_true_mix[sample_idx], "Ground truth (belief colors)",),
+            (y_pred_params[sample_idx, 1], y_pred_params[sample_idx, 2], color_true_mix[sample_idx], "Prediction (true colors @ predicted pos)"),
         )
 
         for ax, (xs, ys, cols, title) in zip(axes_lbl, data_pairs_lbl):
@@ -653,11 +676,207 @@ for idx, meta in enumerate(component_metadata):
 
         fig_lbl.suptitle(f"TomQ {comp_name}: coherence plane (pos {pos})", fontsize=13)
         fig_lbl.tight_layout()
-        out_path_lbl = os.path.join(args.fig_out_dir, f"tomq_coherence_{safe_name}_pos{pos}_labels.png")
+        out_path_lbl = os.path.join(args.fig_out_dir, f"tomq_coherence_{safe_name}_pos{pos}_truecolors.png")
         fig_lbl.savefig(out_path_lbl, dpi=170)
         plt.close(fig_lbl)
-        print(f"Saved Tom Quantum coherence plot (token vs argmax colors) → {out_path_lbl}")
+        print(f"Saved Tom Quantum coherence plot (true colors @ predicted positions) → {out_path_lbl}")
 
+
+
+#%%
+# ==== Composite Belief vs Prediction Grids (per position) ============================= #
+
+if isinstance(data_source, MultipartiteSampler):
+    component_order = [comp.name for comp in ordered_components]
+else:
+    component_order = [comp.name for comp in components]
+
+component_type_map = {str(meta["name"]): str(meta["type"]) for meta in component_metadata}
+
+for pos in evaluation_positions:
+    fig, axes = plt.subplots(2, len(component_order), figsize=(3.5 * len(component_order), 6.5))
+    if axes.ndim == 1:
+        axes = axes.reshape(2, -1)
+
+    for col, comp_name in enumerate(component_order):
+        ax_true = axes[0, col]
+        ax_pred = axes[1, col]
+        cache_entry = belief_plot_cache.get(comp_name, {}).get(pos)
+
+        if cache_entry is None:
+            for ax in (ax_true, ax_pred):
+                ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=10)
+                ax.axis("off")
+            continue
+
+        comp_type = cache_entry.get("type", component_type_map.get(comp_name, "unknown"))
+        xs_true = np.asarray(cache_entry.get("xs_true"))
+        ys_true = np.asarray(cache_entry.get("ys_true"))
+        xs_pred = np.asarray(cache_entry.get("xs_pred"))
+        ys_pred = np.asarray(cache_entry.get("ys_pred"))
+        colors = np.asarray(cache_entry.get("colors"))
+
+        coords_true = np.stack([xs_true, ys_true], axis=-1)
+        coords_pred = np.stack([xs_pred, ys_pred], axis=-1)
+        finite_mask = np.isfinite(coords_true).all(axis=1) & np.isfinite(coords_pred).all(axis=1)
+        if colors.ndim == 2:
+            finite_mask &= np.isfinite(colors).all(axis=1)
+        else:
+            finite_mask &= np.isfinite(colors)
+
+        coords_true = coords_true[finite_mask]
+        coords_pred = coords_pred[finite_mask]
+        colors = colors[finite_mask]
+
+        if coords_true.size == 0 or coords_pred.size == 0:
+            for ax in (ax_true, ax_pred):
+                ax.text(0.5, 0.5, "No finite data", ha="center", va="center", fontsize=10)
+                ax.axis("off")
+            continue
+
+        if colors.ndim == 2:
+            finite_colors = np.isfinite(colors).all(axis=1)
+        else:
+            finite_colors = np.isfinite(colors)
+
+        finite_true = np.isfinite(coords_true).all(axis=1) & finite_colors
+        finite_pred = np.isfinite(coords_pred).all(axis=1)
+        common_indices = np.flatnonzero(finite_true & finite_pred)
+
+        def choose_indices(indices: np.ndarray, max_points: int, seed: int) -> np.ndarray:
+            if indices.size == 0:
+                return indices
+            if indices.size <= max_points:
+                return indices
+            rng_local = np.random.default_rng(seed)
+            return rng_local.choice(indices, size=max_points, replace=False)
+
+        pred_sel = choose_indices(common_indices, 4000, seed=0)
+        coords_pred_s = coords_pred[pred_sel]
+        colors_pred_s = colors[pred_sel]
+
+        true_coords_display: np.ndarray | None = None
+        true_colors_display: np.ndarray | None = None
+
+        comp_obj = ordered_components[col] if isinstance(data_source, MultipartiteSampler) else components[col]
+        try:
+            rng_true = jax.random.PRNGKey(1931 + 97 * pos + col)
+            sample_batch = 6000
+            seq_needed = max(seq_len, pos + 2)
+            keys = jax.random.split(rng_true, sample_batch)
+            init_state = jnp.tile(comp_obj.process.initial_state, (sample_batch, 1))
+            states, _ = comp_obj.process.generate(init_state, keys, seq_needed, True)
+            if states.ndim == 2:
+                states = states[:, None, :]
+            states = np.asarray(states)[:, :-1, :]
+            if pos >= states.shape[1]:
+                raise IndexError("position exceeds sampled length")
+            state_slice = states[:, pos, :]
+            state_slice_np = np.asarray(state_slice)
+            if comp_type == "mess3":
+                xs_disp, ys_disp = project_simplex3_to_2d(state_slice_np)
+                true_coords_display = np.stack([xs_disp, ys_disp], axis=-1)
+                true_colors_display = np.clip(state_slice_np @ MESS3_RGB, 0.0, 1.0)
+            elif comp_type == "tom_quantum":
+                true_coords_display = state_slice_np[:, 1:3]
+                obs_probs_true = np.array(
+                    jax.vmap(comp_obj.process.observation_probability_distribution)(
+                        jnp.asarray(state_slice_np, dtype=jnp.float32)
+                    )
+                )
+                obs_probs_true = np.nan_to_num(obs_probs_true, nan=0.0, posinf=0.0, neginf=0.0)
+                obs_sums = obs_probs_true.sum(axis=1, keepdims=True)
+                valid_obs = obs_sums.squeeze(-1) > 0
+                if valid_obs.any():
+                    obs_probs_true[valid_obs] /= obs_sums[valid_obs, 0][:, None]
+                if (~valid_obs).any():
+                    obs_probs_true[~valid_obs] = 1.0 / TOM_RGB.shape[0]
+                true_colors_display = np.clip(obs_probs_true @ TOM_RGB, 0.0, 1.0)
+            else:
+                true_coords_display = None
+        except Exception as exc:  # pragma: no cover - diagnostic fallback
+            print(f"    Warning: failed to resample true geometry for {comp_name} pos {pos}: {exc}")
+            true_coords_display = None
+            true_colors_display = None
+
+        if true_coords_display is not None and true_coords_display.shape[0] > 4000:
+            idx = choose_indices(np.arange(true_coords_display.shape[0]), 4000, seed=1)
+            true_coords_display = true_coords_display[idx]
+            true_colors_display = true_colors_display[idx]
+
+        if comp_type == "mess3":
+            point_size = 2.5
+            panels = (
+                (ax_true, true_coords_display, true_colors_display, f"{comp_name}\nTrue beliefs"),
+                (ax_pred, coords_pred_s, colors_pred_s, "Predicted beliefs"),
+            )
+            for ax, coords, panel_colors, title in panels:
+                ax.plot(tri_x, tri_y, color="black", linewidth=1.0)
+                if coords is None or coords.shape[0] == 0:
+                    ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=10)
+                    ax.axis("off")
+                    continue
+                ax.scatter(
+                    coords[:, 0],
+                    coords[:, 1],
+                    c=panel_colors,
+                    s=point_size,
+                    alpha=0.5,
+                    edgecolors="none",
+                )
+                ax.set_aspect('equal', adjustable='box')
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.set_title(title)
+
+            if col == 0:
+                ax_true.set_ylabel("True beliefs")
+                ax_pred.set_ylabel("Predicted beliefs")
+
+        elif comp_type == "tom_quantum":
+            point_size = 2.5
+            lim = 0.35
+            panels = (
+                (ax_true, true_coords_display, true_colors_display, f"{comp_name}\nTrue beliefs"),
+                (ax_pred, coords_pred_s, colors_pred_s, "Predicted beliefs"),
+            )
+            for ax, coords, panel_colors, title in panels:
+                if coords is None or coords.shape[0] == 0:
+                    ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=10)
+                    ax.axis("off")
+                    continue
+                ax.scatter(
+                    coords[:, 0],
+                    coords[:, 1],
+                    c=panel_colors,
+                    s=point_size,
+                    alpha=0.5,
+                    edgecolors="none",
+                )
+                ax.set_xlim(-lim, lim)
+                ax.set_ylim(-lim, lim)
+                ax.set_aspect('equal', adjustable='box')
+                ax.grid(True, linewidth=0.3, alpha=0.4)
+                ax.set_title(title)
+                if col == 0:
+                    ax.set_xlabel("Re coherence")
+                    ax.set_ylabel("Im coherence")
+                else:
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+        else:
+            for ax in (ax_true, ax_pred):
+                ax.text(0.5, 0.5, f"Unsupported type\n{comp_type}", ha="center", va="center", fontsize=10)
+                ax.axis('off')
+            continue
+
+    fig.suptitle(f"Belief vs predicted geometry (position {pos})", fontsize=15)
+    fig.tight_layout(rect=(0, 0.02, 1, 0.95))
+    os.makedirs(args.fig_out_dir, exist_ok=True)
+    grid_out = os.path.join(args.fig_out_dir, f"belief_prediction_grid_pos{pos}.png")
+    fig.savefig(grid_out, dpi=170)
+    plt.close(fig)
+    print(f"Saved composite belief/prediction grid → {grid_out}")
 
 
 #%%
@@ -666,7 +885,7 @@ for idx, meta in enumerate(component_metadata):
 os.makedirs(args.fig_out_dir, exist_ok=True)
 
 mess3_x_grid = np.linspace(0.10, 0.22, 7)
-mess3_a_grid = np.linspace(0.45, 0.80, 8)
+mess3_a_grid = np.linspace(0.20, 0.80, 8)
 mess3_grid_fig = plot_mess3_belief_grid(
     x_values=mess3_x_grid,
     a_values=mess3_a_grid,
@@ -726,6 +945,22 @@ tomq_grid_sweep_path = os.path.join(args.fig_out_dir, "tomq_coherence_grid_pos9.
 tomq_grid_sweep_fig.savefig(tomq_grid_sweep_path, dpi=170)
 plt.close(tomq_grid_sweep_fig)
 print(f"Saved TomQ parameter grid → {tomq_grid_sweep_path}")
+
+wide_alpha_grid = np.linspace(max(alpha_center - 0.5, 0.5), alpha_center + 0.5, 9)
+wide_beta_grid = np.linspace(max(beta_center - 4.0, 1.0), beta_center + 4.0, 9)
+tomq_grid_wide_fig = plot_tom_quantum_coherence_grid(
+    alpha_values=wide_alpha_grid,
+    beta_values=wide_beta_grid,
+    seq_position=9,
+    batch_size=4096,
+    seq_len=seq_len,
+    seed=987,
+    sample_size=3000,
+)
+tomq_grid_wide_path = os.path.join(args.fig_out_dir, "tomq_coherence_grid_wide_pos9.png")
+tomq_grid_wide_fig.savefig(tomq_grid_wide_path, dpi=170)
+plt.close(tomq_grid_wide_fig)
+print(f"Saved TomQ wide parameter grid → {tomq_grid_wide_path}")
 
 
 #%%

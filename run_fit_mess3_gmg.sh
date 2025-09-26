@@ -1,0 +1,29 @@
+#!/usr/bin/bash
+
+python -u fit_mess3_gmg.py \
+    --sae_folder "outputs/saes/multipartite_002" \
+    --metrics_summary "outputs/saes/multipartite_002/metrics_summary.json" \
+    --output_dir "outputs/reports/multipartite_002" \
+    --model_ckpt "outputs/checkpoints/multipartite_002/checkpoint_step_125000.pt" \
+    --device "cuda" \
+    --seed 0 \
+    --process_preset "3xmess3_2xtquant_002" \
+    --d_model 128 \
+    --n_heads 4 \
+    --n_layers 3 \
+    --n_ctx 16 \
+    --d_head 32 \
+    --act_fn "relu" \
+    --sim_metric "cosine" \
+    --max_clusters 12 \
+    --plot_eigengap True \
+    --sample_sequences 1024 \
+    --max_activations 50000 \
+    --cluster_activation_threshold 1e-6 \
+    --min_cluster_samples 512 \
+    --plot_max_points 2500 \
+    --latent_activity_threshold 0.01 \
+    --latent_activation_eps 1e-6 \
+    --activation_batches 8 \
+    --center_decoder_rows \
+    --pca_components 15

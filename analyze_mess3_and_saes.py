@@ -75,7 +75,7 @@ parser.add_argument("--d_head", type=int, default=8)
 
 # SAE hyperparameters
 parser.add_argument("--dict_mul", type=int, default=4)
-parser.add_argument("--k", type=int, nargs="+", default=[1, 2, 3, 4, 5, 6, 7])
+parser.add_argument("--k", type=int, nargs="+", default=list(range(1, 25)))
 parser.add_argument("--l1_coeff", type=float, nargs="+", default=[1e-3, 0.01, 0.015, 0.02, 0.025, 0.05] + [round(x, 2) for x in np.arange(0.1, 1.01, 0.05)])
 parser.add_argument("--input_unit_norm", dest="input_unit_norm", action="store_true", default=True)
 parser.add_argument("--no_input_unit_norm", dest="input_unit_norm", action="store_false")
@@ -92,8 +92,8 @@ parser.add_argument("--sae_seq_len", type=int, default=None)
 parser.add_argument("--seq_len", type=int, default=None, help="Sequence length used for analysis/visualization batches; defaults to n_ctx")
 
 # Model loading
-parser.add_argument("--load_model", type=str, default="outputs/mess3_transformer.pt", help="Path to a saved model checkpoint (.pt). If provided, skip training and load this model.")
-parser.add_argument("--load_saes", type=str, default="outputs/saes", help="Path to a folder containing SAE checkpoints (.pt) and metrics_summary.json")
+parser.add_argument("--load_model", type=str, default="outputs/checkpoints/multipartite_001/checkpoint_step_500000_final.pt", help="Path to a saved model checkpoint (.pt). If provided, skip training and load this model.")
+parser.add_argument("--load_saes", type=str, default="outputs/saes/multipartite_001", help="Path to a folder containing SAE checkpoints (.pt) and metrics_summary.json")
 
 # Parse known to be notebook-friendly
 args, _ = parser.parse_known_args()

@@ -9,10 +9,10 @@ from datetime import datetime
 
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 
+import torch
 import jax
 import jax.numpy as jnp
 import numpy as np
-import torch
 
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 from simplexity.generative_processes.torch_generator import generate_data_batch
@@ -62,13 +62,30 @@ PRESET_PROCESS_CONFIGS = {
     "single_mess3": [
         {"type": "mess3", "params": {"x": 0.1, "a": 0.7}},
     ],
-    "3xmess3_2xtquant": [
+    "3xmess3_2xtquant_001": [
         {
             "type": "mess3",
             "instances": [
-                {"x": 0.1, "a": 0.8},
-                {"x": 0.25, "a": 0.2},
-                {"x": 0.4, "a": 0.5},
+                {"x": 0.10, "a": 0.50},
+                {"x": 0.25, "a": 0.80},
+                {"x": 0.40, "a": 0.20},
+            ],
+        },
+        {
+            "type": "tom_quantum",
+            "instances": [
+                {"alpha": 0.9, "beta": float(1.3)},
+                {"alpha": 1.0, "beta": float(np.sqrt(51))},
+            ],
+        },
+    ],
+    "3xmess3_2xtquant_002": [
+        {
+            "type": "mess3",
+            "instances": [
+                {"x": 0.10, "a": 0.50},
+                {"x": 0.25, "a": 0.80},
+                {"x": 0.40, "a": 0.20},
             ],
         },
         {
@@ -90,13 +107,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--sae_folder", type=str, default="outputs/saes/multipartite_1", help="Folder with SAE checkpoints")
     parser.add_argument("--metrics_summary", type=str, default=None, help="metrics_summary.json path; defaults to <sae_folder>/metrics_summary.json")
     parser.add_argument("--output_dir", type=str, default="outputs/reports/multipartite_1", help="Root directory for analysis outputs")
-    parser.add_argument("--model_ckpt", type=str, default="outputs/checkpoints/multipartite_1/checkpoint_step_50000_final.pt", help="Transformer checkpoint path")
+    parser.add_argument("--model_ckpt", type=str, default="outputs/checkpoints/multipartite_1/checkpoint_step_500000_final.pt", help="Transformer checkpoint path")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"], help="Computation device")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
 
     # Process configuration
     parser.add_argument("--process_config", type=str, default=None, help="JSON file describing stacked generative processes")
-    parser.add_argument("--process_preset", type=str, default="3xmess3_2xtquant", help="Named preset for generative process configuration")
+    parser.add_argument("--process_preset", type=str, default="3xmess3_2xtquant_001", help="Named preset for generative process configuration")
 
     # Transformer configuration (if checkpoint lacks config)
     parser.add_argument("--d_model", type=int, default=128)
@@ -113,6 +130,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--sim_metric", type=str, default="phi", choices=["cosine", "euclidean", "phi"], help="Similarity metric for decoder clustering")
     parser.add_argument("--max_clusters", type=int, default=12, help="Upper bound for eigengap clustering")
     parser.add_argument("--plot_eigengap", action="store_true", help="Plot eigengap spectrum diagnostics")
+    parser.add_argument("--center_decoder_rows", action="store_true", help="Center and renormalize decoder rows before computing similarities")
 
     # Sampling controls for PCA projections
     parser.add_argument("--sample_sequences", type=int, default=1024, help="Number of sequences to sample")
@@ -124,6 +142,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--latent_activity_threshold", type=float, default=0.01, help="Minimum fraction of samples where a latent must be active to keep it")
     parser.add_argument("--latent_activation_eps", type=float, default=1e-6, help="Magnitude threshold when computing latent activity rates")
     parser.add_argument("--activation_batches", type=int, default=8, help="Number of independent batches to sample for latent activity statistics")
+    parser.add_argument(
+        "--pca_components",
+        type=int,
+        default=6,
+        help="Number of PCA components to compute before selecting the top three for plotting",
+    )
 
     args, _ = parser.parse_known_args()
 
@@ -144,7 +168,7 @@ device = _resolve_device(args.device)
 torch.manual_seed(args.seed)
 np.random.seed(args.seed)
 
-process_cfg_raw, components, data_source = _load_process_stack(args)
+process_cfg_raw, components, data_source = _load_process_stack(args, PRESET_PROCESS_CONFIGS)
 if isinstance(data_source, MultipartiteSampler):
     vocab_size = data_source.vocab_size
     process_kind = "multipartite"
@@ -177,14 +201,14 @@ seq_len = args.sample_seq_len if args.sample_seq_len is not None else cfg.n_ctx
 
 metrics_path = args.metrics_summary or os.path.join(args.sae_folder, "metrics_summary.json")
 metrics_summary = load_metrics_summary(metrics_path)
-sites = _select_sites(metrics_summary, args.sites)
+sites = _select_sites(metrics_summary, args.sites, SITE_HOOK_MAP)
 if not sites:
     raise ValueError("No valid sites available for analysis")
 
 
 #%%
-# ==== Choose K ==== #
-######################
+# ==== Choose K and Do Clustering ==== #
+########################################
 l2_by_site = extract_topk_l2(metrics_summary, site_filter=sites)
 if not l2_by_site:
     raise ValueError("No top-k SAE metrics found for the selected sites")
@@ -193,18 +217,29 @@ average_l2 = compute_average_l2(l2_by_site)
 if not average_l2:
     raise ValueError("Unable to compute average L2 across k values")
 
+selected_k_by_site: dict[str, int] = {}
 if args.force_k is not None:
-    selected_k = args.force_k
-    print(f"Using forced k={selected_k}")
+    print(f"Using forced k={args.force_k} for all sites")
+    selected_k_by_site = {site: int(args.force_k) for site in sites}
 else:
-    sorted_k = sorted(average_l2.keys())
-    losses = [average_l2[k] for k in sorted_k]
-    selected_k = find_elbow_k(sorted_k, losses, prefer_high_k=True)
-    print(f"Selected k={selected_k} via elbow heuristic")
+    for site in sites:
+        site_metrics = l2_by_site.get(site, {})
+        if not site_metrics:
+            raise ValueError(f"No top-k metrics available for site '{site}'")
+        sorted_k = sorted(site_metrics.keys())
+        losses = [site_metrics[k] for k in sorted_k]
+        site_k = find_elbow_k(sorted_k, losses, prefer_high_k=True)
+        selected_k_by_site[site] = int(site_k)
+        print(f"{site}: selected k={site_k} via elbow heuristic")
+
+unique_k_values = set(selected_k_by_site.values())
+if len(unique_k_values) == 1:
+    run_dir_label = f"k{next(iter(unique_k_values))}"
+else:
+    run_dir_label = "kvar"
 
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-sae_folder_name = os.path.basename(os.path.normpath(args.sae_folder)) or "saes"
-run_dir = os.path.join(args.output_dir, sae_folder_name, f"k{selected_k}_{timestamp}")
+run_dir = os.path.join(args.output_dir, f"{run_dir_label}_{timestamp}")
 os.makedirs(run_dir, exist_ok=True)
 
 l2_plot_path = os.path.join(run_dir, "l2_summary.png")
@@ -214,7 +249,8 @@ with open(os.path.join(run_dir, "l2_summary.json"), "w", encoding="utf-8") as f:
         {
             "per_site": {site: {int(k): float(v) for k, v in metrics.items()} for site, metrics in l2_by_site.items()},
             "average": {int(k): float(v) for k, v in average_l2.items()},
-            "selected_k": int(selected_k),
+            "selected_k": int(next(iter(unique_k_values))) if len(unique_k_values) == 1 else None,
+            "selected_k_by_site": {site: int(k) for site, k in selected_k_by_site.items()},
             "process_kind": process_kind,
             "components": component_summary,
         },
@@ -223,10 +259,7 @@ with open(os.path.join(run_dir, "l2_summary.json"), "w", encoding="utf-8") as f:
     )
 
 batch_size = args.sample_sequences
-if isinstance(data_source, MultipartiteSampler):
-    sample_len = seq_len
-else:
-    sample_len = seq_len + 1
+sample_len = seq_len
 tokens = _sample_tokens(
     data_source,
     batch_size,
@@ -243,7 +276,12 @@ per_site_active_rates: dict[str, np.ndarray] = {}
 per_site_cluster_rates: dict[str, dict[int, np.ndarray]] = {}
 
 for site_idx, site in enumerate(sites):
-    sae_path = os.path.join(args.sae_folder, f"{site}_top_k_k{selected_k}.pt")
+    site_selected_k = selected_k_by_site.get(site)
+    if site_selected_k is None:
+        print(f"Skipping {site}: no selected k available")
+        continue
+
+    sae_path = os.path.join(args.sae_folder, f"{site}_top_k_k{site_selected_k}.pt")
     if not os.path.exists(sae_path):
         print(f"Skipping {site}: checkpoint not found at {sae_path}")
         continue
@@ -308,7 +346,7 @@ for site_idx, site in enumerate(sites):
         write_cluster_metadata(
             metadata_path,
             {},
-            selected_k,
+            site_selected_k,
             average_l2,
             cluster_labels=cluster_labels_full.tolist(),
             extra_fields={
@@ -328,12 +366,19 @@ for site_idx, site in enumerate(sites):
                 "latent_activity_threshold": float(args.latent_activity_threshold),
                 "latent_activation_eps": float(args.latent_activation_eps),
                 "activation_samples": total_activity_samples,
+                "decoder_rows_centered": bool(args.center_decoder_rows),
             },
         )
         del feature_acts
         continue
 
     decoder_active = decoder_dirs[active_indices]
+    if args.center_decoder_rows and decoder_active.size > 0:
+        row_mean = decoder_active.mean(axis=0, keepdims=True)
+        decoder_active = decoder_active - row_mean
+        norms = np.linalg.norm(decoder_active, axis=1, keepdims=True)
+        norms = np.where(norms == 0.0, 1.0, norms)
+        decoder_active = decoder_active / norms
     if decoder_active.shape[0] == 1:
         cluster_labels_active = np.array([0], dtype=int)
         spectral_k = 1
@@ -387,7 +432,7 @@ for site_idx, site in enumerate(sites):
         write_cluster_metadata(
             metadata_path,
             cluster_stats,
-            selected_k,
+            site_selected_k,
             average_l2,
             cluster_labels=cluster_labels_full.tolist(),
             extra_fields={
@@ -407,6 +452,7 @@ for site_idx, site in enumerate(sites):
                 "latent_activity_threshold": float(args.latent_activity_threshold),
                 "latent_activation_eps": float(args.latent_activation_eps),
                 "activation_samples": total_activity_samples,
+                "decoder_rows_centered": bool(args.center_decoder_rows),
             },
         )
         continue
@@ -421,7 +467,7 @@ for site_idx, site in enumerate(sites):
 
     pca_results = fit_pca_for_clusters(
         cluster_recons,
-        n_components=3,
+        n_components=args.pca_components,
         min_samples=args.min_cluster_samples,
     )
     project_decoder_directions_to_pca(sae, pca_results, cluster_stats)
@@ -433,26 +479,29 @@ for site_idx, site in enumerate(sites):
         if stats is not None:
             stats["explained_variance_ratio"] = [float(x) for x in result.pca.explained_variance_ratio_]
             stats["decoder_scale_factor"] = float(result.scale_factor)
-            stats["decoder_projections_pc123"] = {
+            stats["decoder_projections_selected_pcs"] = {
                 int(latent_idx): [float(x) for x in vec.tolist()]
                 for latent_idx, vec in result.decoder_coords.items()
             }
         plot_path = os.path.join(site_dir, f"cluster_{cid}_pca.png")
-        plot_cluster_pca(
-            site,
-            selected_k,
-            cid,
-            result,
-            plot_path,
-            max_points=args.plot_max_points,
-            random_state=args.seed,
-        )
+        try:
+            plot_cluster_pca(
+                site,
+                site_selected_k,
+                cid,
+                result,
+                plot_path,
+                max_points=args.plot_max_points,
+                random_state=args.seed,
+            )
+        except ValueError as exc:
+            print(f"Skipping PCA plot for {site} cluster {cid}: {exc}")
 
     metadata_path = os.path.join(site_dir, "cluster_summary.json")
     write_cluster_metadata(
         metadata_path,
         cluster_stats,
-        selected_k,
+        site_selected_k,
         average_l2,
         cluster_labels=cluster_labels_full.tolist(),
         extra_fields={
@@ -472,6 +521,7 @@ for site_idx, site in enumerate(sites):
                 "latent_activity_threshold": float(args.latent_activity_threshold),
                 "latent_activation_eps": float(args.latent_activation_eps),
                 "activation_samples": total_activity_samples,
+                "decoder_rows_centered": bool(args.center_decoder_rows),
             },
         )
 

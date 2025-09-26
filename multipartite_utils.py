@@ -9,6 +9,9 @@ re-implement a full joint HMM.
 
 from __future__ import annotations
 
+import argparse
+import json
+from copy import deepcopy
 from dataclasses import dataclass
 from functools import reduce
 from operator import mul
@@ -16,6 +19,8 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import jax
 import jax.numpy as jnp
+import numpy as np
+import torch
 
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 
@@ -24,6 +29,9 @@ from simplexity.generative_processes.builder import (
     build_hidden_markov_model,
 )
 from simplexity.generative_processes.generative_process import GenerativeProcess
+from simplexity.generative_processes.torch_generator import generate_data_batch
+
+from mess3_gmg_analysis_utils import sae_encode_features
 
 
 # Canonical order matching legacy training pipeline: tom components precede mess3
@@ -214,16 +222,16 @@ def _resolve_device(preference: str) -> str:
     return preference
 
 
-def _load_process_stack(args: argparse.Namespace) -> tuple[list[dict], list, object]:
+def _load_process_stack(args: argparse.Namespace, preset_process_configs) -> tuple[list[dict], list, object]:
     if args.process_config:
         with open(args.process_config, "r", encoding="utf-8") as f:
             process_cfg_raw = json.load(f)
     elif args.process_preset:
-        if args.process_preset not in PRESET_PROCESS_CONFIGS:
+        if args.process_preset not in preset_process_configs:
             raise ValueError(f"Unknown process preset '{args.process_preset}'")
-        process_cfg_raw = deepcopy(PRESET_PROCESS_CONFIGS[args.process_preset])
+        process_cfg_raw = deepcopy(preset_process_configs[args.process_preset])
     else:
-        process_cfg_raw = deepcopy(PRESET_PROCESS_CONFIGS["single_mess3"])
+        process_cfg_raw = deepcopy(preset_process_configs["single_mess3"])
 
     components = build_components_from_config(process_cfg_raw)
     data_source: object
@@ -269,25 +277,40 @@ def _load_transformer(args: argparse.Namespace, device: str, vocab_size: int):
     return model, cfg
 
 
-def _select_sites(metrics_summary, requested_sites):
-    available = [site for site in SITE_HOOK_MAP if site in metrics_summary]
+def _select_sites(
+    metrics_summary: Mapping[str, Any],
+    requested_sites: Sequence[str] | None,
+    site_hook_map: Mapping[str, str],
+) -> list[str]:
+    """Return the subset of ``requested_sites`` present in the metrics summary.
+
+    If ``requested_sites`` is ``None`` all sites defined in ``site_hook_map``
+    that have entries in ``metrics_summary`` are returned in the map order.
+    Unknown site names are ignored with a warning.
+    """
+
+    available = [site for site in site_hook_map if site in metrics_summary]
     if requested_sites is None:
         return available
-    valid = [s for s in requested_sites if s in SITE_HOOK_MAP]
+
+    valid = [site for site in requested_sites if site in site_hook_map]
     missing = sorted(set(requested_sites) - set(valid))
     if missing:
         print(f"Warning: ignoring unknown sites {missing}")
-    return [s for s in valid if s in metrics_summary]
+
+    return [site for site in valid if site in metrics_summary]
 
 
 def _sample_tokens(
     data_source,
     batch_size: int,
     sample_len: int,
-    target_len: int,
+    target_len: int | None,
     seed: int,
     device: str,
 ) -> torch.Tensor:
+    if sample_len < 2:
+        raise ValueError("sample_len must be at least 2 to provide input/target pairs")
     key = jax.random.PRNGKey(seed)
     if isinstance(data_source, MultipartiteSampler):
         key, beliefs, tokens, _ = data_source.sample(key, batch_size, sample_len)
@@ -297,12 +320,20 @@ def _sample_tokens(
         gen_states = jnp.repeat(data_source.initial_state[None, :], batch_size, axis=0)
         _, inputs, _ = generate_data_batch(gen_states, data_source, batch_size, sample_len, key)
         arr = np.array(inputs)
-    if target_len is not None and arr.shape[1] != target_len:
-        if arr.shape[1] < target_len:
-            raise ValueError(
-                f"Sampled sequence length {arr.shape[1]} smaller than target length {target_len}"
-            )
+    effective_len = arr.shape[1]
+    if target_len is None:
+        target_len = sample_len - 1
+    if effective_len > target_len:
         arr = arr[:, :target_len]
+        effective_len = target_len
+    elif effective_len < target_len:
+        if target_len - effective_len > 1:
+            raise ValueError(
+                f"Sampled sequence length {effective_len} smaller than target length {target_len}"
+            )
+        # Allow a single-token discrepancy (sequence dropped final token upstream).
+    if arr.shape[1] < 2:
+        raise ValueError("Sampled sequences must provide at least two tokens")
     tokens = torch.from_numpy(arr).long().to(device)
     return tokens
 

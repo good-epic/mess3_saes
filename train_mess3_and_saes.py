@@ -51,9 +51,9 @@ PRESET_PROCESS_CONFIGS = {
         {
             "type": "mess3",
             "instances": [
-                {"x": 0.12, "a": 0.55},
-                {"x": 0.14, "a": 0.7},
-                {"x": 0.18, "a": 0.75},
+                {"x": 0.10, "a": 0.50},
+                {"x": 0.25, "a": 0.80},
+                {"x": 0.40, "a": 0.20},
             ],
         },
         {
@@ -65,6 +65,29 @@ PRESET_PROCESS_CONFIGS = {
         },
     ],
 }
+## For Multipartite 002
+# PRESET_PROCESS_CONFIGS = {
+#     "single_mess3": [
+#         {"type": "mess3", "params": {"x": 0.1, "a": 0.7}},
+#     ],
+#     "3xmess3_2xtquant": [
+#         {
+#             "type": "mess3",
+#             "instances": [
+#                 {"x": 0.12, "a": 0.55},
+#                 {"x": 0.14, "a": 0.7},
+#                 {"x": 0.18, "a": 0.75},
+#             ],
+#         },
+#         {
+#             "type": "tom_quantum",
+#             "instances": [
+#                 {"alpha": 1.12, "beta": float(5.64)},
+#                 {"alpha": 0.88, "beta": float(8.64)},
+#             ],
+#         },
+#     ],
+# }
 
 
 
@@ -98,7 +121,7 @@ parser.add_argument("--aux_penalty", type=float, default=1.0/32.0)
 parser.add_argument("--bandwidth", type=float, default=0.001)
 
 # SAE training loop controls
-parser.add_argument("--sae_steps", type=int, default=10000)
+parser.add_argument("--sae_steps", type=int, default=5000)
 parser.add_argument("--sae_batch_size", type=int, default=1024)
 parser.add_argument("--sae_seq_len", type=int, default=None)
 parser.add_argument("--seq_len", type=int, default=None, help="Sequence length used for analysis/visualization batches; defaults to n_ctx")
@@ -173,6 +196,7 @@ key = jax.random.PRNGKey(42)
 # Cell 3: Train (or load)
 losses = []
 if args.load_model is None:
+    raise ValueError("Don't want to train model from scratch here")
     if isinstance(data_source, MultipartiteSampler):
         raise ValueError(
             "Training from scratch is not implemented for multipartite stacks; "

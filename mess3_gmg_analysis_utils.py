@@ -21,6 +21,7 @@ class ClusterPCAResult:
     pca: PCA
     decoder_coords: Dict[int, np.ndarray]
     scale_factor: float
+    component_indices: Tuple[int, ...]
 
 
 def load_metrics_summary(path: str) -> Dict:
@@ -220,10 +221,18 @@ def fit_pca_for_clusters(
     for cluster_id, data in cluster_recons.items():
         if data.shape[0] < max(n_components, min_samples):
             continue
-        pca = PCA(n_components=n_components)
+        effective_components = min(max(n_components, 3), data.shape[1], data.shape[0])
+        pca = PCA(n_components=effective_components)
         coords = pca.fit_transform(data)
         decoder_coords: Dict[int, np.ndarray] = {}
-        results[cluster_id] = ClusterPCAResult(coords=coords, pca=pca, decoder_coords=decoder_coords, scale_factor=1.0)
+        component_indices = tuple(range(coords.shape[1]))
+        results[cluster_id] = ClusterPCAResult(
+            coords=coords,
+            pca=pca,
+            decoder_coords=decoder_coords,
+            scale_factor=1.0,
+            component_indices=component_indices,
+        )
     return results
 
 
@@ -249,14 +258,37 @@ def project_decoder_directions_to_pca(
             vectors = vectors / norms
         centered = vectors - result.pca.mean_
         projected = centered @ result.pca.components_.T
+        if projected.size == 0:
+            result.decoder_coords = {}
+            result.scale_factor = 1.0
+            result.component_indices = tuple()
+            continue
+
+        mean_abs_projection = np.mean(np.abs(projected), axis=0)
+        order = np.argsort(mean_abs_projection)[::-1]
+        top_count = min(3, projected.shape[1])
+        selected = np.asarray(order[:top_count], dtype=int)
+
+        # Reorder data coordinates to match selected PCs
+        result.coords = result.coords[:, selected]
+        projected_top = projected[:, selected]
+        result.component_indices = tuple(int(i) for i in selected)
+
         # scale decoder vectors to match data spread
         data_norm = np.linalg.norm(result.coords, axis=1)
         data_scale = float(np.percentile(data_norm, 90)) if data_norm.size else 1.0
-        vector_norm = np.linalg.norm(projected, axis=1)
+        vector_norm = np.linalg.norm(projected_top, axis=1)
         max_vec = float(vector_norm.max()) if vector_norm.size else 1.0
         scale = data_scale / max_vec if max_vec > 0 else 1.0
-        result.decoder_coords = {latent_indices[i]: projected[i] * scale for i in range(len(latent_indices))}
+        result.decoder_coords = {
+            latent_indices[i]: projected_top[i] * scale for i in range(len(latent_indices))
+        }
         result.scale_factor = scale
+
+        stats["selected_pc_indices"] = [int(i) for i in selected]
+        stats["selected_pc_mean_abs_projection"] = {
+            int(i): float(mean_abs_projection[i]) for i in selected
+        }
 
 
 def plot_cluster_pca(
@@ -292,10 +324,13 @@ def plot_cluster_pca(
         ax.quiver(0.0, 0.0, 0.0, vec[0], vec[1], vec[2], color=color, linewidth=1.8)
         ax.text(vec[0], vec[1], vec[2], str(latent_idx), color=color, fontsize=8)
 
+    pc_indices = result.component_indices if result.component_indices else tuple(range(coords.shape[1]))
+    if len(pc_indices) < 3:
+        raise ValueError("Cluster PCA result does not have 3 selected components")
     ax.set_title(f"{site_name} • k={k_value} • cluster {cluster_id}")
-    ax.set_xlabel("PC 1")
-    ax.set_ylabel("PC 2")
-    ax.set_zlabel("PC 3")
+    ax.set_xlabel(f"PC {pc_indices[0] + 1}")
+    ax.set_ylabel(f"PC {pc_indices[1] + 1}")
+    ax.set_zlabel(f"PC {pc_indices[2] + 1}")
     fig.tight_layout()
     fig.savefig(output_path)
     plt.close(fig)
