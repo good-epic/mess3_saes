@@ -18,41 +18,73 @@ nOriginal file is located at
 #%%
 # Cell 2: Setup
 import argparse
-import json
-from copy import deepcopy
 from collections import defaultdict
 from itertools import combinations
 from math import comb
+from typing import Any, Mapping, Sequence
+import json
+import sys
+import gc
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import torch
 from sklearn.decomposition import PCA
-from tqdm import tqdm
+from tqdm.auto import tqdm
 from transformer_lens import HookedTransformer, HookedTransformerConfig
+from BatchTopK.sae import TopKSAE, VanillaSAE
 
 from simplexity.generative_processes.torch_generator import generate_data_batch
 
 from multipartite_utils import (
     MultipartiteSampler,
-    build_components_from_config,
+    _load_process_stack,
 )
 from training_and_analysis_utils import (
     plot_pca_subplots,
     evaluate_belief_state_linear_models,
     project_vectors_onto_simplex,
-    enforce_tom_quantum_physicality,
     project_simplex3_to_2d,
     plot_mess3_belief_grid,
     plot_tom_quantum_coherence,
     plot_tom_quantum_coherence_grid,
+    _aggregate_layer_metrics,
+    _print_residual_summary_table,
+    _print_combined_regression_report,
+    load_metrics_summary,
+    _load_sae_checkpoints,
+)
+from epdf_utils import (
+    build_mp_latent_epdfs,
+    plot_mp_epdfs,
+    save_latent_epdfs,
+    load_latent_epdfs,
+    build_epdfs_from_sae_and_beliefs,
+    plot_epdfs_to_directory,
 )
 import os
 import matplotlib.pyplot as plt
 from matplotlib import colors as mcolors
+import glob
+import re
 
 jax.config.update("jax_platform_name", "cpu")
+
+
+def log_memory_usage(label: str, verbose: bool = False):
+    """Log current memory usage if verbose flag is enabled."""
+    if not verbose:
+        return
+    try:
+        import psutil
+        process = psutil.Process()
+        mem_info = process.memory_info()
+        mem_mb = mem_info.rss / 1024 / 1024
+        print(f"[Memory] {label}: {mem_mb:.1f} MB")
+    except ImportError:
+        # psutil not available, skip logging
+        pass
 
 
 PRESET_PROCESS_CONFIGS = {
@@ -78,6 +110,8 @@ PRESET_PROCESS_CONFIGS = {
         },
     ],
 }
+
+
 #%%
 # CLI arguments
 device_default = "cuda" if torch.cuda.is_available() else "cpu"
@@ -91,64 +125,77 @@ parser.add_argument("--n_ctx", type=int, default=16)
 parser.add_argument("--d_vocab", type=int, default=None)
 parser.add_argument("--act_fn", type=str, default="relu")
 parser.add_argument("--device", type=str, default=device_default)
+parser.add_argument("--seed", type=int, default=0, help="Random seed for analysis sampling")
 parser.add_argument("--d_head", type=int, default=32)
 
 # SAE hyperparameters
 parser.add_argument("--dict_mul", type=int, default=4)
-parser.add_argument("--k", type=int, nargs="+", default=list(range(1, 25)))
+parser.add_argument("--k", type=int, nargs="+", default=[3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 19, 22, 25])
 #parser.add_argument("--l1_coeff_seq", type=float, nargs="+", default=[0.01, 0.015, 0.02, 0.025, 0.05, 0.075] + [round(x, 3) for x in np.arange(0.1, 0.151, 0.005)])
 #parser.add_argument("--l1_coeff_beliefs", type=float, nargs="+", default=[1e-3, 0.01, 0.015, 0.02, 0.025, 0.05] + [round(x, 2) for x in np.arange(0.1, 0.651, 0.05)])
-parser.add_argument("--l1_coeff_seq", type=float, nargs="+", default=None)
+parser.add_argument("--l1_coeff_seq", type=float, nargs="+", default=[0.001, 0.005, 0.01, 0.05, 0.1, 0.15])
 parser.add_argument("--l1_coeff_beliefs", type=float, nargs="+", default=None)
 parser.add_argument("--input_unit_norm", dest="input_unit_norm", action="store_true", default=True)
 parser.add_argument("--no_input_unit_norm", dest="input_unit_norm", action="store_false")
 parser.add_argument("--n_batches_to_dead", type=int, default=5)
 parser.add_argument("--top_k_aux", type=int, default=None)
-parser.add_argument("--aux_penalty", type=float, default=1.0/32.0)
+parser.add_argument("--aux_penalty", type=float, default=0.03125)
 parser.add_argument("--bandwidth", type=float, default=0.001)
 
 # SAE training loop controls
-parser.add_argument("--sae_steps", type=int, default=10000)
-parser.add_argument("--sae_batch_size", type=int, default=1024)
-parser.add_argument("--sae_seq_len", type=int, default=None)
 parser.add_argument("--seq_len", type=int, default=None, help="Sequence length used for analysis/visualization batches; defaults to n_ctx",)
 parser.add_argument("--analysis_batch_size", type=int, default=8192, help="Batch size for exploratory sampling from the multipartite stack",)
-parser.add_argument("--sae_output_dir", type=str, default="outputs/saes/multipartite_001", help="Directory to save trained SAEs and metrics")
-parser.add_argument("--fig_out_dir", type=str, default="outputs/reports/multipartite_001", help="Directory to save matplotlib figures")
+parser.add_argument("--fig_out_dir", type=str, default="outputs/reports/multipartite_002", help="Directory to save matplotlib figures")
+parser.add_argument("--plot_pcas", action="store_true", default=False, help="Plot all the 2 and 3 combinations of PCs")
 
+parser.add_argument("--linear_prediction_layer", type=str, default="layer_2", help="Layer name to use for linear-prediction visualizations, e.g. 'layer_2'")
+parser.add_argument("--sae_folder", type=str, default="outputs/saes/multipartite_002", help="Folder containing SAE checkpoints for EPDF analysis")
+parser.add_argument("--metrics_summary", type=str, default=None, help="Optional path to metrics_summary.json; defaults to <sae_folder>/metrics_summary.json")
+parser.add_argument("--build_epdfs", action="store_true", default=False, help="Generate multipartite EPDF visualizations")
+parser.add_argument("--epdf_output_dir", type=str, default=None, help="Output directory for EPDF figures; defaults to <fig_out_dir>/epdfs")
+parser.add_argument("--epdf_latent_min_fraction", type=float, default=0.05, help="Minimum latent activity fraction required to plot an EPDF")
+parser.add_argument("--epdf_activation_threshold", type=float, default=1e-6, help="Activation magnitude threshold for including samples in EPDFs")
+parser.add_argument("--epdf_max_points", type=int, default=2000, help="Maximum samples per component when plotting EPDFs")
+parser.add_argument("--epdf_cache_dir", type=str, default="outputs/reports/multipartite_002/epdfs/cache", help="Directory to save/load serialized latent EPDFs")
+parser.add_argument("--epdf_use_cache", action="store_true", default=False, help="Load cached EPDFs when available instead of recomputing")
+parser.add_argument("--epdf_sites", type=str, nargs="+", default=None, help="Subset of sites to process for EPDFs (e.g., layer_0 layer_1); if None, processes all sites")
+parser.add_argument("--epdf_plot_mode", type=str, default="both", choices=["both", "all_only", "per_latent_only"], help="Which EPDF plots to generate: 'both' (all+per-latent), 'all_only', or 'per_latent_only'")
+parser.add_argument("--max_latents_per_sae", type=int, default=None, help="Maximum number of latents to process per SAE (uses most active); if None, processes all filtered latents")
+parser.add_argument("--verbose_memory", action="store_true", default=False, help="Log memory usage at key checkpoints during EPDF generation")
 
 # Model loading
 #parser.add_argument("--load_model", type=str, default=None, help="Path to a saved model checkpoint (.pt). If provided, skip training and load this model.")
-parser.add_argument("--load_model", type=str, default="outputs/checkpoints/multipartite_001/checkpoint_step_500000_final.pt", help="Path to a saved model checkpoint (.pt). If provided, skip training and load this model.")
-parser.add_argument("--process_config", type=str, default=None, help="Path to JSON describing a stack of generative processes")
-#parser.add_argument("--process_preset", type=str, default=None, help="Named preset for generative process configuration")
-parser.add_argument("--process_preset", type=str, default="3xmess3_2xtquant", help="Named preset for generative process configuration")
+parser.add_argument("--load_model", type=str, default="outputs/checkpoints/multipartite_002/checkpoint_step_125000.pt", help="Path to a saved model checkpoint (.pt). If provided, skip training and load this model.")
+parser.add_argument("--process_config", type=str, default="process_configs.json", help="Path to JSON describing a stack of generative processes or a mapping of named configurations")
+parser.add_argument("--process_config_name", type=str, default="3xmess3_2xtquant_002", help="Key within --process_config when the file stores multiple named configurations")
+parser.add_argument("--process_preset", type=str, default=None, help="Named preset for generative process configuration")
+parser.add_argument("--pc_inds", type=str, default="pc_inds.json", help="JSON file describing the PCA indices for each component")
 
 # Parse known to be notebook-friendly
 args, _ = parser.parse_known_args()
 
 if args.process_config and args.process_preset:
     parser.error("Specify at most one of --process_config or --process_preset")
+if args.process_config_name and not args.process_config:
+    parser.error("--process_config_name requires --process_config")
 
-if args.process_config:
-    with open(args.process_config, "r", encoding="utf-8") as f:
-        process_config = json.load(f)
-elif args.process_preset:
-    if args.process_preset not in PRESET_PROCESS_CONFIGS:
-        parser.error(f"Unknown process preset '{args.process_preset}'")
-    process_config = deepcopy(PRESET_PROCESS_CONFIGS[args.process_preset])
-else:
-    process_config = deepcopy(PRESET_PROCESS_CONFIGS["single_mess3"])
-
-components = build_components_from_config(process_config)
+_process_config_raw, components, data_source = _load_process_stack(args, PRESET_PROCESS_CONFIGS)
+sampler: MultipartiteSampler | None
 if len(components) == 1:
     data_source = components[0].process
-    sampler: MultipartiteSampler | None = None
+    sampler = None
 else:
     sampler = MultipartiteSampler(components)
     data_source = sampler
 
 
+# Handle --pc_inds argument: load JSON mapping of layer/component to PC indices
+layer_pc_inds_map = {}
+if args.pc_inds is not None:
+    with open(args.pc_inds, "r") as f:
+        layer_pc_inds_map = json.load(f)
+
+linear_prediction_layer = args.linear_prediction_layer
 
 if isinstance(data_source, MultipartiteSampler):
     vocab_size = data_source.vocab_size
@@ -179,6 +226,34 @@ print(f"Model: {sum(p.numel() for p in model.parameters()):,} params on {device}
 
 # Define a default sequence length for downstream analysis/visualization
 seq_len = args.seq_len if args.seq_len is not None else cfg.n_ctx
+
+
+#%%
+# Load metrics summary (for active latent metadata)
+
+metrics_summary_path = args.metrics_summary
+if metrics_summary_path is None and args.sae_folder is not None:
+    metrics_summary_path = os.path.join(args.sae_folder, "metrics_summary.json")
+
+metrics_summary = load_metrics_summary(metrics_summary_path) if metrics_summary_path else None
+
+active_latents: dict[tuple[str, ...], dict[str, list[float]]] = {}
+if metrics_summary:
+    for site_name, site_data in metrics_summary.items():
+        if not isinstance(site_data, dict):
+            continue
+        sequence_group = site_data.get("sequence", {})
+        for sae_type in ("top_k", "vanilla"):
+            group = sequence_group.get(sae_type, {})
+            for param_name, record in group.items():
+                inds = record.get("active_latents_last_quarter", {})
+                if inds:
+                    try:
+                        normalized = {str(k): v for k, v in inds.items()}
+                    except Exception:
+                        normalized = inds
+                    key = (site_name, "sequence", sae_type, param_name)
+                    active_latents[key] = normalized
 
 
 #%%
@@ -255,6 +330,7 @@ plt.close()
 # Generate a batch for analysis using the multipartite sampler utilities
 
 analysis_batch_size = args.analysis_batch_size
+plot_pcas = args.plot_pcas
 
 # Sample one analysis batch
 component_token_arrays: list[np.ndarray] = []
@@ -303,6 +379,13 @@ for idx, comp in component_iter:
         {"name": comp.name, "type": comp_type, "vocab_size": int(vocab_size), "belief_dim": belief_dim}
     )
 
+#%%
+print(f"{len(component_belief_arrays)=}")
+print(f"{component_belief_arrays[0].shape=}")
+
+
+#%%
+
 print("Analysis batch summary:")
 print(f"  product tokens -> batch={tokens.shape[0]}, seq={tokens.shape[1]}, vocab={product_vocab_size}")
 for meta, obs in zip(component_metadata, component_token_arrays):
@@ -313,6 +396,10 @@ logits, cache = model.run_with_cache(tokens)
 residual_streams = {"embeddings": cache["hook_embed"]}
 for i in range(args.n_layers):
     residual_streams[f"layer_{i}"] = cache[f"blocks.{i}.hook_resid_post"]
+try:
+    residual_streams["ln_final"] = cache["ln_final.hook_normalized"]
+except KeyError:
+    pass
 
 print("Activation shapes:")
 for name, acts in residual_streams.items():
@@ -333,19 +420,37 @@ for name, acts in activations_flat.items():
     print(f"  {name}: {acts.shape}")
 
 # Choose which site to PCA
-target_layer_name = f"layer_{args.n_layers - 1}" if args.n_layers > 0 else "embeddings"
-if target_layer_name not in activations_flat:
+# Getting this as an argument from the command line
+# linear_prediction_layer = f"layer_{args.n_layers - 1}" if args.n_layers > 0 else "embeddings"
+if linear_prediction_layer not in activations_flat:
     available_layers = ", ".join(sorted(activations_flat.keys()))
-    raise KeyError(f"Requested layer '{target_layer_name}' not found. Available: {available_layers}")
+    raise KeyError(f"Requested layer '{linear_prediction_layer}' not found. Available: {available_layers}")
 
-target_acts = activations_flat[target_layer_name]
-n_components = min(15, target_acts.shape[0], target_acts.shape[1])
-if n_components < 2:
-    raise ValueError(f"Not enough samples/features for PCA, got {n_components}.")
+layer_pca_models: dict[str, PCA] = {}
+pca_coords: np.ndarray | None = None
 
-pca = PCA(n_components=n_components, whiten=True)
-pca_coords = pca.fit_transform(target_acts)
-print(f"PCA ({target_layer_name}) explained variance ratio: {pca.explained_variance_ratio_}")
+for layer_name, acts_flat in activations_flat.items():
+    n_components = min(15, acts_flat.shape[0], acts_flat.shape[1])
+    if n_components < 2:
+        print(f"Skipping PCA for {layer_name}: insufficient samples/features (n_components={n_components})")
+        continue
+
+    layer_pca = PCA(n_components=n_components, whiten=True)
+    layer_coords = layer_pca.fit_transform(acts_flat)
+    layer_pca_models[layer_name] = layer_pca
+    
+    if layer_name == linear_prediction_layer:
+        pca_coords = layer_coords
+
+if linear_prediction_layer not in layer_pca_models:
+    raise ValueError(f"Failed to fit PCA for target layer '{linear_prediction_layer}'")
+
+pca = layer_pca_models[linear_prediction_layer]
+if pca_coords is None:
+    target_acts = activations_flat[linear_prediction_layer]
+    pca_coords = pca.transform(target_acts)
+
+print(f"PCA ({linear_prediction_layer}) explained variance ratio: {pca.explained_variance_ratio_}")
 print(f"Total variance explained: {pca.explained_variance_ratio_.sum():.2%}")
 
 
@@ -421,11 +526,14 @@ if final_layer_name not in residual_streams:
     raise KeyError(f"Expected residual stream '{final_layer_name}' not found. Have: {available}")
 
 final_layer_activations = residual_streams[final_layer_name]
+with torch.no_grad():
+    ln_final_activations = model.ln_final(final_layer_activations)
+residual_streams["ln_final"] = ln_final_activations
 
-belief_regression_metrics = evaluate_belief_state_linear_models(
-    activations=final_layer_activations,
-    component_belief_arrays=component_belief_arrays,
-    component_metadata=component_metadata,
+linear_prediction_layer = args.linear_prediction_layer
+
+
+regression_common_kwargs = dict(
     seq_positions=evaluation_positions,
     skip_dims_by_type={"tom_quantum": [0]},
     postprocess_by_type={
@@ -435,42 +543,307 @@ belief_regression_metrics = evaluate_belief_state_linear_models(
     store_predictions=True,
 )
 
-print("\n=== Linear Regression: belief prediction at final layer ===")
-for comp_name, info in belief_regression_metrics.items():
-    comp_type = info.get("type", "unknown")
-    belief_dim = info.get("belief_dim")
-    print(f"  {comp_name} [{comp_type}] belief_dim={belief_dim}")
-    metrics_by_pos = info.get("metrics", {})
-    for pos in evaluation_positions:
-        metrics = metrics_by_pos.get(pos)
-        if metrics is None:
-            print(f"    pos {pos}: metrics not available")
-            continue
-        target_dims = metrics.get("target_dims", [])
-        if not target_dims:
-            note = metrics.get("note", "no usable belief dims")
-            dropped_explicit = metrics.get("explicitly_dropped_dims", [])
-            dropped_auto = metrics.get("dropped_low_variance_dims", [])
-            print(
-                f"    pos {pos}: {note} (explicitly dropped={dropped_explicit}, auto-dropped={dropped_auto})"
-            )
-            continue
+probe_layers: list[tuple[str, torch.Tensor]] = []
+if "embeddings" in residual_streams:
+    probe_layers.append(("embeddings", residual_streams["embeddings"]))
+for i in range(args.n_layers):
+    label = f"layer_{i}"
+    if label in residual_streams:
+        probe_layers.append((label, residual_streams[label]))
+probe_layers.append(("ln_final", ln_final_activations))
 
-        r2_mean = metrics.get("r2_mean", float("nan"))
-        rmse = metrics.get("rmse", float("nan"))
-        mae = metrics.get("mae", float("nan"))
-        per_dim_r2 = metrics.get("r2_per_dim", {})
-        per_dim_corr = metrics.get("pearson_per_dim", {})
 
-        dims_repr = ",".join(str(d) for d in target_dims)
-        r2_repr = ", ".join(f"{dim}:{per_dim_r2.get(dim, float('nan')):.3f}" for dim in target_dims)
-        corr_repr = ", ".join(f"{dim}:{per_dim_corr.get(dim, float('nan')):.3f}" for dim in target_dims)
+layer_results = {}
+for layer_label, acts in probe_layers:
+    layer_pca = layer_pca_models.get(layer_label)
+    layer_pc_inds = layer_pc_inds_map.get(layer_label, None)
+    metrics = evaluate_belief_state_linear_models(
+        activations=acts,
+        component_belief_arrays=component_belief_arrays,
+        component_metadata=component_metadata,
+        pca=layer_pca,
+        pc_inds=layer_pc_inds,
+        **regression_common_kwargs,
+    )
+    layer_results[layer_label] = metrics
 
-        print(
-            f"    pos {pos}: dims[{dims_repr}] r2_mean={r2_mean:.3f} rmse={rmse:.5f} mae={mae:.5f}"
-        )
-        print(f"        r2_per_dim: {r2_repr}")
-        print(f"        pearson_per_dim: {corr_repr}")
+_print_combined_regression_report(layer_results, evaluation_positions, component_metadata)
+
+_print_residual_summary_table(
+    layer_results,
+    final_layer_name,
+    "ln_final",
+    evaluation_positions,
+    component_metadata,
+)
+
+# Choose the layer for the plots
+belief_regression_metrics = layer_results.get(linear_prediction_layer, layer_results.get(final_layer_name, {}))
+
+
+#%%
+# ==== Multipartite EPDF Visualizations ==================================== #
+
+args.build_epdfs = True
+args.epdf_output_dir = None
+args.epdf_cache_dir = "outputs/reports/multipartite_002/epdfs/cache"
+args.epdf_use_cache = True
+args.epdf_max_points = 2000
+args.sae_folder = "outputs/saes/multipartite_002"
+
+if args.build_epdfs:
+    if args.sae_folder is None:
+        print("Skipping EPDF generation: --sae_folder not provided")
+    else:
+        print("Generating Multipartite ePDFs")
+        epdf_output_dir = args.epdf_output_dir or os.path.join(args.fig_out_dir, "epdfs")
+        os.makedirs(epdf_output_dir, exist_ok=True)
+
+        loaded_saes = _load_sae_checkpoints(args.sae_folder, device)
+
+        # Filter to requested sites if specified
+        if args.epdf_sites is not None:
+            original_sites = set(loaded_saes.keys())
+            loaded_saes = {
+                site: saes for site, saes in loaded_saes.items()
+                if site in args.epdf_sites
+            }
+            filtered_sites = set(loaded_saes.keys())
+            if not loaded_saes:
+                print(f"Warning: None of the requested sites {args.epdf_sites} found in SAE checkpoints")
+                print(f"Available sites: {sorted(original_sites)}")
+            else:
+                excluded = original_sites - filtered_sites
+                if excluded:
+                    print(f"Filtering to sites: {sorted(filtered_sites)}")
+                    print(f"Excluded sites: {sorted(excluded)}")
+
+        if not loaded_saes:
+            print(f"No SAE checkpoints found in {args.sae_folder}; skipping EPDFs")
+        else:
+            cache_dir = args.epdf_cache_dir
+            if cache_dir is None and args.epdf_use_cache:
+                cache_dir = os.path.join(epdf_output_dir, "cache")
+            if cache_dir is not None:
+                os.makedirs(cache_dir, exist_ok=True)
+
+            component_meta_map = {str(meta["name"]): meta for meta in component_metadata}
+            component_order = [str(meta["name"]) for meta in component_metadata]
+
+            flattened_component_beliefs: dict[str, np.ndarray] = {}
+            for meta, beliefs in zip(component_metadata, component_belief_arrays, strict=True):
+                comp_name = str(meta["name"])
+                if token_inds:
+                    selected = beliefs[:, token_inds, :]
+                else:
+                    selected = beliefs
+                flattened_component_beliefs[comp_name] = selected.reshape(-1, selected.shape[-1])
+
+            log_memory_usage("Before EPDF generation", args.verbose_memory)
+
+            sae_result_counter = 0
+            site_items = list(loaded_saes.items())
+            for site_name, sae_map in tqdm(
+                site_items,
+                desc="EPDF sites",
+                leave=True,
+                #disable=not sys.stderr.isatty(),
+            ):
+                acts_np = activations_flat.get(site_name)
+                if acts_np is None:
+                    continue
+
+                acts_tensor = torch.from_numpy(acts_np).to(device)
+
+                sae_items = list(sae_map.items())
+                for (sae_type, param_token), ckpt in tqdm(
+                    sae_items,
+                    desc=f"{site_name} SAEs",
+                    leave=True,
+                    #disable=not sys.stderr.isatty(),
+                ):
+                    if sae_type == "top_k":
+                        sae_class = TopKSAE
+                        active_key = (site_name, "sequence", "top_k", param_token)
+                    else:
+                        sae_class = VanillaSAE
+                        active_key = (site_name, "sequence", "vanilla", param_token)
+
+                    sae = sae_class(ckpt["cfg"])
+                    sae.load_state_dict(ckpt["state_dict"])
+                    sae.to(device).eval()
+
+                    with torch.no_grad():
+                        sae_out = sae(acts_tensor)
+                        latent_acts = sae_out["feature_acts"].cpu().numpy()
+
+                    activation_fracs = (np.abs(latent_acts) > args.epdf_activation_threshold).mean(axis=0)
+
+                    filtered_latents: dict[str, list[float]] = {}
+                    active_info = active_latents.get(active_key)
+                    if isinstance(active_info, dict) and active_info:
+                        for latent_id, stats in active_info.items():
+                            try:
+                                frac = float(stats[0])
+                            except Exception:
+                                frac = 0.0
+                            try:
+                                latent_idx_int = int(latent_id)
+                            except Exception:
+                                latent_idx_int = None
+                            if latent_idx_int is not None and 0 <= latent_idx_int < activation_fracs.shape[0]:
+                                frac = max(frac, float(activation_fracs[latent_idx_int]))
+                            if frac >= args.epdf_latent_min_fraction:
+                                filtered_latents[str(latent_id)] = [frac]
+                    else:
+                        for idx, frac in enumerate(activation_fracs):
+                            if frac >= args.epdf_latent_min_fraction:
+                                filtered_latents[str(idx)] = [float(frac)]
+
+                    if not filtered_latents:
+                        continue
+
+                    # Apply max latents limit if specified (keep most active)
+                    if args.max_latents_per_sae is not None and len(filtered_latents) > args.max_latents_per_sae:
+                        # Sort by activity fraction (descending) and keep top N
+                        sorted_latents = sorted(
+                            filtered_latents.items(),
+                            key=lambda x: x[1][0],
+                            reverse=True
+                        )
+                        filtered_latents = dict(sorted_latents[:args.max_latents_per_sae])
+                        print(
+                            f"{site_name}/{sae_type}/{param_token}: "
+                            f"limited to top {args.max_latents_per_sae} most active latents"
+                        )
+
+                    log_memory_usage(
+                        f"Before EPDF build: {site_name}/{sae_type}/{param_token}",
+                        args.verbose_memory
+                    )
+
+                    cache_path = None
+                    if cache_dir is not None:
+                        cache_name = f"{site_name}_{sae_type}_{param_token}.pkl"
+                        cache_path = os.path.join(cache_dir, cache_name)
+
+                    epdf_dict = None
+                    if cache_path and args.epdf_use_cache and os.path.exists(cache_path):
+                        try:
+                            epdf_dict = load_latent_epdfs(cache_path)
+                            print(f"Loaded EPDF cache from {cache_path}")
+                        except Exception as exc:
+                            print(f"Warning: failed to load EPDF cache {cache_path}: {exc}")
+                            epdf_dict = None
+
+                    if epdf_dict is None:
+                        epdf_dict = build_mp_latent_epdfs(
+                            site_name=site_name,
+                            sae_id=(sae_type, param_token),
+                            latent_activations=latent_acts,
+                            component_beliefs=flattened_component_beliefs,
+                            component_metadata=component_meta_map,
+                            active_latent_indices=filtered_latents,
+                            activation_threshold=args.epdf_activation_threshold,
+                            bw_method=args.bandwidth,
+                            progress=True,
+                            progress_desc=f"Latents {site_name}/{sae_type}/{param_token}",
+                            progress_disable=False, #not sys.stderr.isatty(),
+                        )
+                        if cache_path is not None:
+                            try:
+                                save_latent_epdfs(epdf_dict, cache_path)
+                                print(f"Saved EPDF cache to {cache_path}")
+                            except Exception as exc:
+                                print(f"Warning: failed to save EPDF cache {cache_path}: {exc}")
+
+                    if not epdf_dict:
+                        continue
+
+                    # Create organized directory structure
+                    all_dir = os.path.join(epdf_output_dir, "all")
+                    site_sae_dir = os.path.join(epdf_output_dir, site_name, param_token)
+                    os.makedirs(all_dir, exist_ok=True)
+                    os.makedirs(site_sae_dir, exist_ok=True)
+
+                    sae_result_counter += 1
+                    epdf_list = list(epdf_dict.values())
+                    title_prefix = f"{site_name} / {sae_type} / {param_token}"
+
+                    # Generate "all latents" figure with KDE visualization
+                    if args.epdf_plot_mode in ["both", "all_only"]:
+                        log_memory_usage(
+                            f"Before all-latents plot: {site_name}/{sae_type}/{param_token}",
+                            args.verbose_memory
+                        )
+                        fig_all = plot_mp_epdfs(
+                            epdf_list,
+                            component_order=component_order,
+                            max_points=args.epdf_max_points,
+                            title=f"{title_prefix}: all latents",
+                            mode="transparency",
+                            grid_size=100,
+                        )
+                        # Save to both "all" and site-specific directories
+                        all_filename = f"{site_name}_{sae_type}_{param_token}_all.png"
+                        fig_all.savefig(os.path.join(all_dir, all_filename), dpi=150, bbox_inches='tight')
+                        fig_all.savefig(os.path.join(site_sae_dir, all_filename), dpi=150, bbox_inches='tight')
+                        plt.close(fig_all)
+                        log_memory_usage(
+                            f"After all-latents plot: {site_name}/{sae_type}/{param_token}",
+                            args.verbose_memory
+                        )
+
+                    # Generate per-latent figures
+                    if args.epdf_plot_mode in ["both", "per_latent_only"]:
+                        latent_items = list(epdf_dict.items())
+                        for latent_idx, epdf in tqdm(
+                            latent_items,
+                            desc=f"Figures {site_name}/{sae_type}/{param_token}",
+                            leave=False,
+                            disable=not sys.stderr.isatty(),
+                        ):
+                            fig_latent = plot_mp_epdfs(
+                                [epdf],
+                                component_order=component_order,
+                                max_points=args.epdf_max_points,
+                                title=f"{title_prefix}: latent {latent_idx}",
+                                mode="transparency",
+                                grid_size=100,
+                            )
+                            # Save to site-specific directory
+                            latent_filename = f"{site_name}_{sae_type}_{param_token}_latent_{latent_idx}.png"
+                            fig_latent.savefig(os.path.join(site_sae_dir, latent_filename), dpi=150, bbox_inches='tight')
+                            plt.close(fig_latent)
+
+                    # Clear matplotlib state and force garbage collection after per-latent loop
+                    plt.clf()
+                    gc.collect()
+
+                    # Clean up SAE-related objects to free memory
+                    del sae, sae_out, latent_acts, epdf_dict, epdf_list
+                    if device == "cuda" or (hasattr(torch.cuda, 'is_available') and torch.cuda.is_available()):
+                        torch.cuda.empty_cache()
+                    gc.collect()
+
+                    log_memory_usage(
+                        f"After SAE cleanup: {site_name}/{sae_type}/{param_token}",
+                        args.verbose_memory
+                    )
+
+                # Cleanup after processing all SAEs for this site
+                del acts_tensor
+                if device == "cuda" or (hasattr(torch.cuda, 'is_available') and torch.cuda.is_available()):
+                    torch.cuda.empty_cache()
+                gc.collect()
+
+                log_memory_usage(
+                    f"After site cleanup: {site_name}",
+                    args.verbose_memory
+                )
+
+            if sae_result_counter == 0:
+                print("No EPDFs were generated; check thresholds and SAE availability")
 
 #%%
 # ==== 2D Simplex Plots of Mess3 Predicted Beliefs ===================================== #
@@ -541,8 +914,9 @@ for idx, meta in enumerate(component_metadata):
         fig.suptitle(f"Mess3 {comp_name}: belief simplex (pos {pos})", fontsize=13)
         fig.tight_layout()
         os.makedirs(args.fig_out_dir, exist_ok=True)
+        os.makedirs(os.path.join(args.fig_out_dir, "beliefs"), exist_ok=True)
         safe_name = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in comp_name)
-        out_path = os.path.join(args.fig_out_dir, f"mess3_pred_simplex2d_{safe_name}_pos{pos}_beliefrgb.png")
+        out_path = os.path.join(args.fig_out_dir, "beliefs", f"mess3_pred_simplex2d_{safe_name}_pos{pos}_beliefrgb.png")
         fig.savefig(out_path, dpi=160)
         plt.close(fig)
         print(f"Saved Mess3 simplex comparison (belief RGB) → {out_path}")
@@ -565,7 +939,7 @@ for idx, meta in enumerate(component_metadata):
 
         fig_lbl.suptitle(f"Mess3 {comp_name}: belief simplex (pos {pos})", fontsize=13)
         fig_lbl.tight_layout()
-        out_path_lbl = os.path.join(args.fig_out_dir, f"mess3_pred_simplex2d_{safe_name}_pos{pos}_truecolors.png")
+        out_path_lbl = os.path.join(args.fig_out_dir, "beliefs", f"mess3_pred_simplex2d_{safe_name}_pos{pos}_truecolors.png")
         fig_lbl.savefig(out_path_lbl, dpi=160)
         plt.close(fig_lbl)
         print(f"Saved Mess3 simplex comparison (true colors @ predicted positions) → {out_path_lbl}")
@@ -653,7 +1027,7 @@ for idx, meta in enumerate(component_metadata):
         fig.tight_layout()
         os.makedirs(args.fig_out_dir, exist_ok=True)
         safe_name = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in comp_name)
-        out_path = os.path.join(args.fig_out_dir, f"tomq_coherence_{safe_name}_pos{pos}_emissionmix.png")
+        out_path = os.path.join(args.fig_out_dir, "beliefs", f"tomq_coherence_{safe_name}_pos{pos}_emissionmix.png")
         fig.savefig(out_path, dpi=170)
         plt.close(fig)
         print(f"Saved Tom Quantum coherence plot (emission-weighted colors) → {out_path}")
@@ -676,7 +1050,7 @@ for idx, meta in enumerate(component_metadata):
 
         fig_lbl.suptitle(f"TomQ {comp_name}: coherence plane (pos {pos})", fontsize=13)
         fig_lbl.tight_layout()
-        out_path_lbl = os.path.join(args.fig_out_dir, f"tomq_coherence_{safe_name}_pos{pos}_truecolors.png")
+        out_path_lbl = os.path.join(args.fig_out_dir, "beliefs", f"tomq_coherence_{safe_name}_pos{pos}_truecolors.png")
         fig_lbl.savefig(out_path_lbl, dpi=170)
         plt.close(fig_lbl)
         print(f"Saved Tom Quantum coherence plot (true colors @ predicted positions) → {out_path_lbl}")
@@ -873,7 +1247,7 @@ for pos in evaluation_positions:
     fig.suptitle(f"Belief vs predicted geometry (position {pos})", fontsize=15)
     fig.tight_layout(rect=(0, 0.02, 1, 0.95))
     os.makedirs(args.fig_out_dir, exist_ok=True)
-    grid_out = os.path.join(args.fig_out_dir, f"belief_prediction_grid_pos{pos}.png")
+    grid_out = os.path.join(args.fig_out_dir, "beliefs", f"belief_prediction_grid_pos{pos}.png")
     fig.savefig(grid_out, dpi=170)
     plt.close(fig)
     print(f"Saved composite belief/prediction grid → {grid_out}")
@@ -895,7 +1269,7 @@ mess3_grid_fig = plot_mess3_belief_grid(
     seed=123,
     sample_size=2500,
 )
-mess3_grid_path = os.path.join(args.fig_out_dir, "mess3_belief_grid_pos9.png")
+mess3_grid_path = os.path.join(args.fig_out_dir, "beliefs", "mess3_belief_grid_pos9.png")
 mess3_grid_fig.savefig(mess3_grid_path, dpi=170)
 plt.close(mess3_grid_fig)
 print(f"Saved Mess3 parameter grid → {mess3_grid_path}")
@@ -909,7 +1283,7 @@ tomq_08013_fig = plot_tom_quantum_coherence(
     seed=432,
     sample_size=4000,
 )
-tomq_08013_path = os.path.join(args.fig_out_dir, "tomq_true_geometry_alpha0.8_beta1.3_pos9.png")
+tomq_08013_path = os.path.join(args.fig_out_dir, "beliefs", "tomq_true_geometry_alpha0.8_beta1.3_pos9.png")
 tomq_08013_fig.savefig(tomq_08013_path, dpi=180)
 plt.close(tomq_08013_fig)
 print(f"Saved TomQ true geometry (alpha=0.8, beta=1.3) → {tomq_08013_path}")
@@ -923,7 +1297,7 @@ central_tomq_fig = plot_tom_quantum_coherence(
     seed=456,
     sample_size=4000,
 )
-tomq_central_path = os.path.join(args.fig_out_dir, "tomq_true_geometry_alpha1.0_beta_sqrt51_pos9.png")
+tomq_central_path = os.path.join(args.fig_out_dir, "beliefs", "tomq_true_geometry_alpha1.0_beta_sqrt51_pos9.png")
 central_tomq_fig.savefig(tomq_central_path, dpi=180)
 plt.close(central_tomq_fig)
 print(f"Saved TomQ true geometry (alpha=1.0, beta=sqrt(51)) → {tomq_central_path}")
@@ -941,7 +1315,7 @@ tomq_grid_sweep_fig = plot_tom_quantum_coherence_grid(
     seed=789,
     sample_size=3500,
 )
-tomq_grid_sweep_path = os.path.join(args.fig_out_dir, "tomq_coherence_grid_pos9.png")
+tomq_grid_sweep_path = os.path.join(args.fig_out_dir, "beliefs", "tomq_coherence_grid_pos9.png")
 tomq_grid_sweep_fig.savefig(tomq_grid_sweep_path, dpi=170)
 plt.close(tomq_grid_sweep_fig)
 print(f"Saved TomQ parameter grid → {tomq_grid_sweep_path}")
@@ -957,7 +1331,7 @@ tomq_grid_wide_fig = plot_tom_quantum_coherence_grid(
     seed=987,
     sample_size=3000,
 )
-tomq_grid_wide_path = os.path.join(args.fig_out_dir, "tomq_coherence_grid_wide_pos9.png")
+tomq_grid_wide_path = os.path.join(args.fig_out_dir, "beliefs", "tomq_coherence_grid_wide_pos9.png")
 tomq_grid_wide_fig.savefig(tomq_grid_wide_path, dpi=170)
 plt.close(tomq_grid_wide_fig)
 print(f"Saved TomQ wide parameter grid → {tomq_grid_wide_path}")
@@ -996,49 +1370,49 @@ print(f"Saved TomQ wide parameter grid → {tomq_grid_wide_path}")
 # )
 # n = 1
 
-
 #%%
-pca_indices = list(range(pca_coords.shape[1]))
-if len(pca_indices) >= 3:
-    comb_3 = list(combinations(pca_indices, 3))
-    for pc_inds in comb_3:
-        plot_pca_subplots(
-            pca_coords,
-            mess3_point_colors,
-            tom_point_colors,
-            pc_indices=list(pc_inds),
-            marker_size=2,
-            opacity=0.6,
-            height=900,
-            width=900,
-            show=False,
-            title_text=f"3D PCA PCs {pc_inds[0]+1},{pc_inds[1]+1},{pc_inds[2]+1}",
-            output_dir=args.fig_out_dir,
-            save=["html"],
-            mess3_label_to_color=mess3_label_to_color,
-            tom_label_to_color=tom_label_to_color
-        )
-#%%
-pca_indices = list(range(pca_coords.shape[1]))
-if len(pca_indices) >= 2:
-    comb_2 = list(combinations(pca_indices, 2))
-    for pc_inds in comb_2:
-        plot_pca_subplots(
-            pca_coords,
-            mess3_point_colors,
-            tom_point_colors,
-            pc_indices=list(pc_inds),
-            marker_size=3,
-            opacity=0.6,
-            height=700,
-            width=700,
-            show=False,
-            title_text=f"2D PCA PCs {pc_inds[0]+1},{pc_inds[1]+1}",
-            output_dir=args.fig_out_dir,
-            save=["html"],
-            mess3_label_to_color=mess3_label_to_color,
-            tom_label_to_color=tom_label_to_color,
-            n_points_to_plot=3000
-        )
-    print(f"{len(pca_indices)} choose 2 =", comb(len(pca_indices), 2))
+if plot_pcas:
+    pca_indices = list(range(pca_coords.shape[1]))
+    if len(pca_indices) >= 3:
+        comb_3 = list(combinations(pca_indices, 3))
+        for pc_inds in comb_3:
+            plot_pca_subplots(
+                pca_coords,
+                mess3_point_colors,
+                tom_point_colors,
+                pc_indices=list(pc_inds),
+                marker_size=2,
+                opacity=0.6,
+                height=900,
+                width=900,
+                show=False,
+                title_text=f"3D PCA PCs {pc_inds[0]+1},{pc_inds[1]+1},{pc_inds[2]+1}",
+                output_dir=args.fig_out_dir,
+                save=["html"],
+                mess3_label_to_color=mess3_label_to_color,
+                tom_label_to_color=tom_label_to_color
+            )
+    #%%
+    pca_indices = list(range(pca_coords.shape[1]))
+    if len(pca_indices) >= 2:
+        comb_2 = list(combinations(pca_indices, 2))
+        for pc_inds in comb_2:
+            plot_pca_subplots(
+                pca_coords,
+                mess3_point_colors,
+                tom_point_colors,
+                pc_indices=list(pc_inds),
+                marker_size=3,
+                opacity=0.6,
+                height=700,
+                width=700,
+                show=False,
+                title_text=f"2D PCA PCs {pc_inds[0]+1},{pc_inds[1]+1}",
+                output_dir=args.fig_out_dir,
+                save=["html"],
+                mess3_label_to_color=mess3_label_to_color,
+                tom_label_to_color=tom_label_to_color,
+                n_points_to_plot=3000
+            )
+        print(f"{len(pca_indices)} choose 2 =", comb(len(pca_indices), 2))
 #%%

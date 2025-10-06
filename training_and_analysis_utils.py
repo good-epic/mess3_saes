@@ -13,7 +13,10 @@ import itertools
 from itertools import combinations
 import warnings
 import json
-from tqdm import tqdm
+from tqdm.auto import tqdm
+from collections import defaultdict
+import glob
+import re
 
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
@@ -21,8 +24,17 @@ from plotly.subplots import make_subplots
 
 
 from collections import Counter
+import pathlib
+import dill
 import scipy.stats as st
 from scipy.spatial import ConvexHull
+
+# Compatibility shim for old pickle files that reference LatentEPDF in this module
+# (LatentEPDF was moved to epdf_utils.py)
+try:
+    from epdf_utils import LatentEPDF
+except ImportError:
+    pass  # If epdf_utils doesn't exist yet, that's fine
 from sklearn.cluster import KMeans
 from sklearn.metrics.pairwise import cosine_similarity, euclidean_distances
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
@@ -46,6 +58,23 @@ def check_cuda_memory():
         print(f"Max memory reserved: {torch.cuda.max_memory_reserved() / 1024**3:.2f} GB")
     else:
         print("CUDA is not available. Using CPU.")
+
+
+def load_metrics_summary(path: str | os.PathLike | None) -> dict[str, Any] | None:
+    """Load ``metrics_summary.json`` if available."""
+
+    if path is None:
+        return None
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"metrics_summary not found at {path}")
+        return None
+    except json.JSONDecodeError as exc:
+        print(f"Failed to parse metrics_summary at {path}: {exc}")
+        return None
 
 
 def _build_sae_cfg(
@@ -548,19 +577,30 @@ def train_saes_for_sites(
     def summarize_active_stats(active_counts: list, active_sums: list, steps: int):
         if not active_counts or not active_sums:
             return {}
-        start = max(0, int(steps * 3 / 4))
-        counts_win = active_counts[start:]
-        sums_win = active_sums[start:]
+
+        # active_counts/sums are only recorded every ``log_interval`` iterations (currently 100)
+        entries = min(len(active_counts), len(active_sums))
+        if entries == 0:
+            return {}
+
+        # Use the last quarter of the *recorded* windows rather than total steps
+        window_size = max(1, entries // 4)
+        start_idx = entries - window_size
+
+        counts_win = active_counts[start_idx:entries]
+        sums_win = active_sums[start_idx:entries]
+
         try:
             counts_total = np.stack(counts_win, axis=0).sum(axis=0)
             sums_total = np.stack(sums_win, axis=0).sum(axis=0)
-            result = {}
-            for idx, cnt in enumerate(counts_total.tolist()):
-                if cnt > 0:
-                    result[int(idx)] = (int(cnt), float(sums_total[idx]))
-            return result
         except Exception:
             return {}
+
+        result: dict[int, tuple[int, float]] = {}
+        for idx, cnt in enumerate(counts_total.tolist()):
+            if cnt > 0:
+                result[int(idx)] = (int(cnt), float(sums_total[idx]))
+        return result
 
     # Build metrics_summary per site and save SAEs
     metrics_summary_all: Dict[str, Dict] = {}
@@ -1008,6 +1048,272 @@ def generate_mp_emissions(
 
 
 
+def _aggregate_layer_metrics(
+    metrics_by_pos: Mapping[int, Mapping[str, Any]],
+    positions: Sequence[int],
+) -> Mapping[str, Any] | None:
+    dims_ref: Sequence[int] | None = None
+    r2_vals: list[float] = []
+    rmse_vals: list[float] = []
+    mae_vals: list[float] = []
+    r2_per_dim_acc: dict[int, list[float]] = {}
+    corr_per_dim_acc: dict[int, list[float]] = {}
+    has_pca = False
+    for metrics in metrics_by_pos.values():
+        if metrics and (
+            "r2_mean_pca" in metrics
+            or "r2_per_dim_pca" in metrics
+            or "pearson_per_dim_pca" in metrics
+        ):
+            has_pca = True
+            break
+
+    r2_vals_pca: list[float] = []
+    rmse_vals_pca: list[float] = []
+    mae_vals_pca: list[float] = []
+    r2_per_dim_acc_pca: dict[int, list[float]] = {}
+    corr_per_dim_acc_pca: dict[int, list[float]] = {}
+
+    for pos in positions:
+        metrics = metrics_by_pos.get(pos)
+        if not metrics:
+            continue
+        target_dims = metrics.get("target_dims", [])
+        if not target_dims:
+            continue
+        if dims_ref is None:
+            dims_ref = list(target_dims)
+
+        r2_val = metrics.get("r2_mean")
+        if r2_val is not None and np.isfinite(r2_val):
+            r2_vals.append(float(r2_val))
+        rmse_val = metrics.get("rmse")
+        if rmse_val is not None and np.isfinite(rmse_val):
+            rmse_vals.append(float(rmse_val))
+        mae_val = metrics.get("mae")
+        if mae_val is not None and np.isfinite(mae_val):
+            mae_vals.append(float(mae_val))
+        
+        if has_pca:
+            r2_val_pca = metrics.get("r2_mean_pca")
+            if r2_val_pca is not None and np.isfinite(r2_val_pca):
+                r2_vals_pca.append(float(r2_val_pca))
+            rmse_val_pca = metrics.get("rmse_pca")
+            if rmse_val_pca is not None and np.isfinite(rmse_val_pca):
+                rmse_vals_pca.append(float(rmse_val_pca))
+            mae_val_pca = metrics.get("mae_pca")
+            if mae_val_pca is not None and np.isfinite(mae_val_pca):
+                mae_vals_pca.append(float(mae_val_pca))
+
+        for dim in target_dims:
+            r2_dim = metrics.get("r2_per_dim", {}).get(dim)
+            if r2_dim is not None and np.isfinite(r2_dim):
+                r2_per_dim_acc.setdefault(dim, []).append(float(r2_dim))
+            corr_dim = metrics.get("pearson_per_dim", {}).get(dim)
+            if corr_dim is not None and np.isfinite(corr_dim):
+                corr_per_dim_acc.setdefault(dim, []).append(float(corr_dim))
+
+            if has_pca:
+                r2_dim_pca = metrics.get("r2_per_dim_pca", {}).get(dim)
+                if r2_dim_pca is not None and np.isfinite(r2_dim_pca):
+                    r2_per_dim_acc_pca.setdefault(dim, []).append(float(r2_dim_pca))
+                corr_dim_pca = metrics.get("pearson_per_dim_pca", {}).get(dim)
+                if corr_dim_pca is not None and np.isfinite(corr_dim_pca):
+                    corr_per_dim_acc_pca.setdefault(dim, []).append(float(corr_dim_pca))
+
+    if dims_ref is None or not r2_vals:
+        return None
+
+    agg_r2 = float(np.mean(r2_vals)) if r2_vals else float("nan")
+    agg_rmse = float(np.mean(rmse_vals)) if rmse_vals else float("nan")
+    agg_mae = float(np.mean(mae_vals)) if mae_vals else float("nan")
+    agg_r2_per_dim = {
+        dim: float(np.mean(vals)) for dim, vals in r2_per_dim_acc.items() if vals
+    }
+    agg_corr_per_dim = {
+        dim: float(np.mean(vals)) for dim, vals in corr_per_dim_acc.items() if vals
+    }
+
+    result: dict[str, Any] = {
+        "target_dims": list(dims_ref),
+        "r2_mean": agg_r2,
+        "rmse": agg_rmse,
+        "mae": agg_mae,
+        "r2_per_dim": agg_r2_per_dim,
+        "pearson_per_dim": agg_corr_per_dim,
+    }
+
+    if has_pca:
+        result.update(
+            {
+                "r2_mean_pca": float(np.mean(r2_vals_pca)) if r2_vals_pca else float("nan"),
+                "rmse_pca": float(np.mean(rmse_vals_pca)) if rmse_vals_pca else float("nan"),
+                "mae_pca": float(np.mean(mae_vals_pca)) if mae_vals_pca else float("nan"),
+                "r2_per_dim_pca": {
+                    dim: float(np.mean(vals))
+                    for dim, vals in r2_per_dim_acc_pca.items()
+                    if vals
+                },
+                "pearson_per_dim_pca": {
+                    dim: float(np.mean(vals))
+                    for dim, vals in corr_per_dim_acc_pca.items()
+                    if vals
+                },
+            }
+        )
+
+    return result
+
+
+
+LayerResultsType = Mapping[str, Mapping[str, Mapping[str, Any]]]
+
+
+def _print_combined_regression_report(
+    layer_results: LayerResultsType | Sequence[tuple[str, Mapping[str, Mapping[str, Any]]]],
+    positions: Sequence[int],
+    component_metadata: Sequence[Mapping[str, Any]],
+) -> None:
+    print("\n=== Linear Regression: belief prediction across layers ===")
+    component_order = [str(meta["name"]) for meta in component_metadata]
+    comp_type_map = {str(meta["name"]): str(meta["type"]) for meta in component_metadata}
+    belief_dim_map = {str(meta["name"]): int(meta.get("belief_dim", 0)) for meta in component_metadata}
+
+    if isinstance(layer_results, Mapping):
+        layer_iter = layer_results.items()
+    else:
+        layer_iter = layer_results
+
+    for comp_name in component_order:
+        comp_type = comp_type_map.get(comp_name, "unknown")
+        belief_dim = belief_dim_map.get(comp_name, 0)
+        print(f"  {comp_name} [{comp_type}] belief_dim={belief_dim}")
+
+        for layer_label, metrics_dict in layer_iter:
+            info = metrics_dict.get(comp_name)
+            if not info:
+                print(f"    {layer_label}: metrics not available")
+                continue
+
+            metrics_by_pos = info.get("metrics", {})
+
+            layer_has_pca = any(
+                metric
+                and (
+                    "r2_mean_pca" in metric
+                    or "r2_per_dim_pca" in metric
+                    or "pearson_per_dim_pca" in metric
+                )
+                for metric in metrics_by_pos.values()
+            )
+
+            print(f"    {layer_label}:")
+            for pos in positions:
+                metrics = metrics_by_pos.get(pos)
+                if metrics is None:
+                    print(f"      pos {pos}: metrics not available")
+                    continue
+                target_dims = metrics.get("target_dims", [])
+                if not target_dims:
+                    note = metrics.get("note", "no usable belief dims")
+                    dropped_explicit = metrics.get("explicitly_dropped_dims", [])
+                    dropped_auto = metrics.get("dropped_low_variance_dims", [])
+                    print(
+                        f"      pos {pos}: {note} (explicitly dropped={dropped_explicit}, auto-dropped={dropped_auto})"
+                    )
+                    continue
+
+                r2_mean = metrics.get("r2_mean", float("nan"))
+                rmse = metrics.get("rmse", float("nan"))
+                mae = metrics.get("mae", float("nan"))
+                per_dim_r2 = metrics.get("r2_per_dim", {})
+                per_dim_corr = metrics.get("pearson_per_dim", {})
+                dims_repr = ",".join(str(d) for d in target_dims)
+                r2_repr = ", ".join(
+                    f"{dim}:{per_dim_r2.get(dim, float('nan')):.3f}" for dim in target_dims
+                )
+                corr_repr = ", ".join(
+                    f"{dim}:{per_dim_corr.get(dim, float('nan')):.3f}" for dim in target_dims
+                )
+
+                if not layer_has_pca:
+                    print(
+                        f"      pos {pos}: dims[{dims_repr}] r2_mean={r2_mean:.3f} rmse={rmse:.5f} mae={mae:.5f}"
+                    )
+                    print(f"          r2_per_dim: {r2_repr}")
+                    print(f"          pearson_per_dim: {corr_repr}")
+                    continue
+
+                r2_mean_pca = metrics.get("r2_mean_pca", float("nan"))
+                rmse_pca = metrics.get("rmse_pca", float("nan"))
+                mae_pca = metrics.get("mae_pca", float("nan"))
+                per_dim_r2_pca = metrics.get("r2_per_dim_pca", {})
+                per_dim_corr_pca = metrics.get("pearson_per_dim_pca", {})
+                r2_repr_pca = ", ".join(
+                    f"{dim}:{per_dim_r2_pca.get(dim, float('nan')):.3f}" for dim in target_dims
+                )
+                corr_repr_pca = ", ".join(
+                    f"{dim}:{per_dim_corr_pca.get(dim, float('nan')):.3f}" for dim in target_dims
+                )
+
+                print(
+                    f"      pos {pos}: dims[{dims_repr}] "
+                    f"r2_mean={r2_mean:.3f} rmse={rmse:.5f} mae={mae:.5f} | "
+                    f"r2_mean_pca={r2_mean_pca:.3f} rmse_pca={rmse_pca:.5f} mae_pca={mae_pca:.5f}"
+                )
+                print(f"          r2_per_dim: {r2_repr}")
+                print(f"          pearson_per_dim: {corr_repr}")
+                print(f"          r2_per_dim_pca: {r2_repr_pca}")
+                print(f"          pearson_per_dim_pca: {corr_repr_pca}")
+
+def _print_residual_summary_table(
+    layer_results: Mapping[str, Mapping[str, Any]],
+    final_layer_label: str,
+    ln_final_label: str,
+    positions: Sequence[int],
+    component_metadata: Sequence[Mapping[str, Any]],
+) -> None:
+    if final_layer_label not in layer_results:
+        print(
+            f"\nWarning: final layer '{final_layer_label}' not found; skipping summary table."
+        )
+        return
+
+    residual_metrics = layer_results[final_layer_label]
+    ln_final_metrics = layer_results.get(ln_final_label)
+
+    def _format_cell(metric_dict: Mapping[str, Any] | None) -> str:
+        if not metric_dict:
+            return "nan"
+        base = metric_dict.get("r2_mean")
+        base_str = f"{float(base):.3f}" if base is not None and np.isfinite(base) else "nan"
+        pca_val = metric_dict.get("r2_mean_pca")
+        if pca_val is not None and np.isfinite(pca_val):
+            return f"{base_str}|{float(pca_val):.3f}"
+        return base_str
+
+    print("\n=== Mean R^2 by component / position (final residual vs ln_final) ===")
+    headers = ["component"] + [f"pos{pos}" for pos in positions]
+    if ln_final_metrics is not None:
+        headers.append("ln_final")
+    print("\t".join(headers))
+
+    component_order = [str(meta["name"]) for meta in component_metadata]
+    for comp_name in component_order:
+        row_vals: list[str] = [comp_name]
+        residual_info = residual_metrics.get(comp_name, {})
+        metrics_by_pos = residual_info.get("metrics", {})
+        for pos in positions:
+            row_vals.append(_format_cell(metrics_by_pos.get(pos)))
+
+        if ln_final_metrics is not None:
+            ln_info = ln_final_metrics.get(comp_name, {})
+            ln_agg = _aggregate_layer_metrics(ln_info.get("metrics", {}), positions) if ln_info else None
+            row_vals.append(_format_cell(ln_agg))
+
+        print("\t".join(row_vals))
+
+
 
 def plot_pca_subplots(
     pca_coords,
@@ -1190,7 +1496,7 @@ def plot_pca_subplots(
             raise ValueError("save must be None or a list/tuple of 'png', 'html', 'json'")
         save_formats = [str(fmt).lower() for fmt in save]
         if save_formats:
-            os.makedirs(output_dir, exist_ok=True)
+            os.makedirs(os.path.join(output_dir, "pca_plots"), exist_ok=True)
             if title_text is not None:
                 safe_title = "".join(c if c.isalnum() or c in (' ', '_', '-') else "_" for c in title_text)
                 base_filename = f"pca_subplots_{safe_title.strip().replace(' ', '_')}_PCs_{pc_label_str}"
@@ -1198,7 +1504,7 @@ def plot_pca_subplots(
                 base_filename = f"pca_subplots_PCs_{pc_label_str}"
 
             for fmt in save_formats:
-                filepath = os.path.join(output_dir, base_filename + f".{fmt}")
+                filepath = os.path.join(output_dir, "pca_plots", base_filename + f".{fmt}")
                 if fmt == "png":
                     fig.write_image(filepath)
                 elif fmt == "html":
@@ -1215,521 +1521,6 @@ def plot_pca_subplots(
 
 
 
-
-
-# ===== ePDFs ===== #
-#####################
-
-def sample_residual_stream_activations(model, mess3, seq_len, n_samples: int = 1000, device: str = "cuda"):
-    """
-    Get residual stream activations samples.
-    """
-    # Generate a batch for analysis
-    key = jax.random.PRNGKey(43)
-    key, subkey = jax.random.split(key)
-    gen_states = jnp.repeat(mess3.initial_state[None, :], n_samples, axis=0)
-    _, inputs, _ = generate_data_batch(gen_states, mess3, n_samples, seq_len, subkey)
-
-    if isinstance(inputs, torch.Tensor):
-        tokens = inputs.long().to(device)
-    else:
-        tokens = torch.from_numpy(np.array(inputs)).long().to(device)
-
-    # Run with cache to get all activations
-    logits, cache = model.run_with_cache(tokens)
-
-    # Extract residual stream activations at different layers
-    residual_streams = {
-        'embeddings': cache['hook_embed'],  # Shape: [batch, seq, d_model]
-        'layer_0': cache['blocks.0.hook_resid_post'],  # After first layer
-        'layer_1': cache['blocks.1.hook_resid_post'],  # After second layer,
-        'layer_2': cache['blocks.2.hook_resid_post'],  # After third layer
-        'layer_3': cache['blocks.3.hook_resid_post'],  # After fourth layer
-    }
-    return residual_streams, tokens
-
-
-
-class LatentEPDF:
-    def __init__(self, site_name, sae_id, latent_idx, coords, weights):
-        self.site_name = site_name
-        self.sae_id = sae_id
-        self.latent_idx = latent_idx
-        self.coords = np.asarray(coords)
-        self.weights = np.asarray(weights)
-        self.kde = None
-
-        # Detect triangle on init
-        self.triangle_vertices = self._detect_triangle_vertices()
-
-    def __str__(self):
-        return f"({self.site_name}, {self.sae_id[0]}, {self.sae_id[1]}, {self.latent_idx})"
-
-    def __repr__(self):
-        return self.__str__()
-
-    def fit_kde(self, bw_method="scott"):
-        if self.coords.shape[0] < 5:
-            return None
-        self.kde = st.gaussian_kde(self.coords.T, weights=self.weights, bw_method=bw_method)
-        return self.kde
-
-    def evaluate_on_grid(self, grid_x, grid_y):
-        if self.kde is None:
-            self.fit_kde()
-        xy = np.vstack([grid_x.ravel(), grid_y.ravel()])
-        z = self.kde(xy).reshape(grid_x.shape)
-        return z
-
-    def _detect_triangle_vertices(self, tol=0.02, verbose=False):
-        """Infer simplex triangle vertices from this latent's coords (robust to PCA noise)."""
-        if self.coords.shape[0] < 3:
-            if verbose:
-                print("Not enough coordinates to detect triangle vertices.")
-            return None
-
-        all_coords = self.coords
-        xmin, xmax = np.min(all_coords[:,0]), np.max(all_coords[:,0])
-        ymin, ymax = np.min(all_coords[:,1]), np.max(all_coords[:,1])
-
-        if verbose:
-            print(f"xmin: {xmin}, xmax: {xmax}, ymin: {ymin}, ymax: {ymax}")
-
-        candidates = []
-
-        # Near xmin
-        mask = np.isclose(all_coords[:,0], xmin, atol=tol)
-        if mask.any():
-            ys = all_coords[mask,1]
-            if verbose:
-                print(f"Near xmin mask: {mask}, ys: {ys}")
-            candidates.append([xmin, ys.min()])
-            candidates.append([xmin, ys.max()])
-
-        # Near xmax
-        mask = np.isclose(all_coords[:,0], xmax, atol=tol)
-        if mask.any():
-            ys = all_coords[mask,1]
-            if verbose:
-                print(f"Near xmax mask: {mask}, ys: {ys}")
-            candidates.append([xmax, ys.min()])
-            candidates.append([xmax, ys.max()])
-
-        # Near ymin
-        mask = np.isclose(all_coords[:,1], ymin, atol=tol)
-        if mask.any():
-            xs = all_coords[mask,0]
-            if verbose:
-                print(f"Near ymin mask: {mask}, xs: {xs}")
-            candidates.append([xs.min(), ymin])
-            candidates.append([xs.max(), ymin])
-
-        # Near ymax
-        mask = np.isclose(all_coords[:,1], ymax, atol=tol)
-        if mask.any():
-            xs = all_coords[mask,0]
-            if verbose:
-                print(f"Near ymax mask: {mask}, xs: {xs}")
-            candidates.append([xs.min(), ymax])
-            candidates.append([xs.max(), ymax])
-
-        candidates = np.unique(np.array(candidates), axis=0)
-        if verbose:
-            print(f"Unique candidate vertices: {candidates}")
-
-        if candidates.shape[0] < 3:
-            if verbose:
-                print("Not enough unique candidates to form a triangle.")
-            return None
-
-        hull = ConvexHull(candidates)
-        verts = candidates[hull.vertices]
-        if verbose:
-            print(f"Convex hull vertices: {verts}")
-
-        # Force to exactly 3 vertices if noisy hull produced >3
-        if verts.shape[0] > 3:
-            dists = np.sum((verts[:, None, :] - verts[None, :, :])**2, axis=-1)
-            i, j = np.unravel_index(np.argmax(dists), dists.shape)
-            if verbose:
-                print(f"Max distance between hull vertices: {i}, {j}")
-
-            def area(p, q, r):
-                return abs(0.5 * ((q[0]-p[0])*(r[1]-p[1]) - (q[1]-p[1])*(r[0]-p[0])))
-
-            best_k, best_area = None, -1
-            for k in range(len(verts)):
-                if k in (i, j):
-                    continue
-                A = area(verts[i], verts[j], verts[k])
-                if verbose:
-                    print(f"Area for triangle ({i}, {j}, {k}): {A}")
-                if A > best_area:
-                    best_area, best_k = A, k
-
-            verts = np.array([verts[i], verts[j], verts[best_k]])
-            if verbose:
-                print(f"Selected triangle vertices: {verts}")
-
-        return verts
-
-def _plot_hull_and_triangles(hull_pts, all_candidates, epdfs, sae_param, sae_type):
-    plt.figure(figsize=(6, 6))
-    plt.scatter(hull_pts[:, 0], hull_pts[:, 1], color='black', label='Hull Points')
-    for i in range(hull_pts.shape[0]):
-        plt.text(hull_pts[i, 0], hull_pts[i, 1], str(i), color='black', fontsize=10)
-
-    # Draw each original triangle from all_candidates
-    for tri in all_candidates:
-        tri = np.asarray(tri)
-        if tri.shape[0] == 3:
-            closed_tri = np.vstack([tri, tri[0]])  # close the triangle
-            plt.plot(closed_tri[:, 0], closed_tri[:, 1], alpha=0.7)
-
-    plt.title(f"Original triangles from all_candidates (layer {epdfs[0].site_name[6:]}, param={sae_param}, type={sae_type})")
-    plt.xlabel("x")
-    plt.ylabel("y")
-    plt.gca().set_aspect('equal')
-    plt.legend()
-    plt.show()
-
-
-def get_global_triangle_vertices(epdfs):
-    """
-    Build a global triangle that covers all EPDFs from the same SAE by taking the
-    convex hull of all per-EPDF triangle vertices and selecting the maximum-area triangle
-    from that hull.
-    """
-    all_candidates = []
-    for e in epdfs:
-        tv = getattr(e, "triangle_vertices", None)
-        if tv is None:
-            tv = e._detect_triangle_vertices(verbose=False)
-        if tv is None:
-            e_id = getattr(e, "sae_id", None)
-            e_type = type(e).__name__
-            e_site = getattr(e, "site_name", None)
-            warnings.warn(
-                f"Could not detect triangle vertices for EPDF: "
-                f"sae_id={e_id}, type={e_type}, site_name={e_site}, latent_idx={e.latent_idx}"
-            )
-            continue
-        else:
-            all_candidates.append(np.asarray(tv))
-    if not all_candidates:
-        raise ValueError("Could not detect triangle vertices for plotting.")
-    pts = np.vstack(all_candidates)
-    try:
-        hull = ConvexHull(pts)
-        hull_pts = pts[hull.vertices]
-    except Exception:
-        hull_pts = pts
-    if hull_pts.shape[0] < 3:
-        raise ValueError("Insufficient hull vertices to define a triangle.")
-    if hull_pts.shape[0] == 3:
-        triangle_vertices = hull_pts
-    else:
-        sae_type = "l1" if "lambda" in epdfs[0].sae_id[1] else "top_k"
-        if sae_type == "l1":
-            sae_param = epdfs[0].sae_id[1][7:]
-        else:
-            sae_param = epdfs[0].sae_id[1][1:]
-        print(f"Got more than 3 hull vertices for layer {epdfs[0].site_name[6:]}, {sae_type} SAE with parameter {sae_param}")
-        if False:
-            _plot_hull_and_triangles(hull_pts, all_candidates, epdfs, sae_param, sae_type)
-        
-        def tri_area(a, b, c):
-            return abs(0.5 * ((b[0]-a[0])*(c[1]-a[1]) - (b[1]-a[1])*(c[0]-a[0])))
-        best = None
-        best_area = -1.0
-        for i, j, k in combinations(range(hull_pts.shape[0]), 3):
-            A = tri_area(hull_pts[i], hull_pts[j], hull_pts[k])
-            if A > best_area:
-                best_area = A
-                best = (hull_pts[i], hull_pts[j], hull_pts[k])
-        triangle_vertices = np.array(best)
-    return triangle_vertices
-
-
-
-def plot_epdfs(epdfs, mode="3d", grid_size=150, active_latents=None, triangle_vertices=None, color_start_ind=None):
-    """
-    epdfs: list[LatentEPDF] (must be from the same SAE if multiple)
-    mode: "3d", "transparency", or "contours"
-    """
-    import matplotlib.tri as tri
-
-    if not isinstance(epdfs, (list, tuple)):
-        epdfs = [epdfs]
-
-    # Consistency check
-    sae_ids = {e.sae_id for e in epdfs}
-    if len(sae_ids) > 1 and mode == "3d":
-        raise ValueError("3D plotting requires all ePDFs from the same SAE.")
-
-
-    # Use the new function in plot_epdfs
-    if triangle_vertices is None:
-        triangle_vertices = get_global_triangle_vertices(epdfs)
-
-    # Generate a triangular grid inside detected simplex
-    pts_x, pts_y = [], []
-    for i in range(grid_size + 1):
-        for j in range(grid_size + 1 - i):
-            a = i / grid_size
-            b = j / grid_size
-            c = 1 - a - b
-            x = a * triangle_vertices[0, 0] + b * triangle_vertices[1, 0] + c * triangle_vertices[2, 0]
-            y = a * triangle_vertices[0, 1] + b * triangle_vertices[1, 1] + c * triangle_vertices[2, 1]
-            pts_x.append(x)
-            pts_y.append(y)
-    pts_x, pts_y = np.array(pts_x), np.array(pts_y)
-
-    fig = go.Figure()
-    # 20 maximally distinctive colors (colorblind-friendly palette)
-    colors = [
-        "#E41A1C",  # red
-        "#377EB8",  # blue
-        "#4DAF4A",  # green
-        "#984EA3",  # purple
-        "#FF7F00",  # orange
-        "#FFFF33",  # yellow
-        "#A65628",  # brown
-        "#F781BF",  # pink
-        "#999999",  # gray
-        "#66C2A5",  # teal
-        "#E6AB02",  # mustard
-        "#A6CEE3",  # light blue
-        "#B2DF8A",  # light green
-        "#FB9A99",  # salmon
-        "#CAB2D6",  # lavender
-        "#FFD92F",  # gold
-        "#1B9E77",  # dark green
-        "#D95F02",  # dark orange
-        "#7570B3",  # indigo
-        "#E7298A",  # magenta
-    ]
-
-    for idx, epdf in enumerate(epdfs):
-        if epdf.kde is None:
-            epdf.fit_kde()
-        xy = np.vstack([pts_x, pts_y])
-        z = epdf.kde(xy)
-
-        if z is None or z.size == 0:
-            continue
-        color_ind = (idx + (color_start_ind if color_start_ind is not None else 0)) % len(colors)
-        color = colors[color_ind]
-
-        # Normalize inside triangle
-        z_min, z_max = np.min(z), np.max(z)
-        z_norm = (z - z_min) / (z_max - z_min + 1e-12)
-
-        legend_name = f"Latent {epdf.latent_idx}"
-        if active_latents is not None and str(epdf.latent_idx) in active_latents:
-            legend_name += f", active rate: {active_latents[str(epdf.latent_idx)][0]:.1%}"
-        if mode == "3d":
-            fig.add_trace(go.Mesh3d(
-                x=pts_x, y=pts_y, z=z_norm,
-                color=color,
-                opacity=0.6,
-                name=legend_name,
-                showlegend=False,
-                alphahull=0
-            ))
-            # Opaque legend marker
-            fig.add_trace(go.Scatter3d(
-                x=[None], y=[None], z=[None],
-                mode="markers",
-                marker=dict(size=6, color=color, opacity=1.0),
-                name=legend_name,
-                showlegend=True
-            ))
-        elif mode == "transparency":
-            fig.add_trace(go.Scatter(
-                x=pts_x, y=pts_y,
-                mode="markers",
-                marker=dict(size=5, color=color, opacity=z_norm),
-                name=legend_name,
-                showlegend=False
-            ))
-            # Opaque legend marker
-            fig.add_trace(go.Scatter(
-                x=[None], y=[None], mode="markers",
-                marker=dict(size=8, color=color, opacity=1.0),
-                name=legend_name,
-                showlegend=True
-            ))
-        elif mode == "contours":
-            triang = tri.Triangulation(pts_x, pts_y)
-            fig.add_trace(go.Contour(
-                x=pts_x,
-                y=pts_y,
-                z=z_norm,
-                colorscale=[[0, color], [1, color]],
-                contours_coloring="lines",
-                line_width=2,
-                name=legend_name,
-                connectgaps=False
-            ))
-
-    # Add simplex boundary
-    tri_x = np.append(triangle_vertices[:, 0], triangle_vertices[0, 0])
-    tri_y = np.append(triangle_vertices[:, 1], triangle_vertices[0, 1])
-    fig.add_trace(go.Scatter(
-        x=tri_x, y=tri_y, mode="lines",
-        line=dict(color="black"), showlegend=False
-    ))
-
-    fig.update_layout(
-        title=f"Empirical PDFs for {epdfs[0].site_name} / SAE {epdfs[0].sae_id}",
-        xaxis=dict(scaleanchor="y", scaleratio=1, showgrid=False, zeroline=False),
-        yaxis=dict(showgrid=False, zeroline=False),
-        height=700, width=800,
-        legend=dict(font=dict(color="black"))
-    )
-    return fig
-
-
-
-def build_epdfs_for_sae(
-    model,
-    sae,
-    mess3,
-    site_name: str,
-    sae_type: str,
-    param_value: str,
-    active_latent_indices,
-    pcas: dict,
-    seq_len: int = 10,
-    n_batches: int = 100,
-    device: str = "cpu",
-    hook_name: str | None = None,
-) -> dict:
-    """
-    Build LatentEPDFs for all non-dead latents in one SAE.
-
-    Returns:
-      {site_name: {sae_type: {param_value: {latent_idx: LatentEPDF}}}}
-    """
-
-    # Infer hook name if not provided
-    if hook_name is None:
-        if site_name == "embeddings":
-            hook_name = "hook_embed"
-        else:
-            layer_idx = int(site_name.split("_")[1])
-            hook_name = f"blocks.{layer_idx}.hook_resid_post"
-
-    # Generate activation samples
-    residuals, tokens = sample_residual_stream_activations(model, mess3, seq_len=seq_len, n_samples=n_batches, device=device)
-    acts = residuals[site_name].reshape(-1, residuals[site_name].shape[-1]).to(device)
-
-    # Run through SAE
-    with torch.no_grad():
-        sae_out = sae(acts)
-        latents = sae_out["feature_acts"].cpu().numpy()
-
-    # 🔹 CHANGE: use layer-specific PCA
-    if site_name not in pcas:
-        raise KeyError(f"No PCA provided for site {site_name}")
-    pca_proj = pcas[site_name]
-
-    coords = pca_proj.transform(acts.cpu().numpy())
-
-    # Normalize active latent indices: can be list/array or dict {idx: [count, sum]}
-    if isinstance(active_latent_indices, dict):
-        try:
-            indices = [int(k) for k in active_latent_indices.keys()]
-        except Exception:
-            indices = list(active_latent_indices.keys())
-    else:
-        indices = [int(i) for i in active_latent_indices]
-
-    # Build EPDFs
-    latent_map = {}
-    for li in indices:
-        li_int = int(li)
-        if li_int < 0 or li_int >= latents.shape[1]:
-            continue
-        mask = latents[:, li_int] > 1e-6
-        if not np.any(mask):
-            continue
-        latent_map[li_int] = LatentEPDF(
-            site_name=site_name,
-            sae_id=(sae_type, param_value),
-            latent_idx=li_int,
-            coords=coords[mask],
-            weights=latents[mask, li_int],
-        )
-
-    return {site_name: {sae_type: {param_value: latent_map}}}
-
-
-def build_epdfs_for_all_saes(
-    model,
-    mess3,
-    loaded_saes: dict,
-    active_latents: dict,
-    pcas: dict,
-    seq_len: int = 10,
-    n_batches: int = 100,
-    device: str = "cpu",
-) -> dict:
-    """
-    Loop over all loaded_saes and build EPDFs.
-
-    Returns:
-      sequence_epdfs[site_name][sae_type][param_value][latent_idx] = LatentEPDF
-    """
-
-    sequence_epdfs = {}
-
-    for site_name, sae_dict in loaded_saes.items():
-        sequence_epdfs[site_name] = {}
-        for (k, lmbda), sae_ckpt in sae_dict.items():
-            if k is not None:
-                sae_class = TopKSAE
-                sae_type = "top_k"
-                param_value = f"k{k}"
-                active_key = (site_name, "sequence", "top_k", f"k{k}")
-            else:
-                sae_class = VanillaSAE
-                sae_type = "l1"
-                param_value = f"lambda_{lmbda}"
-                active_key = (site_name, "sequence", "vanilla", f"lambda_{lmbda}")
-
-            sae = sae_class(sae_ckpt["cfg"])
-            sae.load_state_dict(sae_ckpt["state_dict"])
-            sae.to(device).eval()
-
-            active_inds = active_latents.get(active_key, [])
-            if not active_inds:
-                continue
-
-            # 🔹 CHANGE: pass pcas dict instead of single PCA
-            epdfs_dict = build_epdfs_for_sae(
-                model,
-                sae,
-                mess3,
-                site_name,
-                sae_type,
-                param_value,
-                active_inds,
-                pcas,
-                seq_len=seq_len,
-                n_batches=n_batches,
-                device=device,
-            )
-
-            # Merge into top-level dict
-            for site, type_map in epdfs_dict.items():
-                for sae_type, param_map in type_map.items():
-                    sequence_epdfs[site].setdefault(sae_type, {})
-                    for param_value, latent_map in param_map.items():
-                        sequence_epdfs[site][sae_type][param_value] = latent_map
-
-    return sequence_epdfs
 
 
 # ==== Some Spectral Clustering Utils ===== #
@@ -1954,37 +1745,26 @@ def project_vectors_onto_simplex(vectors: Any, axis: int = -1, eps: float = 1e-1
     return projected
 
 
-def enforce_tom_quantum_physicality(params: Any, eps: float = 1e-9) -> np.ndarray:
-    """Clamp Tom Quantum belief parameters to represent a valid density matrix."""
+# def enforce_tom_quantum_physicality(params: Any, eps: float = 1e-9) -> np.ndarray:
+# """Clamp Tom Quantum belief parameters to represent a valid density matrix."""
 
-    arr = _to_numpy_array(params).astype(np.float64, copy=True)
-    if arr.shape[-1] != 3:
-        raise ValueError("Tom Quantum beliefs are expected to have last dimension size 3")
+# arr = _to_numpy_array(params).astype(np.float64, copy=True)
+# if arr.shape[-1] != 3:
+#     raise ValueError("Tom Quantum beliefs are expected to have last dimension size 3")
 
-    a = np.clip(arr[..., 0], eps, 1.0 - eps)
-    coherence = arr[..., 1:3]
-    max_coh = np.sqrt(np.maximum(a * (1.0 - a), eps))
-    coh_norm = np.linalg.norm(coherence, axis=-1)
-    scale = np.ones_like(coh_norm)
-    mask = coh_norm > max_coh
-    scale[mask] = max_coh[mask] / coh_norm[mask]
-    coherence = coherence * scale[..., None]
+# a = np.clip(arr[..., 0], eps, 1.0 - eps)
+# coherence = arr[..., 1:3]
+# max_coh = np.sqrt(np.maximum(a * (1.0 - a), eps))
+# coh_norm = np.linalg.norm(coherence, axis=-1)
+# scale = np.ones_like(coh_norm)
+# mask = coh_norm > max_coh
+# scale[mask] = max_coh[mask] / coh_norm[mask]
+# coherence = coherence * scale[..., None]
 
-    arr[..., 0] = a
-    arr[..., 1:3] = coherence
-    return arr
+# arr[..., 0] = a
+# arr[..., 1:3] = coherence
+# return arr
 
-
-def tom_quantum_params_to_bloch(coords: Any) -> np.ndarray:
-    """Convert Tom Quantum belief parameters to Bloch sphere coordinates."""
-
-    arr = _to_numpy_array(coords).astype(np.float64)
-    if arr.shape[-1] != 3:
-        raise ValueError("Expected Tom Quantum params with last dimension 3")
-    x = 2.0 * arr[..., 1]
-    y = -2.0 * arr[..., 2]
-    z = 2.0 * arr[..., 0] - 1.0
-    return np.stack([x, y, z], axis=-1)
 
 
 def evaluate_belief_state_linear_models(
@@ -1997,6 +1777,8 @@ def evaluate_belief_state_linear_models(
     min_variance: float = 1e-8,
     postprocess_by_type: Mapping[str, Callable[[np.ndarray], np.ndarray]] | None = None,
     store_predictions: bool = False,
+    pca=None,
+    pc_inds=None
 ) -> Dict[str, Dict[str, Any]]:
     """Fit linear models that predict belief states from activations.
 
@@ -2048,6 +1830,15 @@ def evaluate_belief_state_linear_models(
         raise ValueError(
             "component_belief_arrays and component_metadata must have the same length."
         )
+    
+    # Check if we are using PCA. Require that all components have PCA indices.
+    use_pca = False
+    if pca is not None and pc_inds is not None:
+        use_pca = True
+        for beliefs_arr, meta in zip(component_belief_arrays, component_metadata, strict=True):
+            if pc_inds.get(meta.get("name")) is None:
+                use_pca = False
+                break
 
     results: Dict[str, Dict[str, Any]] = {}
 
@@ -2075,7 +1866,7 @@ def evaluate_belief_state_linear_models(
 
         explicit_skip = set(skip_dims_by_type.get(comp_type, ()))
         valid_candidates = [idx for idx in range(belief_dim) if idx not in explicit_skip]
-
+ 
         per_position: Dict[int, Dict[str, Any]] = {}
 
         for pos in positions:
@@ -2115,6 +1906,29 @@ def evaluate_belief_state_linear_models(
             rmse = float(np.sqrt(np.mean(residual ** 2)))
             mae = float(np.mean(np.abs(residual)))
 
+
+            if use_pca: 
+                prediction_full_pca: np.ndarray | None = None
+                y_pred_pca: np.ndarray | None = None
+                rmse_pca = float("nan")
+                mae_pca = float("nan")
+                r2_per_dim_pca: Dict[int, float] = {}
+                corr_per_dim_pca: Dict[int, float] = {}
+
+                use_pca = True
+                X_pca = pca.transform(X)[:, pc_inds[comp_name]]
+                model_pca = LinearRegression()
+                model_pca.fit(X_pca, y)
+
+                prediction_full_pca = belief_slice.copy()
+                prediction_full_pca[:, usable_dims] = model_pca.predict(X_pca)
+                if post_fn is not None:
+                    prediction_full_pca = post_fn(prediction_full_pca)
+                y_pred_pca = prediction_full_pca[:, usable_dims]
+                residual_pca = y - y_pred_pca
+                rmse_pca = float(np.sqrt(np.mean(residual_pca ** 2)))
+                mae_pca = float(np.mean(np.abs(residual_pca)))
+
             r2_per_dim: Dict[int, float] = {}
             corr_per_dim: Dict[int, float] = {}
             for local_idx, original_dim in enumerate(usable_dims):
@@ -2133,6 +1947,24 @@ def evaluate_belief_state_linear_models(
             r2_values = [val for val in r2_per_dim.values() if np.isfinite(val)]
             r2_mean = float(np.mean(r2_values)) if r2_values else float("nan")
 
+            if use_pca and y_pred_pca is not None:
+                for local_idx, original_dim in enumerate(usable_dims):
+                    true_vals = y[:, local_idx]
+                    pred_vals = y_pred_pca[:, local_idx]
+                    try:
+                        r2_val = float(r2_score(true_vals, pred_vals))
+                    except ValueError:
+                        r2_val = float("nan")
+                    with np.errstate(invalid="ignore"):
+                        corr_matrix = np.corrcoef(true_vals, pred_vals)
+                        corr_val = corr_matrix[0, 1] if corr_matrix.ndim == 2 else float("nan")
+                    r2_per_dim_pca[original_dim] = r2_val
+                    corr_per_dim_pca[original_dim] = float(corr_val)
+                r2_values_pca = [val for val in r2_per_dim_pca.values() if np.isfinite(val)]
+                r2_mean_pca = float(np.mean(r2_values_pca)) if r2_values_pca else float("nan")
+            else:
+                r2_mean_pca = float("nan")
+
             entry: Dict[str, Any] = {
                 "target_dims": usable_dims,
                 "explicitly_dropped_dims": sorted(explicit_skip),
@@ -2145,8 +1977,22 @@ def evaluate_belief_state_linear_models(
                 "coef_norm": float(np.linalg.norm(model.coef_)),
             }
 
+            if use_pca and model_pca is not None:
+                entry.update(
+                    {
+                        "r2_mean_pca": r2_mean_pca,
+                        "r2_per_dim_pca": r2_per_dim_pca,
+                        "pearson_per_dim_pca": corr_per_dim_pca,
+                        "rmse_pca": rmse_pca,
+                        "mae_pca": mae_pca,
+                        "coef_norm_pca": float(np.linalg.norm(model_pca.coef_)),
+                    }
+                )
+
             if store_predictions:
                 entry["predictions"] = prediction_full.astype(np.float32, copy=False)
+                if use_pca and prediction_full_pca is not None:
+                    entry["predictions_pca"] = prediction_full_pca.astype(np.float32, copy=False)
                 entry["targets"] = belief_slice.astype(np.float32, copy=False)
 
             per_position[pos] = entry
@@ -2365,3 +2211,32 @@ def plot_tom_quantum_coherence_grid(
     fig.suptitle(f"TomQ coherence grid @ position {seq_position}", fontsize=14)
     fig.tight_layout(rect=(0, 0.03, 1, 0.97))
     return fig
+
+
+def _load_sae_checkpoints(folder: str | None, device: str) -> dict[str, dict[tuple[str, str], dict[str, Any]]]:
+    if folder is None or not os.path.isdir(folder):
+        return {}
+    checkpoints: dict[str, dict[tuple[str, str], dict[str, Any]]] = defaultdict(dict)
+
+    topk_pattern = re.compile(r"(.*)_top_k_k(\d+)\.pt$")
+    l1_pattern = re.compile(r"(.*)_lambda_([0-9eE.+-]+)\.pt$")
+
+    for path in glob.glob(os.path.join(folder, "*_top_k_k*.pt")):
+        base = os.path.basename(path)
+        match = topk_pattern.match(base)
+        if not match:
+            continue
+        site_name, k_val = match.groups()
+        ckpt = torch.load(path, map_location=device, weights_only=False)
+        checkpoints[site_name][("top_k", f"k{k_val}")] = ckpt
+
+    for path in glob.glob(os.path.join(folder, "*_lambda_*.pt")):
+        base = os.path.basename(path)
+        match = l1_pattern.match(base)
+        if not match:
+            continue
+        site_name, lam_val = match.groups()
+        ckpt = torch.load(path, map_location=device, weights_only=False)
+        checkpoints[site_name][("vanilla", f"lambda_{lam_val}")] = ckpt
+
+    return checkpoints

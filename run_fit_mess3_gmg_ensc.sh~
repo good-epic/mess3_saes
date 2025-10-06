@@ -18,15 +18,10 @@ python -u fit_mess3_gmg.py \
     --sim_metric "cosine" \
     --clustering_method "k_subspaces" \
     --max_clusters 12 \
-    --plot_eigengap \
+    --plot_eigengap True \
     --ensc_lambda1 0.01 \
     --ensc_lambda2 0.001 \
     --cosine_dedup_threshold 0.995 \
-    --seed_with_beliefs \
-    --belief_ridge_alpha 1e-3 \
-    --seed_lasso_cv 8 \
-    --seed_coef_threshold 1e-4 \
-    --seed_max_latents 40 \
     --sample_sequences 1024 \
     --max_activations 50000 \
     --cluster_activation_threshold 1e-6 \
@@ -36,7 +31,7 @@ python -u fit_mess3_gmg.py \
     --activation_batches 8 \
     --skip_pca_plots \
     --build_cluster_epdfs \
-    --epdf_sites layer_0 layer_1 layer_2 \
+    --epdf_sites "layer_2" \
     --epdf_plot_mode "both" \
     --epdf_bandwidth "scott" \
     --epdf_grid_size 200 

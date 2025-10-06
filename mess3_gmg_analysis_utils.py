@@ -11,6 +11,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from sklearn.decomposition import PCA
+from sklearn.linear_model import Ridge, LassoCV
+from sklearn.preprocessing import StandardScaler
 
 from BatchTopK.sae import TopKSAE, VanillaSAE
 
@@ -137,6 +139,52 @@ def plot_l2_bar_chart(l2_by_site: Mapping[str, Mapping[int, float]], output_path
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     fig.savefig(output_path)
     plt.close(fig)
+
+
+def fit_residual_to_belief_map(
+    residuals: np.ndarray,
+    beliefs: np.ndarray,
+    *,
+    alpha: float = 1e-3,
+) -> Tuple[np.ndarray, np.ndarray]:
+    if residuals.shape[0] != beliefs.shape[0]:
+        raise ValueError(
+            f"Residuals and beliefs must have matching samples; got {residuals.shape[0]} and {beliefs.shape[0]}"
+        )
+    model = Ridge(alpha=alpha, fit_intercept=True)
+    model.fit(residuals, beliefs)
+    coef = model.coef_.T  # (d_model, d_belief)
+    intercept = model.intercept_.astype(np.float64)
+    return coef.astype(np.float64), intercept
+
+
+
+def lasso_select_latents(
+    design_matrix: np.ndarray,
+    target: np.ndarray,
+    *,
+    cv: int = 5,
+    max_iter: int = 5000,
+    random_state: int | None = None,
+    alpha: float | None = None,
+) -> Tuple[np.ndarray, float, float]:
+    if design_matrix.shape[0] != target.shape[0]:
+        raise ValueError(
+            f"Design matrix and target must align on samples; got {design_matrix.shape[0]} and {target.shape[0]}"
+        )
+    scaler = StandardScaler(with_mean=True, with_std=True)
+    X_scaled = scaler.fit_transform(design_matrix)
+    # Let LassoCV pick the L1 strength via cross-validation unless alpha is forced.
+    model = LassoCV(
+        alphas=None if alpha is None else [alpha],
+        cv=cv,
+        max_iter=max_iter,
+        random_state=random_state,
+    )
+    model.fit(X_scaled, target)
+    coef = model.coef_ / np.where(scaler.scale_ == 0.0, 1.0, scaler.scale_)
+    intercept = model.intercept_ - float(np.dot(coef, scaler.mean_))
+    return coef.astype(np.float64), intercept, float(model.alpha_)
 
 
 def sae_encode_features(sae, acts: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:

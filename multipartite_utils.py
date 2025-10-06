@@ -1,4 +1,4 @@
- """Utilities for sampling from multipartite generative processes.
+"""Utilities for sampling from multipartite generative processes.
 
 This module provides lightweight helpers that combine multiple simplexity
 generative processes (e.g. mess3 and tom_quantum) into a single sampler that
@@ -275,7 +275,43 @@ def _resolve_device(preference: str) -> str:
 def _load_process_stack(args: argparse.Namespace, preset_process_configs) -> tuple[list[dict], list, object]:
     if args.process_config:
         with open(args.process_config, "r", encoding="utf-8") as f:
-            process_cfg_raw = json.load(f)
+            loaded_cfg = json.load(f)
+
+        selected_cfg: object = loaded_cfg
+        if isinstance(loaded_cfg, dict) and "type" not in loaded_cfg:
+            if args.process_config_name:
+                if args.process_config_name not in loaded_cfg:
+                    available = ", ".join(sorted(str(key) for key in loaded_cfg.keys()))
+                    raise KeyError(
+                        f"Config name '{args.process_config_name}' not found in {args.process_config}. Available: {available}"
+                    )
+                selected_cfg = loaded_cfg[args.process_config_name]
+            else:
+                if len(loaded_cfg) == 1:
+                    selected_cfg = next(iter(loaded_cfg.values()))
+                else:
+                    available = ", ".join(sorted(str(key) for key in loaded_cfg.keys()))
+                    raise ValueError(
+                        "process_config contains multiple named configurations; "
+                        "specify --process_config_name. Available keys: "
+                        f"{available}"
+                    )
+        elif args.process_config_name and not isinstance(loaded_cfg, dict):
+            raise ValueError("--process_config_name is only valid when --process_config is a mapping of named configurations")
+
+        if isinstance(selected_cfg, dict) and "type" in selected_cfg:
+            process_cfg_raw = [deepcopy(selected_cfg)]
+        elif isinstance(selected_cfg, list):
+            process_cfg_raw = deepcopy(selected_cfg)
+        elif isinstance(selected_cfg, dict):
+            # Allow explicit dict that already maps indices to configs but lacks 'type'
+            raise ValueError(
+                "Selected configuration must be a list of component definitions or a mapping with 'type' keys"
+            )
+        else:
+            raise TypeError(
+                "Loaded process configuration must be a list or a dict describing component entries"
+            )
     elif args.process_preset:
         if args.process_preset not in preset_process_configs:
             raise ValueError(f"Unknown process preset '{args.process_preset}'")

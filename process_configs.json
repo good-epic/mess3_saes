@@ -1,0 +1,39 @@
+{
+    "single_mess3": [
+        {"type": "mess3", "params": {"x": 0.1, "a": 0.7}}
+    ],
+    "3xmess3_2xtquant_001": [
+        {
+            "type": "mess3",
+            "instances": [
+                {"x": 0.10, "a": 0.50},
+                {"x": 0.25, "a": 0.80},
+                {"x": 0.40, "a": 0.20}
+            ]
+        },
+        {
+            "type": "tom_quantum",
+            "instances": [
+                {"alpha": 0.9, "beta": 1.3},
+                {"alpha": 1.0, "beta": 7.1414284285}
+            ]
+        }
+    ],
+    "3xmess3_2xtquant_002": [
+        {
+            "type": "mess3",
+            "instances": [
+                {"x": 0.12, "a": 0.55},
+                {"x": 0.14, "a": 0.7},
+                {"x": 0.18, "a": 0.75}
+            ]
+        },
+        {
+            "type": "tom_quantum",
+            "instances": [
+                {"alpha": 1.12, "beta": 5.64},
+                {"alpha": 0.88, "beta": 8.64}
+            ]
+        }
+    ]
+}
