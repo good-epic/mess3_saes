@@ -1,82 +1,94 @@
 ** Ready! **
-mess3 processes: 3 instances with vocab_size=3, states=3
-tom_quantum processes: 2 instances with vocab_size=4, states=3
+Loaded process config '3xmess3_2xtquant_003' from process_configs.json → tom_quantum:2, mess3:3
+Product vocab size: 432
 Product space: vocab_size=432
 Model: 708,144 params on cuda
-Checkpoint saved at step 1000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_1000.pt
-Checkpoint saved at step 2000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_2000.pt
-Checkpoint saved at step 3000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_3000.pt
-Checkpoint saved at step 4000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_4000.pt
-Checkpoint saved at step 5000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_5000.pt
-Checkpoint saved at step 6000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_6000.pt
-Checkpoint saved at step 7000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_7000.pt
-Checkpoint saved at step 8000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_8000.pt
-Checkpoint saved at step 9000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_9000.pt
-Checkpoint saved at step 10000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_10000.pt
-Checkpoint saved at step 12500 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_12500.pt
-Checkpoint saved at step 15000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_15000.pt
-Checkpoint saved at step 17500 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_17500.pt
-Checkpoint saved at step 20000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_20000.pt
-Checkpoint saved at step 23000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_23000.pt
-Checkpoint saved at step 24000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_24000.pt
-Checkpoint saved at step 25000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_25000.pt
-Checkpoint saved at step 30000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_30000.pt
-Checkpoint saved at step 35000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_35000.pt
-Checkpoint saved at step 40000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_40000.pt
-Checkpoint saved at step 45000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_45000.pt
-Checkpoint saved at step 50000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_50000.pt
-Checkpoint saved at step 55000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_55000.pt
-Checkpoint saved at step 60000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_60000.pt
-Checkpoint saved at step 65000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_65000.pt
-Checkpoint saved at step 70000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_70000.pt
-Checkpoint saved at step 75000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_75000.pt
-Checkpoint saved at step 80000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_80000.pt
-Checkpoint saved at step 85000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_85000.pt
-Checkpoint saved at step 90000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_90000.pt
-Checkpoint saved at step 95000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_95000.pt
-Checkpoint saved at step 100000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_100000.pt
-Checkpoint saved at step 125000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_125000.pt
-Checkpoint saved at step 150000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_150000.pt
-Checkpoint saved at step 175000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_175000.pt
-Checkpoint saved at step 200000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_200000.pt
-Checkpoint saved at step 230000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_230000.pt
-Checkpoint saved at step 240000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_240000.pt
-Checkpoint saved at step 250000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_250000.pt
-Checkpoint saved at step 300000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_300000.pt
-Checkpoint saved at step 350000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_350000.pt
-Checkpoint saved at step 400000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_400000.pt
-Final checkpoint saved at step 400000 to /workspace/outputs/checkpoints/multipartite_002/checkpoint_step_400000_final.pt
+Checkpoint saved at step 1000 to /workspace/outputs/checkpoints/multipartite_003/checkpoint_step_1000.pt
+Checkpoint saved at step 2000 to /workspace/outputs/checkpoints/multipartite_003/checkpoint_step_2000.pt
+Iteration 2500: (Loss: 4.7135) (LR: 1.00e-04) (EMA: 4.7188)
+Checkpoint saved at step 3000 to /workspace/outputs/checkpoints/multipartite_003/checkpoint_step_3000.pt
+Checkpoint saved at step 4000 to /workspace/outputs/checkpoints/multipartite_003/checkpoint_step_4000.pt
+Iteration 5000: (Loss: 4.6870) (LR: 1.00e-04) (EMA: 4.6847)
+Checkpoint saved at step 5000 to /workspace/outputs/checkpoints/multipartite_003/checkpoint_step_5000.pt
+Early stopping triggered at step 5008 (best_ema=4.6847, current_ema=4.6852)
+Final checkpoint saved at step 5008 to /workspace/outputs/checkpoints/multipartite_003/checkpoint_step_5008_final.pt
+Best checkpoint (EMA) stored at /workspace/outputs/checkpoints/multipartite_003/checkpoint_step_5000_best.pt (step 5000, ema=4.6847)
+Training stopped early based on EMA loss criteria.
 
-Final loss: 5.9968 (started at 6.3852)
+Final loss: 4.6806 (started at 6.3977)
 Cumulative variance data saved to cumulative_variance_data.pkl
 All layer activations data saved to all_layer_activations.pkl
-Traceback (most recent call last):
-  File "/root/mess3_saes/train_simplexity_3xmess3_2xtquant.py", line 359, in <module>
-    ckpt = torch.load(os.path.join(checkpoint_path, f'checkpoint_step_500000_final.pt'))
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/dist-packages/torch/serialization.py", line 1479, in load
-    with _open_file_like(f, "rb") as opened_file:
-         ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/dist-packages/torch/serialization.py", line 759, in _open_file_like
-    return _open_file(name_or_buffer, mode)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/dist-packages/torch/serialization.py", line 740, in __init__
-    super().__init__(open(name, mode))
-                     ^^^^^^^^^^^^^^^^
-FileNotFoundError: [Errno 2] No such file or directory: 'outputs/checkpoints/multipartite_001/checkpoint_step_500000_final.pt'
+Loaded model state from /workspace/outputs/checkpoints/multipartite_003/checkpoint_step_5008_final.pt
+Loaded losses from /workspace/outputs/checkpoints/multipartite_003/checkpoint_step_5008_final.pt
+Saved loss moving average plot to  /workspace/outputs/reports/multipartite_003/loss_moving_average.png
+Saved cumulative variance plot to  /workspace/outputs/reports/multipartite_003/dims_to_90_95_99_variance_over_time.png
+Saved cumulative variance plot to  /workspace/outputs/reports/multipartite_003/cumvar_by_components_over_steps.png
+Using final checkpoint: /workspace/outputs/checkpoints/multipartite_003/checkpoint_step_5008_final.pt
+Loaded process config '3xmess3_2xtquant_003' from process_configs.json → mess3:3, tom_quantum:2
 Multipartite process with components ['tom_quantum', 'tom_quantum_1', 'mess3', 'mess3_1', 'mess3_2'] → vocab_size=432, belief_dim=15
 Model: 708,144 params on cuda
-Traceback (most recent call last):
-  File "/root/mess3_saes/train_mess3_and_saes.py", line 220, in <module>
-    ckpt = torch.load(args.load_model, map_location=device, weights_only=False)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/dist-packages/torch/serialization.py", line 1479, in load
-    with _open_file_like(f, "rb") as opened_file:
-         ^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/dist-packages/torch/serialization.py", line 759, in _open_file_like
-    return _open_file(name_or_buffer, mode)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/usr/local/lib/python3.12/dist-packages/torch/serialization.py", line 740, in __init__
-    super().__init__(open(name, mode))
-                     ^^^^^^^^^^^^^^^^
-FileNotFoundError: [Errno 2] No such file or directory: '/workspace/outputs/checkpoints/multipartite_001/checkpoint_step_600000_final.pt'
+Moving model to device:  cuda
+Loaded model from /workspace/outputs/checkpoints/multipartite_003/checkpoint_step_5008_final.pt
+Training SAEs for all sites in one pass
+Starting SAE training
+Done 250 iterations. SAEs (all sites) (Loss: 13.6657)
+Done 500 iterations. SAEs (all sites) (Loss: 10.9063)
+Done 750 iterations. SAEs (all sites) (Loss: 9.6839)
+Done 1000 iterations. SAEs (all sites) (Loss: 9.1413)
+Done 1250 iterations. SAEs (all sites) (Loss: 8.8965)
+Done 1500 iterations. SAEs (all sites) (Loss: 8.7698)
+Done 1750 iterations. SAEs (all sites) (Loss: 8.7169)
+Done 2000 iterations. SAEs (all sites) (Loss: 8.6475)
+Done 2250 iterations. SAEs (all sites) (Loss: 8.6218)
+Done 2500 iterations. SAEs (all sites) (Loss: 8.5740)
+Done 2750 iterations. SAEs (all sites) (Loss: 8.5497)
+Done 3000 iterations. SAEs (all sites) (Loss: 8.5111)
+Done 3250 iterations. SAEs (all sites) (Loss: 8.4757)
+Done 3500 iterations. SAEs (all sites) (Loss: 8.4779)
+Done 3750 iterations. SAEs (all sites) (Loss: 8.4209)
+Done 4000 iterations. SAEs (all sites) (Loss: 8.4101)
+Done 4250 iterations. SAEs (all sites) (Loss: 8.3600)
+Done 4500 iterations. SAEs (all sites) (Loss: 8.3453)
+Done 4750 iterations. SAEs (all sites) (Loss: 8.3527)
+Done 5000 iterations. SAEs (all sites) (Loss: 8.3347)
+Done 5250 iterations. SAEs (all sites) (Loss: 8.3167)
+Done 5500 iterations. SAEs (all sites) (Loss: 8.2782)
+Done 5750 iterations. SAEs (all sites) (Loss: 8.2886)
+Done 6000 iterations. SAEs (all sites) (Loss: 8.2385)
+Done 6250 iterations. SAEs (all sites) (Loss: 8.1881)
+Done 6500 iterations. SAEs (all sites) (Loss: 8.1924)
+Done 6750 iterations. SAEs (all sites) (Loss: 8.1945)
+Done 7000 iterations. SAEs (all sites) (Loss: 8.1901)
+Done 7250 iterations. SAEs (all sites) (Loss: 8.1654)
+Done 7500 iterations. SAEs (all sites) (Loss: 8.1536)
+Done 7750 iterations. SAEs (all sites) (Loss: 8.1137)
+Done 8000 iterations. SAEs (all sites) (Loss: 8.1041)
+Done 8250 iterations. SAEs (all sites) (Loss: 8.0903)
+Done 8500 iterations. SAEs (all sites) (Loss: 8.0900)
+Done 8750 iterations. SAEs (all sites) (Loss: 8.0766)
+Done 9000 iterations. SAEs (all sites) (Loss: 8.0613)
+Done 9250 iterations. SAEs (all sites) (Loss: 8.0682)
+Done 9500 iterations. SAEs (all sites) (Loss: 8.0224)
+Done 9750 iterations. SAEs (all sites) (Loss: 8.0541)
+Done 10000 iterations. SAEs (all sites) (Loss: 8.0436)
+Done 10250 iterations. SAEs (all sites) (Loss: 8.0127)
+Done 10500 iterations. SAEs (all sites) (Loss: 7.9900)
+Done 10750 iterations. SAEs (all sites) (Loss: 7.9919)
+Done 11000 iterations. SAEs (all sites) (Loss: 7.9660)
+Done 11250 iterations. SAEs (all sites) (Loss: 7.9406)
+Done 11500 iterations. SAEs (all sites) (Loss: 7.9337)
+Done 11750 iterations. SAEs (all sites) (Loss: 7.9160)
+Done 12000 iterations. SAEs (all sites) (Loss: 7.8777)
+Done 12250 iterations. SAEs (all sites) (Loss: 7.8674)
+Done 12500 iterations. SAEs (all sites) (Loss: 7.8400)
+Done 12750 iterations. SAEs (all sites) (Loss: 7.8146)
+Done 13000 iterations. SAEs (all sites) (Loss: 7.7842)
+Done 13250 iterations. SAEs (all sites) (Loss: 7.7619)
+Done 13500 iterations. SAEs (all sites) (Loss: 7.7771)
+Done 13750 iterations. SAEs (all sites) (Loss: 7.7319)
+Done 14000 iterations. SAEs (all sites) (Loss: 7.7478)
+Done 14250 iterations. SAEs (all sites) (Loss: 7.7264)
+Done 14500 iterations. SAEs (all sites) (Loss: 7.6911)
+Done 14750 iterations. SAEs (all sites) (Loss: 7.6973)
+Done 15000 iterations. SAEs (all sites) (Loss: 7.6926)
+Saved SAE metrics summary to /workspace/outputs/saes/multipartite_003/metrics_summary.json

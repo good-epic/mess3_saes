@@ -35,5 +35,22 @@
                 {"alpha": 0.88, "beta": 8.64}
             ]
         }
+    ],
+    "3xmess3_2xtquant_003": [
+        {
+            "type": "mess3",
+            "instances": [
+                {"x": 0.05, "a": 0.85},
+                {"x": 0.075, "a": 0.9},
+                {"x": 0.1, "a": 0.95}
+            ]
+        },
+        {
+            "type": "tom_quantum",
+            "instances": [
+                {"alpha": 1.51, "beta": 3.07},
+                {"alpha": 1.99, "beta": 2.51}
+            ]
+        }
     ]
 }

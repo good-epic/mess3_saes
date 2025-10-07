@@ -29,13 +29,12 @@ import jax
 import jax.numpy as jnp
 from transformer_lens import HookedTransformer, HookedTransformerConfig
 from simplexity.generative_processes.torch_generator import generate_data_batch
-import argparse, sys, os, json
-from copy import deepcopy
+import argparse, sys, json
 
 from training_and_analysis_utils import train_saes_for_sites, check_cuda_memory
 from multipartite_utils import (
-    build_components_from_config,
     MultipartiteSampler,
+    _load_process_stack,
 )
 
 import plotly.graph_objects as go
@@ -43,55 +42,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LinearRegression
-
-PRESET_PROCESS_CONFIGS = {
-    "single_mess3": [
-        {"type": "mess3", "params": {"x": 0.1, "a": 0.7}},
-    ],
-    "3xmess3_2xtquant": [
-        {
-            "type": "mess3",
-            "instances": [
-                {"x": 0.10, "a": 0.50},
-                {"x": 0.25, "a": 0.80},
-                {"x": 0.40, "a": 0.20},
-            ],
-        },
-        {
-            "type": "tom_quantum",
-            "instances": [
-                {"alpha": 1.12, "beta": float(5.64)},
-                {"alpha": 0.88, "beta": float(8.64)},
-            ],
-        },
-    ],
-}
-## For Multipartite 002
-# PRESET_PROCESS_CONFIGS = {
-#     "single_mess3": [
-#         {"type": "mess3", "params": {"x": 0.1, "a": 0.7}},
-#     ],
-#     "3xmess3_2xtquant": [
-#         {
-#             "type": "mess3",
-#             "instances": [
-#                 {"x": 0.12, "a": 0.55},
-#                 {"x": 0.14, "a": 0.7},
-#                 {"x": 0.18, "a": 0.75},
-#             ],
-#         },
-#         {
-#             "type": "tom_quantum",
-#             "instances": [
-#                 {"alpha": 1.12, "beta": float(5.64)},
-#                 {"alpha": 0.88, "beta": float(8.64)},
-#             ],
-#         },
-#     ],
-# }
-
-
-
+#
 #%%
 # CLI arguments
 device_default = "cuda" if torch.cuda.is_available() else "cpu"
@@ -127,37 +78,35 @@ parser.add_argument("--sae_batch_size", type=int, default=1024)
 parser.add_argument("--sae_seq_len", type=int, default=None)
 parser.add_argument("--seq_len", type=int, default=None, help="Sequence length used for analysis/visualization batches; defaults to n_ctx")
 parser.add_argument("--sae_output_dir", type=str, default="outputs/saes/multipartite_001", help="Directory to save trained SAEs and metrics")
+parser.add_argument("--sae_learning_rate", type=float, default=3e-4, help="Base learning rate for SAE optimizers")
+parser.add_argument("--sae_weight_decay", type=float, default=0.0, help="Weight decay for SAE optimizers")
+parser.add_argument("--sae_beta1", type=float, default=0.9, help="Adam beta1 parameter for SAE optimizers")
+parser.add_argument("--sae_beta2", type=float, default=0.99, help="Adam beta2 parameter for SAE optimizers")
+parser.add_argument("--sae_scheduler", type=str, default="cosine", choices=["none", "cosine", "linear"], help="Learning rate scheduler strategy for SAEs")
+parser.add_argument("--sae_scheduler_warmup_steps", type=int, default=500, help="Warmup steps before applying the SAE scheduler")
+parser.add_argument("--sae_scheduler_final_ratio", type=float, default=0.2, help="Final LR ratio for SAE schedulers")
+parser.add_argument("--sae_grad_clip_norm", type=float, default=None, help="Gradient clipping norm for SAE training (None keeps default clamp)")
+parser.add_argument("--sae_early_stopping_patience", type=int, default=0, help="Patience for SAE early stopping based on EMA loss (0 disables)")
+parser.add_argument("--sae_early_stopping_delta", type=float, default=5e-5, help="Required EMA improvement to reset SAE early stopping patience")
+parser.add_argument("--sae_early_stopping_beta", type=float, default=0.98, help="EMA smoothing factor for SAE early stopping")
+parser.add_argument("--sae_early_stopping_min_steps", type=int, default=1000, help="Minimum SAE steps before early stopping may trigger")
+parser.add_argument("--sae_log_interval", type=int, default=200, help="Iterations between SAE progress updates")
 
 # Model loading
-#parser.add_argument("--load_model", type=str, default=None, help="Path to a saved model checkpoint (.pt). If provided, skip training and load this model.")
 parser.add_argument("--load_model", type=str, default="outputs/checkpoints/multipartite_001/checkpoint_step_500000_final.pt", help="Path to a saved model checkpoint (.pt). If provided, skip training and load this model.")
-parser.add_argument("--process_config", type=str, default=None, help="Path to JSON describing a stack of generative processes")
-#parser.add_argument("--process_preset", type=str, default=None, help="Named preset for generative process configuration")
-parser.add_argument("--process_preset", type=str, default="3xmess3_2xtquant", help="Named preset for generative process configuration")
+parser.add_argument("--process_config", type=str, default="process_configs.json", help="Path to JSON describing a stack of generative processes or mapping of named configurations")
+parser.add_argument("--process_config_name", type=str, default=None, help="Key within --process_config when the file contains multiple named configurations")
 
 # Parse known to be notebook-friendly
 args, _ = parser.parse_known_args()
 
-if args.process_config and args.process_preset:
-    parser.error("Specify at most one of --process_config or --process_preset")
-
-if args.process_config:
-    with open(args.process_config, "r", encoding="utf-8") as f:
-        process_config = json.load(f)
-elif args.process_preset:
-    if args.process_preset not in PRESET_PROCESS_CONFIGS:
-        parser.error(f"Unknown process preset '{args.process_preset}'")
-    process_config = deepcopy(PRESET_PROCESS_CONFIGS[args.process_preset])
-else:
-    process_config = deepcopy(PRESET_PROCESS_CONFIGS["single_mess3"])
-
-components = build_components_from_config(process_config)
-if len(components) == 1:
-    data_source = components[0].process
-    sampler: MultipartiteSampler | None = None
-else:
-    sampler = MultipartiteSampler(components)
-    data_source = sampler
+_process_cfg_raw, components, data_source = _load_process_stack(args, {})
+type_counts: dict[str, int] = {}
+for comp in components:
+    type_counts[comp.process_type] = type_counts.get(comp.process_type, 0) + 1
+counts_str = ", ".join(f"{ptype}:{count}" for ptype, count in type_counts.items())
+config_label = args.process_config_name if args.process_config_name else "<unnamed>"
+print(f"Loaded process config '{config_label}' from {args.process_config} → {counts_str}")
 
 if isinstance(data_source, MultipartiteSampler):
     vocab_size = data_source.vocab_size
@@ -170,8 +119,6 @@ else:
     vocab_size = data_source.vocab_size
     num_states = data_source.num_states
     print(f"Process: vocab_size={vocab_size}, states={num_states}")
-
-print("2")
 # Create TransformerLens model
 device = args.device
 cfg = HookedTransformerConfig(
@@ -291,6 +238,19 @@ sequence_saes, true_coords_saes, metrics_summary = train_saes_for_sites(
     bandwidth=args.bandwidth,
     belief_dim=num_states,
     sae_output_dir=args.sae_output_dir,
+    sae_learning_rate=args.sae_learning_rate,
+    sae_weight_decay=args.sae_weight_decay,
+    sae_beta1=args.sae_beta1,
+    sae_beta2=args.sae_beta2,
+    sae_scheduler=args.sae_scheduler,
+    sae_scheduler_warmup_steps=args.sae_scheduler_warmup_steps,
+    sae_scheduler_final_ratio=args.sae_scheduler_final_ratio,
+    sae_grad_clip_norm=args.sae_grad_clip_norm,
+    sae_early_stopping_patience=args.sae_early_stopping_patience,
+    sae_early_stopping_delta=args.sae_early_stopping_delta,
+    sae_early_stopping_beta=args.sae_early_stopping_beta,
+    sae_early_stopping_min_steps=args.sae_early_stopping_min_steps,
+    sae_log_interval=args.sae_log_interval,
 )
 
 #%%

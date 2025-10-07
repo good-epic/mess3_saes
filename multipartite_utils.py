@@ -272,20 +272,29 @@ def _resolve_device(preference: str) -> str:
     return preference
 
 
-def _load_process_stack(args: argparse.Namespace, preset_process_configs) -> tuple[list[dict], list, object]:
-    if args.process_config:
-        with open(args.process_config, "r", encoding="utf-8") as f:
+def _load_process_stack(
+    args: argparse.Namespace,
+    preset_process_configs: Mapping[str, Any] | None,
+) -> tuple[list[dict], list[ProcessComponent], object]:
+    process_config_path = getattr(args, "process_config", None)
+    process_config_name = getattr(args, "process_config_name", None)
+    process_preset = getattr(args, "process_preset", None)
+
+    presets = preset_process_configs or {}
+
+    if process_config_path:
+        with open(process_config_path, "r", encoding="utf-8") as f:
             loaded_cfg = json.load(f)
 
         selected_cfg: object = loaded_cfg
         if isinstance(loaded_cfg, dict) and "type" not in loaded_cfg:
-            if args.process_config_name:
-                if args.process_config_name not in loaded_cfg:
+            if process_config_name:
+                if process_config_name not in loaded_cfg:
                     available = ", ".join(sorted(str(key) for key in loaded_cfg.keys()))
                     raise KeyError(
-                        f"Config name '{args.process_config_name}' not found in {args.process_config}. Available: {available}"
+                        f"Config name '{process_config_name}' not found in {process_config_path}. Available: {available}"
                     )
-                selected_cfg = loaded_cfg[args.process_config_name]
+                selected_cfg = loaded_cfg[process_config_name]
             else:
                 if len(loaded_cfg) == 1:
                     selected_cfg = next(iter(loaded_cfg.values()))
@@ -296,7 +305,7 @@ def _load_process_stack(args: argparse.Namespace, preset_process_configs) -> tup
                         "specify --process_config_name. Available keys: "
                         f"{available}"
                     )
-        elif args.process_config_name and not isinstance(loaded_cfg, dict):
+        elif process_config_name and not isinstance(loaded_cfg, dict):
             raise ValueError("--process_config_name is only valid when --process_config is a mapping of named configurations")
 
         if isinstance(selected_cfg, dict) and "type" in selected_cfg:
@@ -304,7 +313,6 @@ def _load_process_stack(args: argparse.Namespace, preset_process_configs) -> tup
         elif isinstance(selected_cfg, list):
             process_cfg_raw = deepcopy(selected_cfg)
         elif isinstance(selected_cfg, dict):
-            # Allow explicit dict that already maps indices to configs but lacks 'type'
             raise ValueError(
                 "Selected configuration must be a list of component definitions or a mapping with 'type' keys"
             )
@@ -312,17 +320,22 @@ def _load_process_stack(args: argparse.Namespace, preset_process_configs) -> tup
             raise TypeError(
                 "Loaded process configuration must be a list or a dict describing component entries"
             )
-    elif args.process_preset:
-        if args.process_preset not in preset_process_configs:
-            raise ValueError(f"Unknown process preset '{args.process_preset}'")
-        process_cfg_raw = deepcopy(preset_process_configs[args.process_preset])
+    elif process_preset:
+        if process_preset not in presets:
+            raise ValueError(f"Unknown process preset '{process_preset}'")
+        process_cfg_raw = deepcopy(presets[process_preset])
     else:
-        process_cfg_raw = deepcopy(preset_process_configs["single_mess3"])
+        if "single_mess3" in presets:
+            process_cfg_raw = deepcopy(presets["single_mess3"])
+        else:
+            raise ValueError(
+                "No process configuration specified; provide --process_config/--process_config_name "
+                "or pass presets containing a 'single_mess3' default"
+            )
 
     components = build_components_from_config(process_cfg_raw)
-    data_source: object
     if len(components) == 1:
-        data_source = components[0].process
+        data_source: object = components[0].process
     else:
         data_source = MultipartiteSampler(components)
     return process_cfg_raw, components, data_source

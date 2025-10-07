@@ -3,6 +3,7 @@ os.environ["JAX_PLATFORM_NAME"] = "cpu"
 os.environ["JAX_PLATFORMS"] = "cpu"
 import sys
 import torch
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 import torch.nn.functional as F
 import numpy as np
 import jax
@@ -160,6 +161,19 @@ def train_saes_for_sites(
     belief_dim: int | None = None,
     belief_dict_size: int | None = None,
     sae_output_dir: str = "outputs/saes",
+    sae_learning_rate: float = 3e-4,
+    sae_weight_decay: float = 0.0,
+    sae_beta1: float = 0.9,
+    sae_beta2: float = 0.99,
+    sae_scheduler: str = "cosine",
+    sae_scheduler_warmup_steps: int = 1000,
+    sae_scheduler_final_ratio: float = 0.1,
+    sae_grad_clip_norm: float | None = None,
+    sae_early_stopping_patience: int = 0,
+    sae_early_stopping_delta: float = 1e-4,
+    sae_early_stopping_beta: float = 0.95,
+    sae_early_stopping_min_steps: int = 0,
+    sae_log_interval: int = 100,
 ):
     if seq_len is None:
         seq_len = cfg.n_ctx - 1
@@ -198,6 +212,66 @@ def train_saes_for_sites(
     opt_seq_topk_all: Dict[str, Dict[str, torch.optim.Optimizer]] = {site: {} for site in site_to_hook}
     opt_seq_vanilla_all: Dict[str, Dict[str, torch.optim.Optimizer]] = {site: {} for site in site_to_hook}
     opt_true_all: Dict[str, Dict[str, torch.optim.Optimizer]] = {site: {} for site in site_to_hook}
+    sched_seq_topk_all: Dict[str, Dict[str, Any]] = {site: {} for site in site_to_hook}
+    sched_seq_vanilla_all: Dict[str, Dict[str, Any]] = {site: {} for site in site_to_hook}
+    sched_true_all: Dict[str, Dict[str, Any]] = {site: {} for site in site_to_hook}
+
+    def _build_scheduler_for_sae(optimizer: torch.optim.Optimizer):
+        if sae_scheduler.lower() == "none":
+            return None
+
+        warmup_steps = max(int(sae_scheduler_warmup_steps), 0)
+        total_steps = max(int(steps), 1)
+        decay_steps = max(total_steps - warmup_steps, 1)
+        final_ratio = max(float(sae_scheduler_final_ratio), 0.0)
+
+        if sae_scheduler.lower() == "cosine":
+            cosine = CosineAnnealingLR(
+                optimizer,
+                T_max=decay_steps,
+                eta_min=sae_learning_rate * final_ratio,
+            )
+            if warmup_steps > 0:
+                warmup = LinearLR(
+                    optimizer,
+                    start_factor=1e-8,
+                    end_factor=1.0,
+                    total_iters=warmup_steps,
+                )
+                return SequentialLR(
+                    optimizer,
+                    schedulers=[warmup, cosine],
+                    milestones=[warmup_steps],
+                )
+            return cosine
+        if sae_scheduler.lower() == "linear":
+            linear = LinearLR(
+                optimizer,
+                start_factor=1.0,
+                end_factor=final_ratio,
+                total_iters=decay_steps,
+            )
+            if warmup_steps > 0:
+                warmup = LinearLR(
+                    optimizer,
+                    start_factor=1e-8,
+                    end_factor=1.0,
+                    total_iters=warmup_steps,
+                )
+                return SequentialLR(
+                    optimizer,
+                    schedulers=[warmup, linear],
+                    milestones=[warmup_steps],
+                )
+            return linear
+        raise ValueError(f"Unsupported sae_scheduler '{sae_scheduler}'")
+
+    if sae_grad_clip_norm is None:
+        grad_clip_threshold = 1e5
+    elif sae_grad_clip_norm > 0:
+        grad_clip_threshold = sae_grad_clip_norm
+    else:
+        grad_clip_threshold = None
 
     for site_name in site_to_hook.keys():
         if has_topk:
@@ -217,7 +291,14 @@ def train_saes_for_sites(
                 sae = TopKSAE(cfg_topk)
                 name = f"k{k}"
                 seq_topk_all[site_name][name] = sae
-                opt_seq_topk_all[site_name][name] = torch.optim.Adam(sae.parameters(), lr=3e-4, betas=(0.9, 0.99))
+                opt = torch.optim.Adam(
+                    sae.parameters(),
+                    lr=sae_learning_rate,
+                    betas=(sae_beta1, sae_beta2),
+                    weight_decay=sae_weight_decay,
+                )
+                opt_seq_topk_all[site_name][name] = opt
+                sched_seq_topk_all[site_name][name] = _build_scheduler_for_sae(opt)
 
         if has_seq_vanilla:
             for lam in seq_lams:
@@ -236,7 +317,14 @@ def train_saes_for_sites(
                 sae = VanillaSAE(cfg_s_v)
                 name = f"lambda_{lam}"
                 seq_vanilla_all[site_name][name] = sae
-                opt_seq_vanilla_all[site_name][name] = torch.optim.Adam(sae.parameters(), lr=3e-4, betas=(0.9, 0.99))
+                opt = torch.optim.Adam(
+                    sae.parameters(),
+                    lr=sae_learning_rate,
+                    betas=(sae_beta1, sae_beta2),
+                    weight_decay=sae_weight_decay,
+                )
+                opt_seq_vanilla_all[site_name][name] = opt
+                sched_seq_vanilla_all[site_name][name] = _build_scheduler_for_sae(opt)
 
         if has_beliefs:
             for lam in beliefs_lams:
@@ -256,7 +344,14 @@ def train_saes_for_sites(
                 sae = VanillaSAE(cfg_v)
                 name = f"lambda_{lam}"
                 true_coord_saes_all[site_name][name] = sae
-                opt_true_all[site_name][name] = torch.optim.Adam(sae.parameters(), lr=3e-4, betas=(0.9, 0.99))
+                opt = torch.optim.Adam(
+                    sae.parameters(),
+                    lr=sae_learning_rate,
+                    betas=(sae_beta1, sae_beta2),
+                    weight_decay=sae_weight_decay,
+                )
+                opt_true_all[site_name][name] = opt
+                sched_true_all[site_name][name] = _build_scheduler_for_sae(opt)
 
     # Metrics containers per site
     metrics_raw_all: Dict[str, Dict] = {}
@@ -270,8 +365,14 @@ def train_saes_for_sites(
         }
     
     print("Starting SAE training")
-    miniters = 250 if steps > 250 else steps
+    monitor_interval = max(1, int(sae_log_interval))
+    miniters = monitor_interval if steps > monitor_interval else steps
     progress_bar = tqdm(range(steps), desc="SAEs (all sites)", miniters=miniters, disable=not sys.stderr.isatty())
+    ema_loss = None
+    best_ema = float("inf")
+    patience_counter = 0
+    early_stop_triggered = False
+    steps_completed = 0
     # Training loop
     for ii in progress_bar:
         rng_key, states, observations = _generate_sequences(
@@ -281,6 +382,9 @@ def train_saes_for_sites(
             source=data_source,
         )
         tokens = _tokens_from_observations(observations, device=device)
+
+        step_loss_values: list[float] = []
+        current_lr_snapshot = None
 
         with torch.no_grad():
             _, cache = model.run_with_cache(tokens, return_type=None, names_filter=list(site_to_hook.values()))
@@ -309,11 +413,19 @@ def train_saes_for_sites(
                 opt = opt_seq_topk_all[site_name][name]
                 opt.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(sae.parameters(), 1e5)
+                loss_value = float(loss.detach().item())
+                if grad_clip_threshold is not None:
+                    torch.nn.utils.clip_grad_norm_(sae.parameters(), grad_clip_threshold)
                 sae.make_decoder_weights_and_grad_unit_norm()
                 opt.step()
+                sched = sched_seq_topk_all[site_name].get(name)
+                if sched is not None:
+                    sched.step()
+                step_loss_values.append(loss_value)
+                if current_lr_snapshot is None:
+                    current_lr_snapshot = opt.param_groups[0]["lr"]
                 mr = metrics_raw_all[site_name]["sequence"]["top_k"][name]
-                mr["loss"].append(float(loss.detach().item()))
+                mr["loss"].append(loss_value)
                 for key in ("l2_loss", "l1_loss", "l0_norm", "l1_norm", "aux_loss"):
                     if key in out:
                         mr[key].append(float(out[key].detach().item()))
@@ -341,11 +453,19 @@ def train_saes_for_sites(
                 opt = opt_seq_vanilla_all[site_name][name]
                 opt.zero_grad()
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(sae.parameters(), 1e5)
+                loss_value = float(loss.detach().item())
+                if grad_clip_threshold is not None:
+                    torch.nn.utils.clip_grad_norm_(sae.parameters(), grad_clip_threshold)
                 sae.make_decoder_weights_and_grad_unit_norm()
                 opt.step()
+                sched = sched_seq_vanilla_all[site_name].get(name)
+                if sched is not None:
+                    sched.step()
+                step_loss_values.append(loss_value)
+                if current_lr_snapshot is None:
+                    current_lr_snapshot = opt.param_groups[0]["lr"]
                 mr = metrics_raw_all[site_name]["sequence"]["vanilla"][name]
-                mr["loss"].append(float(loss.detach().item()))
+                mr["loss"].append(loss_value)
                 for key in ("l2_loss", "l1_loss", "l0_norm", "l1_norm"):
                     if key in out:
                         mr[key].append(float(out[key].detach().item()))
@@ -372,11 +492,19 @@ def train_saes_for_sites(
                     opt = opt_true_all[site_name][name]
                     opt.zero_grad()
                     loss.backward()
-                    torch.nn.utils.clip_grad_norm_(sae.parameters(), 1e5)
+                    loss_value = float(loss.detach().item())
+                    if grad_clip_threshold is not None:
+                        torch.nn.utils.clip_grad_norm_(sae.parameters(), grad_clip_threshold)
                     sae.make_decoder_weights_and_grad_unit_norm()
                     opt.step()
+                    sched = sched_true_all[site_name].get(name)
+                    if sched is not None:
+                        sched.step()
+                    step_loss_values.append(loss_value)
+                    if current_lr_snapshot is None:
+                        current_lr_snapshot = opt.param_groups[0]["lr"]
                     mr = metrics_raw_all[site_name]["beliefs"][name]
-                    mr["loss"].append(float(loss.detach().item()))
+                    mr["loss"].append(loss_value)
                     for key in ("l2_loss", "l1_loss", "l0_norm", "l1_norm"):
                         if key in out:
                             mr[key].append(float(out[key].detach().item()))
@@ -391,12 +519,51 @@ def train_saes_for_sites(
                                 mr["active_counts"].append(counts)
                                 mr["active_sums"].append(sums)
                                 mr["iteration"].append(ii + 1)
-        if (ii + 1) % miniters == 0:
-            progress_bar.set_description(f"SAEs (all sites) (Loss: {loss.item():.4f})", refresh=False)
-            print(f"Done {ii + 1} iterations. SAEs (all sites) (Loss: {loss.item():.4f})")
+        if step_loss_values:
+            mean_loss = float(np.mean(step_loss_values))
+        else:
+            mean_loss = float("nan")
 
+        if not np.isnan(mean_loss):
+            if ema_loss is None:
+                ema_loss = mean_loss
+            else:
+                ema_loss = sae_early_stopping_beta * ema_loss + (1.0 - sae_early_stopping_beta) * mean_loss
+
+        if (ii + 1) % monitor_interval == 0 and not np.isnan(mean_loss):
+            lr_display = current_lr_snapshot if current_lr_snapshot is not None else sae_learning_rate
+            postfix = {
+                "loss": f"{mean_loss:.4f}",
+                "lr": f"{lr_display:.2e}",
+            }
+            if ema_loss is not None:
+                postfix["ema"] = f"{ema_loss:.4f}"
+            progress_bar.set_postfix(postfix, refresh=False)
+
+        steps_completed = ii + 1
+
+        if (
+            sae_early_stopping_patience > 0
+            and ema_loss is not None
+            and steps_completed >= sae_early_stopping_min_steps
+        ):
+            improvement = best_ema - ema_loss
+            if improvement > sae_early_stopping_delta:
+                best_ema = ema_loss
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= sae_early_stopping_patience:
+                    early_stop_triggered = True
+                    progress_bar.write(
+                        f"SAE early stopping at step {steps_completed} (ema={ema_loss:.4f}, best={best_ema:.4f})"
+                    )
+                    break
 
     # Evaluate reconstruction errors on finalized SAEs
+    if early_stop_triggered:
+        print(f"SAE training halted early at step {steps_completed} (best EMA {best_ema:.4f}).")
+
     reconstruction_error_accumulators: Dict[str, Dict] = {
         site_name: {
             "sequence": {
@@ -673,6 +840,14 @@ def train_saes_for_sites(
         json.dump(reconstruction_report, f, indent=2)
 
     # Return grouped by site, mirroring prior structures
+    metrics_summary_all["_meta"] = {
+        "steps_requested": int(steps),
+        "steps_completed": int(steps_completed),
+        "ema_loss": (float(ema_loss) if ema_loss is not None else None),
+        "best_ema": (float(best_ema) if best_ema < float("inf") else None),
+        "early_stopped": bool(early_stop_triggered),
+    }
+
     sequence_saes_all = {site: {"top_k": seq_topk_all[site], "vanilla": seq_vanilla_all[site]} for site in site_to_hook.keys()}
     return sequence_saes_all, true_coord_saes_all, metrics_summary_all
 

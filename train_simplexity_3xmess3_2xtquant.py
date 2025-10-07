@@ -27,10 +27,11 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from transformer_lens import HookedTransformer, HookedTransformerConfig
-from simplexity.generative_processes.builder import build_hidden_markov_model, build_generalized_hidden_markov_model
-from simplexity.generative_processes.torch_generator import generate_data_batch
 
-from tqdm import tqdm
+from torch.nn.utils import clip_grad_norm_
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+
+from tqdm.auto import tqdm
 import pickle
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
@@ -41,19 +42,72 @@ import plotly.express as px # Import plotly.express for categorical colors
 import plotly.io as pio
 from math import comb
 from itertools import combinations
-from training_and_analysis_utils import generate_mp_emissions
+from multipartite_utils import MultipartiteSampler, _load_process_stack
 
 print("** Ready! **")
+
+
+def _build_lr_scheduler(optimizer: torch.optim.Optimizer, args: argparse.Namespace, total_steps: int):
+    if args.lr_scheduler == "none":
+        return None
+
+    warmup_steps = max(int(args.lr_warmup_steps), 0)
+    decay_ratio = max(float(args.lr_final_ratio), 0.0)
+    decay_steps = max(total_steps - warmup_steps, 1)
+
+    if args.lr_scheduler == "cosine":
+        cosine = CosineAnnealingLR(
+            optimizer,
+            T_max=decay_steps,
+            eta_min=args.learning_rate * decay_ratio,
+        )
+        if warmup_steps > 0:
+            warmup = LinearLR(
+                optimizer,
+                start_factor=1e-8,
+                end_factor=1.0,
+                total_iters=warmup_steps,
+            )
+            scheduler = SequentialLR(
+                optimizer,
+                schedulers=[warmup, cosine],
+                milestones=[warmup_steps],
+            )
+        else:
+            scheduler = cosine
+    elif args.lr_scheduler == "linear":
+        linear_decay = LinearLR(
+            optimizer,
+            start_factor=1.0,
+            end_factor=decay_ratio,
+            total_iters=decay_steps,
+        )
+        if warmup_steps > 0:
+            warmup = LinearLR(
+                optimizer,
+                start_factor=1e-8,
+                end_factor=1.0,
+                total_iters=warmup_steps,
+            )
+            scheduler = SequentialLR(
+                optimizer,
+                schedulers=[warmup, linear_decay],
+                milestones=[warmup_steps],
+            )
+        else:
+            scheduler = linear_decay
+    else:
+        raise ValueError(f"Unsupported lr_scheduler '{args.lr_scheduler}'")
+
+    return scheduler
 
 #%%
 # ============= Argument parsing ============= #
 ################################################
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train Transformer on product of Mess3 and Tom Quantum processes", allow_abbrev=False)
-    parser.add_argument("--n_mess3", type=int, default=3, help="Number of mess3 processes")
-    parser.add_argument("--n_tom_quantum", type=int, default=2, help="Number of tom_quantum processes")
-    #parser.add_argument("--checkpoint_path", type=str, default="/workspace/checkpoints/multipartite_001", help="Directory to save checkpoints")
-    #parser.add_argument("--fig_out_dir", type=str, default="/workspace/output/multipartite_001", help="Directory to save matplotlib figures")
+    parser.add_argument("--process_config", type=str, default="process_configs.json", help="Path to JSON describing generative process stacks")
+    parser.add_argument("--process_config_name", type=str, default=None, help="Key within --process_config when multiple configurations are stored")
     parser.add_argument("--checkpoint_path", type=str, default="outputs/checkpoints/multipartite_001", help="Directory to save checkpoints")
     parser.add_argument("--fig_out_dir", type=str, default="outputs/reports/multipartite_001", help="Directory to save matplotlib figures")
     parser.add_argument("--num_steps", type=int, default=500000, help="Training steps")
@@ -66,6 +120,18 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"], help="Device preference")
     parser.add_argument("--batch_size", type=int, default=2048)
     parser.add_argument("--pct_var_explained", type=float, default=0.99, help="Percentage of variance explained")
+    parser.add_argument("--learning_rate", type=float, default=1e-4, help="Base learning rate for AdamW")
+    parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay for AdamW optimizer")
+    parser.add_argument("--adam_beta1", type=float, default=0.9, help="Adam beta1 hyperparameter")
+    parser.add_argument("--adam_beta2", type=float, default=0.95, help="Adam beta2 hyperparameter")
+    parser.add_argument("--lr_scheduler", type=str, default="cosine", choices=["none", "cosine", "linear"], help="Learning rate scheduler strategy")
+    parser.add_argument("--lr_warmup_steps", type=int, default=2000, help="Warmup steps before applying the main scheduler")
+    parser.add_argument("--lr_final_ratio", type=float, default=0.1, help="Final LR as a fraction of base LR for schedulers")
+    parser.add_argument("--grad_clip_norm", type=float, default=None, help="If set, clip gradients to this global norm")
+    parser.add_argument("--early_stopping_patience", type=int, default=8, help="Early stopping patience measured in evaluation checks")
+    parser.add_argument("--early_stopping_delta", type=float, default=1e-4, help="Required improvement in EMA loss to reset patience")
+    parser.add_argument("--early_stopping_beta", type=float, default=0.98, help="EMA decay for tracking smoothed training loss")
+    parser.add_argument("--early_stopping_min_steps", type=int, default=5000, help="Minimum steps before early stopping can trigger")
     args, _ = parser.parse_known_args()
     return args
 
@@ -103,71 +169,28 @@ os.makedirs(args.fig_out_dir, exist_ok=True)
 # ==== Create Generator Processes ============= #
 #################################################
 
-# Define the number of processes for each type (from args)
-n_mess3 = args.n_mess3
-n_tom_quantum = args.n_tom_quantum
 checkpoint_path = args.checkpoint_path
 
 # Ensure checkpoint_path exists
 os.makedirs(checkpoint_path, exist_ok=True)
 
-# Create multiple instances of each process
-m3_x = [round(x, 3) for x in np.linspace(0.1, 0.4, n_mess3)]
-m3_a = [round(x, 3) for x in np.linspace(0.2, 0.8, n_mess3)]
-m3_a[:-1] = m3_a[1:]
-m3_a[n_mess3-1] = 0.2
-mess3_processes = [build_hidden_markov_model(f"mess3", x=0.12, a=0.55),
-                   build_hidden_markov_model(f"mess3", x=0.14, a=0.7),
-                   build_hidden_markov_model(f"mess3", x=0.18, a=0.75)]
-# Figure out what the ranges are for alpha and beta that are acceptable. Found this in
-# simplexity/simplexity/generative_processes/transition_matrices.py:
-# def tom_quantum(alpha: float, beta: float) -> jax.Array:
-#     """Creates a transition matrix for the Tom Quantum Process."""
-#     gamma2 = 1 / (4 * (alpha**2 + beta**2))
-#     common_diag = 1 / 4
-#     middle_diag = (alpha**2 - beta**2) * gamma2
-#     off_diag = 2 * alpha * beta * gamma2
-#
-#     transition_matrices = jnp.array(
-#         [
-#             [
-#                 [common_diag, 0, off_diag],
-#                 [0, middle_diag, 0],
-#                 [off_diag, 0, common_diag],
-#             ],
-#             [
-#                 [common_diag, 0, -off_diag],
-#                 [0, middle_diag, 0],
-#                 [-off_diag, 0, common_diag],
-#             ],
-#             [
-#                 [common_diag, off_diag, 0],
-#                 [off_diag, common_diag, 0],
-#                 [0, 0, middle_diag],
-#             ],
-#             [
-#                 [common_diag, -off_diag, 0],
-#                 [-off_diag, common_diag, 0],
-#                 [0, 0, middle_diag],
-#             ],
-#         ]
-#     )
-#     return transition_matrices
-tom_quantum_processes = [build_generalized_hidden_markov_model(f"tom_quantum", alpha=1.12, beta=5.64),
-                         build_generalized_hidden_markov_model(f"tom_quantum", alpha=0.88, beta=8.64)]
+_process_cfg_raw, components, data_source = _load_process_stack(args, {})
+if isinstance(data_source, MultipartiteSampler):
+    sampler = data_source
+else:
+    sampler = MultipartiteSampler(components)
 
-# Assuming all instances of a type have the same vocab size and states
-# Handle the case where n_mess3 or n_tom_quantum is 0
-mess3_vocab_size = mess3_processes[0].vocab_size if n_mess3 > 0 else 1
-mess3_num_states = mess3_processes[0].num_states if n_mess3 > 0 else 1
-tom_quantum_vocab_size = tom_quantum_processes[0].vocab_size if n_tom_quantum > 0 else 1
-tom_quantum_num_states = tom_quantum_processes[0].num_states if n_tom_quantum > 0 else 1
+component_counts: dict[str, int] = {}
+for comp in sampler.components:
+    component_counts[comp.process_type] = component_counts.get(comp.process_type, 0) + 1
+config_label = args.process_config_name if args.process_config_name else "<unnamed>"
+print(
+    f"Loaded process config '{config_label}' from {args.process_config} → "
+    + ", ".join(f"{ptype}:{count}" for ptype, count in component_counts.items())
+)
 
-product_vocab_size = (tom_quantum_vocab_size ** n_tom_quantum) * (mess3_vocab_size ** n_mess3)
-
-print(f"mess3 processes: {n_mess3} instances with vocab_size={mess3_vocab_size}, states={mess3_num_states}")
-print(f"tom_quantum processes: {n_tom_quantum} instances with vocab_size={tom_quantum_vocab_size}, states={tom_quantum_num_states}")
-
+product_vocab_size = sampler.vocab_size
+print(f"Product vocab size: {product_vocab_size}")
 
 
 #%%
@@ -233,15 +256,28 @@ print(f"Model: {sum(p.numel() for p in model.parameters()):,} params on {device}
 #%%
 # ==== Train Model ===== #
 ##########################
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, fused=True)
-#optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+optimizer = torch.optim.AdamW(
+    model.parameters(),
+    lr=args.learning_rate,
+    betas=(args.adam_beta1, args.adam_beta2),
+    weight_decay=args.weight_decay,
+    fused=True if device == "cuda" else False,
+)
+#optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
 losses = []
 batch_size, seq_len = args.batch_size, cfg.n_ctx
 key = jax.random.PRNGKey(42)
+sample_seq_len = seq_len + 1
+scheduler = _build_lr_scheduler(optimizer, args, args.num_steps)
 
-# Get stationary distributions for all processes
-tom_stationaries = [p.initial_state for p in tom_quantum_processes]
-mess3_stationaries = [p.initial_state for p in mess3_processes]
+current_lr = optimizer.param_groups[0]["lr"]
+ema_loss = None
+best_ema = float("inf")
+best_step = 0
+patience_counter = 0
+early_stop_enabled = args.early_stopping_patience > 0
+early_stop_triggered = False
+best_checkpoint_path = None
 
 # List to store cumulative variance data and activations
 cumulative_variance_data = []
@@ -249,17 +285,21 @@ all_layer_activations = {} # Dictionary to store activations for each layer
 
 # Create the tqdm progress bar object
 num_steps = args.num_steps
-miniters = 30_000 if num_steps > 30_000 else num_steps
-progress_bar = tqdm(range(num_steps), desc="Training", miniters=miniters, disable=not sys.stderr.isatty())
+miniters = 2_500 if num_steps > 2_500 else num_steps
+use_progress_bar = sys.stderr.isatty()
+if use_progress_bar:
+    progress_bar = tqdm(range(num_steps), desc="Training", miniters=miniters, mininterval=float("inf"), file=sys.stdout, disable=use_progress_bar)
+else:
+    progress_bar = range(num_steps)
 
 checkpoints_to_save = [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 12500, 15000, 17500, 20000, 23000, 24000, 25000,
                        30000, 35000, 40000, 45000, 50000, 55000, 60000, 65000, 70000, 75000, 80000, 85000, 90000, 95000, 100000,
                        125000, 150000, 175000, 200000, 230000, 240000, 250000, 300000, 350000, 400000, 450000, 500000, 550000, 600000]
+steps_completed = 0
 for step in progress_bar:
-    key, tom_inputs_list, mess3_inputs_list, tokens = \
-        generate_mp_emissions(key,n_tom_quantum, n_mess3, tom_stationaries, mess3_stationaries,
-                              batch_size, seq_len, tom_quantum_processes, mess3_processes,
-                              tom_quantum_vocab_size, mess3_vocab_size, product_vocab_size, device)
+    key, _, token_batch, _ = sampler.sample(key, batch_size, sample_seq_len)
+    tokens_np = np.array(token_batch, copy=True)
+    tokens = torch.from_numpy(tokens_np).to(device=device, dtype=torch.long)
 
     # Train step
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=scaler_enabled):
@@ -267,11 +307,32 @@ for step in progress_bar:
     #loss = model(tokens, return_type="loss")
     optimizer.zero_grad()
     loss.backward()
+    if args.grad_clip_norm and args.grad_clip_norm > 0:
+        clip_grad_norm_(model.parameters(), args.grad_clip_norm)
     optimizer.step()
-    losses.append(loss.item())
+    if scheduler is not None:
+        scheduler.step()
+        current_lr = scheduler.get_last_lr()[0]
+    else:
+        current_lr = optimizer.param_groups[0]["lr"]
 
-    # Save cumulative variance and activations every 100 steps
-    if (step + 1) % 5000 == 0:
+    loss_value = loss.item()
+    losses.append(loss_value)
+    ema_coef = float(args.early_stopping_beta)
+    if ema_loss is None:
+        ema_loss = loss_value
+    else:
+        ema_loss = ema_coef * ema_loss + (1.0 - ema_coef) * loss_value
+
+    if (step + 1) % miniters == 0:
+        postfix = {"loss": f"{loss_value:.4f}", "lr": f"{current_lr:.2e}"}
+        if ema_loss is not None:
+            postfix["ema"] = f"{ema_loss:.4f}"
+        if use_progress_bar:
+            progress_bar.set_postfix(postfix)
+        else:
+            print(f"Iteration {step + 1}: (Loss: {loss_value:.4f}) (LR: {current_lr:.2e}) (EMA: {ema_loss:.4f})")
+
         with torch.no_grad():
             toks_small = tokens[:128]  # or random index subset
             _, cache = model.run_with_cache(toks_small, return_type=None)
@@ -318,21 +379,50 @@ for step in progress_bar:
         checkpoint_filename = os.path.join(checkpoint_path, f'checkpoint_step_{step + 1}.pt')
         torch.save(checkpoint, checkpoint_filename)
         print(f"Checkpoint saved at step {step + 1} to {checkpoint_filename}")
-        progress_bar.set_description(f"Training (Loss: {loss.item():.4f})", refresh=False)
-    #if (step + 1) % miniters == 0:
-    #    progress_bar.set_description(f"Training (Loss: {loss.item():.4f})", refresh=False)
+
+    steps_completed = step + 1
+    if (
+        early_stop_enabled
+        and (step + 1) >= args.early_stopping_min_steps
+        and ema_loss is not None
+    ):
+        improvement = best_ema - ema_loss
+        if improvement > args.early_stopping_delta:
+            best_ema = ema_loss
+            best_step = step + 1
+            patience_counter = 0
+            checkpoint = {
+                'step': step + 1,
+                'model_state_dict': model.state_dict(),
+                'losses': losses,
+                'ema_loss': ema_loss,
+            }
+            best_checkpoint_path = os.path.join(checkpoint_path, f'checkpoint_step_{step + 1}_best.pt')
+            torch.save(checkpoint, best_checkpoint_path)
+        else:
+            patience_counter += 1
+            if patience_counter >= args.early_stopping_patience:
+                early_stop_triggered = True
+                print(f"Early stopping triggered at step {step + 1} (best_ema={best_ema:.4f}, current_ema={ema_loss:.4f})")
+                break
+    sys.stdout.flush()
+    sys.stderr.flush()
 
 
 # Save the final checkpoint after training is complete
 final_checkpoint = {
-    'step': num_steps,
+    'step': steps_completed,
     'model_state_dict': model.state_dict(),
     #'optimizer_state_dict': optimizer.state_dict(),
     'losses': losses,
 }
-final_checkpoint_filename = os.path.join(checkpoint_path, f'checkpoint_step_{num_steps}_final.pt')
+final_checkpoint_filename = os.path.join(checkpoint_path, f'checkpoint_step_{steps_completed}_final.pt')
 torch.save(final_checkpoint, final_checkpoint_filename)
-print(f"Final checkpoint saved at step {num_steps} to {final_checkpoint_filename}")
+print(f"Final checkpoint saved at step {steps_completed} to {final_checkpoint_filename}")
+if best_checkpoint_path:
+    print(f"Best checkpoint (EMA) stored at {best_checkpoint_path} (step {best_step}, ema={best_ema:.4f})")
+if early_stop_triggered:
+    print("Training stopped early based on EMA loss criteria.")
 
 #%%
 # ==== Save Pickles ===== #
@@ -355,7 +445,7 @@ print("All layer activations data saved to all_layer_activations.pkl")
 
 
 #%%
-final_checkpoint_filename = os.path.join(checkpoint_path, f'checkpoint_step_{num_steps}_final.pt')
+final_checkpoint_filename = os.path.join(checkpoint_path, f'checkpoint_step_{steps_completed}_final.pt')
 ckpt = torch.load(final_checkpoint_filename)
 
 # Define model and optimizer before loading their states
