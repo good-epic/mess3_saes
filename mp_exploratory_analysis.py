@@ -584,12 +584,12 @@ belief_regression_metrics = layer_results.get(linear_prediction_layer, layer_res
 #%%
 # ==== Multipartite EPDF Visualizations ==================================== #
 
-args.build_epdfs = True
-args.epdf_output_dir = None
-args.epdf_cache_dir = "outputs/reports/multipartite_002/epdfs/cache"
-args.epdf_use_cache = True
-args.epdf_max_points = 2000
-args.sae_folder = "outputs/saes/multipartite_002"
+# args.build_epdfs = True
+# args.epdf_output_dir = None
+# args.epdf_cache_dir = "outputs/reports/multipartite_002/epdfs/cache"
+# args.epdf_use_cache = True
+# args.epdf_max_points = 2000
+# args.sae_folder = "outputs/saes/multipartite_002"
 
 if args.build_epdfs:
     if args.sae_folder is None:
@@ -1258,12 +1258,12 @@ for pos in evaluation_positions:
 
 os.makedirs(args.fig_out_dir, exist_ok=True)
 
-mess3_x_grid = np.linspace(0.10, 0.22, 7)
-mess3_a_grid = np.linspace(0.20, 0.80, 8)
+mess3_x_grid = np.linspace(0.05, 0.3, 11)
+mess3_a_grid = np.concatenate((np.linspace(0.05, 0.15, 5), np.linspace(0.20, 0.60, 5), np.linspace(0.65, 0.85, 5), np.linspace(0.875, 0.95, 4)))
 mess3_grid_fig = plot_mess3_belief_grid(
     x_values=mess3_x_grid,
     a_values=mess3_a_grid,
-    seq_position=9,
+    seq_position=14,
     batch_size=4096,
     seq_len=seq_len,
     seed=123,
@@ -1309,7 +1309,7 @@ tomq_beta_grid = np.linspace(beta_center - 1.5, beta_center + 1.5, 5)
 tomq_grid_sweep_fig = plot_tom_quantum_coherence_grid(
     alpha_values=tomq_alpha_grid,
     beta_values=tomq_beta_grid,
-    seq_position=9,
+    seq_position=14,
     batch_size=4096,
     seq_len=seq_len,
     seed=789,
@@ -1320,12 +1320,12 @@ tomq_grid_sweep_fig.savefig(tomq_grid_sweep_path, dpi=170)
 plt.close(tomq_grid_sweep_fig)
 print(f"Saved TomQ parameter grid → {tomq_grid_sweep_path}")
 
-wide_alpha_grid = np.linspace(max(alpha_center - 0.5, 0.5), alpha_center + 0.5, 9)
-wide_beta_grid = np.linspace(max(beta_center - 4.0, 1.0), beta_center + 4.0, 9)
+wide_alpha_grid = np.concatenate(([0.25, 0.5, 0.75], np.linspace(1.0, 3.5, 6)))
+wide_beta_grid = np.concatenate(([0.5], np.linspace(1, 8, 8), [10, 12]))
 tomq_grid_wide_fig = plot_tom_quantum_coherence_grid(
     alpha_values=wide_alpha_grid,
     beta_values=wide_beta_grid,
-    seq_position=9,
+    seq_position=14,
     batch_size=4096,
     seq_len=seq_len,
     seed=987,

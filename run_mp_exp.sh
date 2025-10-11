@@ -17,12 +17,13 @@ python -u mp_exploratory_analysis.py \
     --bandwidth 0.001 \
     --analysis_batch_size 8192 \
     --linear_prediction_layer "layer_2" \
-    --load_model "outputs/checkpoints/multipartite_002/checkpoint_step_125000.pt" \
-    --fig_out_dir "outputs/reports/multipartite_002" \
+    --load_model "outputs/checkpoints/multipartite_003/checkpoint_step_6000_best.pt" \
+    --fig_out_dir "outputs/reports/multipartite_003d" \
     --process_config "process_configs.json" \
-    --process_config_name "3xmess3_2xtquant_002" \
-    --build_epdfs \
-    --epdf_cache_dir outputs/reports/multipartite_002/epdfs/cache \
-    --epdf_use_cache \
-    --epdf_max_points 2000 \
-    --sae_folder "outputs/saes/multipartite_002"
+    --process_config_name "3xmess3_2xtquant_003" \
+    --sae_folder "outputs/saes/multipartite_003d"
+    # --plot_pcas \
+    # --build_epdfs \
+    # --epdf_cache_dir outputs/reports/multipartite_003d/epdfs/cache \
+    # --epdf_use_cache \
+    # --epdf_max_points 2000 \

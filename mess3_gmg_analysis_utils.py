@@ -56,19 +56,72 @@ def extract_topk_l2(metrics_summary: Mapping[str, Mapping], site_filter: Iterabl
                 else None
             )
             if l2 is None:
-                continue
+                l2_vec = entry.get("last50_loss", None)
+                if l2_vec is None:
+                    continue
+                else:
+                    l2 = np.mean(l2_vec)
             site_dict[k_val] = float(l2)
         if site_dict:
             l2_by_site[site] = site_dict
     return l2_by_site
 
 
-def compute_average_l2(l2_by_site: Mapping[str, Mapping[int, float]]) -> Dict[int, float]:
-    accumulator: Dict[int, List[float]] = defaultdict(list)
+def extract_vanilla_l2(metrics_summary: Mapping[str, Mapping], site_filter: Iterable[str] | None = None) -> Dict[str, Dict[float, float]]:
+    """Extract L2 metrics for vanilla (L1-regularized) SAEs.
+
+    Args:
+        metrics_summary: Metrics dict from metrics_summary.json
+        site_filter: Optional list of site names to include
+
+    Returns:
+        Dict mapping site -> lambda -> L2 loss
+    """
+    allowed = set(site_filter) if site_filter is not None else None
+    l2_by_site: Dict[str, Dict[float, float]] = {}
+    for site, site_data in metrics_summary.items():
+        if allowed is not None and site not in allowed:
+            continue
+        vanilla_data = (
+            site_data.get("sequence", {}).get("vanilla", {})
+            if isinstance(site_data, Mapping)
+            else {}
+        )
+        site_dict: Dict[float, float] = {}
+        for lambda_key, entry in vanilla_data.items():
+            try:
+                # Parse "lambda_0.01" -> 0.01
+                lambda_str = str(lambda_key).replace("lambda_", "")
+                lambda_val = float(lambda_str)
+            except ValueError:
+                continue
+            l2 = (
+                entry.get("avg_last_quarter", {}).get("l2")
+                if isinstance(entry, Mapping)
+                else None
+            )
+            if l2 is None:
+                l2_vec = entry.get("last50_loss", None)
+                if l2_vec is None:
+                    continue
+                else:
+                    l2 = np.mean(l2_vec)
+            site_dict[lambda_val] = float(l2)
+        if site_dict:
+            l2_by_site[site] = site_dict
+    return l2_by_site
+
+
+def compute_average_l2(l2_by_site: Mapping[str, Mapping[int | float, float]]) -> Dict[int | float, float]:
+    """Compute average L2 across sites for each parameter value.
+
+    Works for both TopK (int k values) and Vanilla (float lambda values).
+    """
+    accumulator: Dict[int | float, List[float]] = defaultdict(list)
     for site_dict in l2_by_site.values():
-        for k, val in site_dict.items():
-            accumulator[int(k)].append(float(val))
-    return {k: float(np.mean(vals)) for k, vals in accumulator.items() if vals}
+        for param, val in site_dict.items():
+            accumulator[param].append(float(val))
+    return {param: float(np.mean(vals)) for param, vals in accumulator.items() if vals}
 
 
 def find_elbow_k(k_values: Sequence[int], losses: Sequence[float], prefer_high_k: bool = True, tolerance: float = 0.05) -> int:

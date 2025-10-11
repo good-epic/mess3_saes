@@ -7,7 +7,7 @@ set -euo pipefail
 #export XLA_PYTHON_CLIENT_PREALLOCATE=false
 #export XLA_PYTHON_CLIENT_MEM_FRACTION=.90
 
-CHECKPOINT_DIR="/workspace/outputs/checkpoints/multipartite_003a"
+CHECKPOINT_DIR="outputs/checkpoints/multipartite_003"
 
 # python -u train_simplexity_3xmess3_2xtquant.py \
 #     --d_model 128 \
@@ -66,10 +66,10 @@ python -u train_mess3_and_saes.py \
     --bandwidth 0.001 \
     --sae_steps 50000 \
     --sae_batch_size 64 \
-    --sae_output_dir /workspace/outputs/saes/multipartite_003b \
+    --sae_output_dir outputs/saes/multipartite_003e \
     --load_model "${FINAL_CHECKPOINT}" \
     --process_config "process_configs.json" \
     --process_config_name "3xmess3_2xtquant_003" \
     --sae_early_stopping_patience 30 \
-    --sae_early_stopping_delta 5e-5 \
-    --sae_early_stopping_min_steps 8000
+    --sae_early_stopping_delta 1e-6 \
+    --sae_early_stopping_min_steps 20000

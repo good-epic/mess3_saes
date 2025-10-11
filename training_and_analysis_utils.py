@@ -367,7 +367,11 @@ def train_saes_for_sites(
     print("Starting SAE training")
     monitor_interval = max(1, int(sae_log_interval))
     miniters = monitor_interval if steps > monitor_interval else steps
-    progress_bar = tqdm(range(steps), desc="SAEs (all sites)", miniters=miniters, disable=not sys.stderr.isatty())
+    use_progress_bar = sys.stderr.isatty()
+    if use_progress_bar:
+        progress_bar = tqdm(range(steps), desc="SAEs (all sites)", miniters=miniters, disable=not use_progress_bar)
+    else:
+        progress_bar = range(steps)
     ema_loss = None
     best_ema = float("inf")
     patience_counter = 0
@@ -538,7 +542,10 @@ def train_saes_for_sites(
             }
             if ema_loss is not None:
                 postfix["ema"] = f"{ema_loss:.4f}"
-            progress_bar.set_postfix(postfix, refresh=False)
+            if use_progress_bar:
+                progress_bar.set_postfix(postfix, refresh=False)
+            else:
+                print(f"Iteration {ii + 1}: (Loss: {mean_loss:.4f}) (LR: {lr_display:.2e}) (EMA: {ema_loss:.4f})")
 
         steps_completed = ii + 1
 
@@ -555,9 +562,10 @@ def train_saes_for_sites(
                 patience_counter += 1
                 if patience_counter >= sae_early_stopping_patience:
                     early_stop_triggered = True
-                    progress_bar.write(
-                        f"SAE early stopping at step {steps_completed} (ema={ema_loss:.4f}, best={best_ema:.4f})"
-                    )
+                    if use_progress_bar:
+                        progress_bar.write(f"SAE early stopping at step {steps_completed} (ema={ema_loss:.4f}, best={best_ema:.4f})")
+                    else:
+                        print(f"SAE early stopping at step {steps_completed} (ema={ema_loss:.4f}, best={best_ema:.4f})")
                     break
 
     # Evaluate reconstruction errors on finalized SAEs
@@ -732,16 +740,16 @@ def train_saes_for_sites(
                 percent_variance_explained_all[site_name]["beliefs"][name] = None
 
     # Summarization helpers
-    def summarize_series(series: list, steps: int):
+    def summarize_series(series: list, proportion: float):
         if not series:
             return None, []
-        start = max(0, int(steps * 3 / 4))
+        start = max(0, int(len(series) * proportion))
         last_quarter = series[start:]
         avg_last_quarter = float(np.mean(last_quarter)) if len(last_quarter) > 0 else None
         last50 = series[-50:] if len(series) >= 50 else series[:]
         return avg_last_quarter, last50
 
-    def summarize_active_stats(active_counts: list, active_sums: list, steps: int):
+    def summarize_active_stats(active_counts: list, active_sums: list, proportion: float):
         if not active_counts or not active_sums:
             return {}
 
@@ -775,16 +783,16 @@ def train_saes_for_sites(
     for site_name in site_to_hook.keys():
         metrics_raw = metrics_raw_all[site_name]
         metrics_summary: Dict[str, Dict] = {"sequence": {"top_k": {}, "vanilla": {}}, "beliefs": {}}
-
+        summary_proportion = 0.05
         for name, series_dict in metrics_raw["sequence"]["top_k"].items():
-            avg_l2, _ = summarize_series(series_dict.get("l2_loss", []), steps)
-            avg_l1, _ = summarize_series(series_dict.get("l1_loss", []), steps)
-            avg_aux, _ = summarize_series(series_dict.get("aux_loss", []), steps)
-            avg_l0, _ = summarize_series(series_dict.get("l0_norm", []), steps)
-            avg_dead, _ = summarize_series(series_dict.get("num_dead_features", []), steps)
-            _, last50 = summarize_series(series_dict.get("loss", []), steps)
+            avg_l2, _ = summarize_series(series_dict.get("l2_loss", []), summary_proportion)
+            avg_l1, _ = summarize_series(series_dict.get("l1_loss", []), summary_proportion)
+            avg_aux, _ = summarize_series(series_dict.get("aux_loss", []), summary_proportion)
+            avg_l0, _ = summarize_series(series_dict.get("l0_norm", []), summary_proportion)
+            avg_dead, _ = summarize_series(series_dict.get("num_dead_features", []), summary_proportion)
+            _, last50 = summarize_series(series_dict.get("loss", []), summary_proportion)
             final_loss = series_dict.get("loss", [None])[-1] if series_dict.get("loss") else None
-            active_dict = summarize_active_stats(series_dict.get("active_counts", []), series_dict.get("active_sums", []), steps)
+            active_dict = summarize_active_stats(series_dict.get("active_counts", []), series_dict.get("active_sums", []), summary_proportion)
             metrics_summary["sequence"]["top_k"][name] = {
                 "avg_last_quarter": {"l2": avg_l2, "l1": avg_l1, "aux": avg_aux, "l0": avg_l0, "dead": avg_dead},
                 "last50_loss": last50,
@@ -793,12 +801,12 @@ def train_saes_for_sites(
             }
 
         for name, series_dict in metrics_raw["sequence"]["vanilla"].items():
-            avg_l2, _ = summarize_series(series_dict.get("l2_loss", []), steps)
-            avg_l1, _ = summarize_series(series_dict.get("l1_loss", []), steps)
-            avg_l0, _ = summarize_series(series_dict.get("l0_norm", []), steps)
-            _, last50 = summarize_series(series_dict.get("loss", []), steps)
+            avg_l2, _ = summarize_series(series_dict.get("l2_loss", []), summary_proportion)
+            avg_l1, _ = summarize_series(series_dict.get("l1_loss", []), summary_proportion)
+            avg_l0, _ = summarize_series(series_dict.get("l0_norm", []), summary_proportion)
+            _, last50 = summarize_series(series_dict.get("loss", []), summary_proportion)
             final_loss = series_dict.get("loss", [None])[-1] if series_dict.get("loss") else None
-            active_dict = summarize_active_stats(series_dict.get("active_counts", []), series_dict.get("active_sums", []), steps)
+            active_dict = summarize_active_stats(series_dict.get("active_counts", []), series_dict.get("active_sums", []), summary_proportion)
             metrics_summary["sequence"]["vanilla"][name] = {
                 "avg_last_quarter": {"l2": avg_l2, "l1": avg_l1, "l0": avg_l0},
                 "last50_loss": last50,
@@ -807,12 +815,12 @@ def train_saes_for_sites(
             }
 
         for name, series_dict in metrics_raw["beliefs"].items():
-            avg_l2, _ = summarize_series(series_dict.get("l2_loss", []), steps)
-            avg_l1, _ = summarize_series(series_dict.get("l1_loss", []), steps)
-            avg_l0, _ = summarize_series(series_dict.get("l0_norm", []), steps)
-            _, last50 = summarize_series(series_dict.get("loss", []), steps)
+            avg_l2, _ = summarize_series(series_dict.get("l2_loss", []), summary_proportion)
+            avg_l1, _ = summarize_series(series_dict.get("l1_loss", []), summary_proportion)
+            avg_l0, _ = summarize_series(series_dict.get("l0_norm", []), summary_proportion)
+            _, last50 = summarize_series(series_dict.get("loss", []), summary_proportion)
             final_loss = series_dict.get("loss", [None])[-1] if series_dict.get("loss") else None
-            active_dict = summarize_active_stats(series_dict.get("active_counts", []), series_dict.get("active_sums", []), steps)
+            active_dict = summarize_active_stats(series_dict.get("active_counts", []), series_dict.get("active_sums", []), summary_proportion)
             metrics_summary["beliefs"][name] = {
                 "avg_last_quarter": {"l2": avg_l2, "l1": avg_l1, "l0": avg_l0},
                 "last50_loss": last50,
