@@ -43,6 +43,13 @@ class ClusteringResult:
     # Optional components
     belief_seed_metadata: Optional[Dict[str, Any]] = None
     belief_r2_summary: Optional[Dict[int, Dict[str, Any]]] = None
+    belief_r2_summary_soft: Optional[Dict[int, Dict[str, Any]]] = None
+    belief_r2_summary_refined: Optional[Dict[int, Dict[str, Any]]] = None
+    component_assignment: Optional[Dict[str, Any]] = None
+    component_assignment_soft: Optional[Dict[str, Any]] = None
+    component_assignment_refined: Optional[Dict[str, Any]] = None
+    coherence_metrics: Optional[Dict[str, Any]] = None
+    coherence_metrics_soft: Optional[Dict[str, Any]] = None
     subspace_diagnostics: Optional[Dict[str, Any]] = None
     pca_results: Optional[Dict[int, Any]] = None
 
@@ -114,7 +121,28 @@ class ClusteringResult:
             metadata["belief_seeding_used"] = False
 
         if self.belief_r2_summary is not None:
-            metadata["belief_cluster_r2"] = self.belief_r2_summary
+            metadata["belief_cluster_r2_hard"] = self.belief_r2_summary
+
+        if self.belief_r2_summary_soft is not None:
+            metadata["belief_cluster_r2_soft"] = self.belief_r2_summary_soft
+
+        if self.belief_r2_summary_refined is not None:
+            metadata["belief_cluster_r2_refined"] = self.belief_r2_summary_refined
+
+        if self.component_assignment is not None:
+            metadata["component_assignment_hard"] = self.component_assignment
+
+        if self.component_assignment_soft is not None:
+            metadata["component_assignment_soft"] = self.component_assignment_soft
+
+        if self.component_assignment_refined is not None:
+            metadata["component_assignment_refined"] = self.component_assignment_refined
+
+        if self.coherence_metrics is not None:
+            metadata["coherence_metrics_hard"] = self.coherence_metrics
+
+        if self.coherence_metrics_soft is not None:
+            metadata["coherence_metrics_soft"] = self.coherence_metrics_soft
 
         if self.subspace_diagnostics is not None:
             metadata.update(self.subspace_diagnostics)
@@ -130,7 +158,8 @@ class ClusteringResult:
                 "n_noise_latents": int(self.geometry_refinement.noise_mask.sum()),
                 "config": {
                     "soft_assignment_method": self.geometry_refinement.config.soft_assignment_method,
-                    "per_point_distortion_threshold": float(self.geometry_refinement.config.per_point_distortion_threshold),
+                    "threshold_mode": self.geometry_refinement.config.threshold_mode,
+                    "per_point_threshold": float(self.geometry_refinement.config.per_point_threshold),
                     "optimal_distortion_threshold": float(self.geometry_refinement.config.optimal_distortion_threshold),
                     "filter_metrics": self.geometry_refinement.config.filter_metrics,
                 },

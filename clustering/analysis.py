@@ -168,6 +168,8 @@ class ClusterAnalyzer:
         component_order: List[str],
         ridge_alpha: float,
         site: str,
+        soft_assignments: Optional[np.ndarray] = None,
+        assignment_name: str = "hard",
     ) -> Optional[Dict[int, Dict[str, Any]]]:
         """Compute R² scores for belief prediction per cluster.
 
@@ -175,12 +177,14 @@ class ClusterAnalyzer:
             acts_flat: Flattened activations
             feature_acts_np: Feature activations (numpy)
             decoder_dirs: All decoder directions
-            cluster_labels: Cluster labels for all latents
+            cluster_labels: Cluster labels for all latents (used if soft_assignments is None)
             n_clusters: Number of clusters
             component_beliefs_flat: Component beliefs
             component_order: Ordered component names
             ridge_alpha: Ridge regularization
             site: Site name for logging
+            soft_assignments: Optional (n_latents, n_clusters) soft assignment matrix
+            assignment_name: Name for logging (e.g., "hard", "soft", "refined")
 
         Returns:
             Dict mapping cluster_id -> component -> R² scores, or None on failure
@@ -216,12 +220,30 @@ class ClusterAnalyzer:
             # Compute R² per cluster
             cluster_r2_summary = {}
             for cluster_id in range(int(n_clusters)):
-                latent_ids = np.where(cluster_labels == cluster_id)[0]
-                if latent_ids.size == 0:
-                    continue
+                # Get cluster members and their weights
+                if soft_assignments is not None:
+                    # Use soft assignment weights
+                    soft_weights = soft_assignments[:, cluster_id]
+                    latent_ids = np.where(soft_weights > 0)[0]
+                    if latent_ids.size == 0:
+                        continue
+                    weights = soft_weights[latent_ids]
+                else:
+                    # Use hard labels
+                    latent_ids = np.where(cluster_labels == cluster_id)[0]
+                    if latent_ids.size == 0:
+                        continue
+                    weights = None
 
                 cluster_entry: Dict[str, Any] = {}
-                cluster_features = feature_acts_np[:, latent_ids]
+
+                # Get cluster features (potentially weighted)
+                if weights is not None:
+                    # Soft assignment: weight each latent's features
+                    cluster_features = feature_acts_np[:, latent_ids] * weights[None, :]
+                else:
+                    # Hard assignment: unweighted features
+                    cluster_features = feature_acts_np[:, latent_ids]
 
                 for comp_name in component_order:
                     start, end = component_slices[comp_name]
@@ -246,5 +268,184 @@ class ClusterAnalyzer:
             return cluster_r2_summary
 
         except Exception as exc:
-            print(f"{site}: failed to compute belief R^2 diagnostics ({exc})")
+            print(f"{site}: failed to compute belief R^2 diagnostics ({assignment_name}) ({exc})")
             return None
+
+    def compute_optimal_component_assignment(
+        self,
+        belief_r2_summary: Dict[int, Dict[str, Any]],
+        component_order: List[str],
+        n_clusters: int,
+    ) -> Optional[Dict[str, Any]]:
+        """Find optimal 1-to-1 assignment of components to clusters using Hungarian algorithm.
+
+        Args:
+            belief_r2_summary: Dict mapping cluster_id -> component -> R² scores
+            component_order: Ordered list of component names
+            n_clusters: Number of clusters
+
+        Returns:
+            Dict with assignment details:
+                - r2_matrix: Full R² matrix (n_clusters × n_components)
+                - assignments: {comp_name: cluster_id} for optimal mapping
+                - assignment_scores: {comp_name: r2_score} for assigned pairs
+                - noise_clusters: List of unassigned cluster IDs
+                - total_r2: Sum of assigned R² scores
+                - mean_assigned_r2: Mean R² for assigned pairs
+        """
+        if not belief_r2_summary or not component_order:
+            return None
+
+        from scipy.optimize import linear_sum_assignment
+
+        n_components = len(component_order)
+
+        # Build R² matrix (n_clusters × n_components)
+        r2_matrix = np.zeros((n_clusters, n_components), dtype=float)
+
+        for cluster_id in range(n_clusters):
+            cluster_r2 = belief_r2_summary.get(cluster_id, {})
+            for comp_idx, comp_name in enumerate(component_order):
+                comp_r2 = cluster_r2.get(comp_name, {})
+                r2_matrix[cluster_id, comp_idx] = comp_r2.get("mean_r2", 0.0)
+
+        # Solve assignment problem (maximize R²)
+        # linear_sum_assignment minimizes, so negate the matrix
+        row_indices, col_indices = linear_sum_assignment(-r2_matrix)
+
+        # Build assignment mappings
+        assignments = {}
+        assignment_scores = {}
+        assigned_clusters = set()
+
+        for row_idx, col_idx in zip(row_indices, col_indices):
+            comp_name = component_order[col_idx]
+            r2_score = r2_matrix[row_idx, col_idx]
+            assignments[comp_name] = int(row_idx)
+            assignment_scores[comp_name] = float(r2_score)
+            assigned_clusters.add(int(row_idx))
+
+        # Identify noise clusters (unassigned)
+        all_clusters = set(range(n_clusters))
+        noise_clusters = sorted(list(all_clusters - assigned_clusters))
+
+        # Aggregate metrics
+        total_r2 = sum(assignment_scores.values())
+        mean_assigned_r2 = total_r2 / len(assignment_scores) if assignment_scores else 0.0
+
+        return {
+            "r2_matrix": r2_matrix.tolist(),
+            "assignments": assignments,
+            "assignment_scores": assignment_scores,
+            "noise_clusters": noise_clusters,
+            "total_r2": float(total_r2),
+            "mean_assigned_r2": float(mean_assigned_r2),
+        }
+
+    def compute_activation_coherence_metrics(
+        self,
+        feature_acts: np.ndarray,
+        cluster_labels: np.ndarray,
+        n_clusters: int,
+        soft_assignments: Optional[np.ndarray] = None,
+    ) -> Dict[str, Any]:
+        """Compute activation coherence metrics for clusters.
+
+        Measures how coherently latents within clusters co-activate, and how
+        independent different clusters are.
+
+        Args:
+            feature_acts: Feature activations (n_samples, n_latents)
+            cluster_labels: Hard cluster labels (n_latents,)
+            n_clusters: Number of clusters
+            soft_assignments: Optional soft assignment matrix (n_latents, n_clusters)
+
+        Returns:
+            Dict with coherence metrics:
+                - within_cluster_correlation_{cluster_id}: Mean pairwise correlation within cluster
+                - within_cluster_correlation_mean: Average across all clusters
+                - between_cluster_correlation_mean: Mean correlation between cluster activations
+                - cluster_{id}_activation_sparsity: Fraction of samples activating cluster
+        """
+        metrics = {}
+
+        # Use soft or hard assignments
+        if soft_assignments is not None:
+            assignment_matrix = soft_assignments
+        else:
+            # Convert hard labels to one-hot matrix
+            assignment_matrix = np.zeros((len(cluster_labels), n_clusters), dtype=float)
+            for i, label in enumerate(cluster_labels):
+                if label >= 0:  # Skip noise (-1)
+                    assignment_matrix[i, label] = 1.0
+
+        # 1. Within-cluster correlation
+        within_cluster_corrs = []
+        for cluster_id in range(n_clusters):
+            # Get latents in this cluster
+            cluster_weights = assignment_matrix[:, cluster_id]
+            cluster_members = np.where(cluster_weights > 0)[0]
+
+            if len(cluster_members) < 2:
+                continue
+
+            # Get activations for these latents
+            cluster_acts = feature_acts[:, cluster_members]
+
+            # Compute pairwise correlations
+            try:
+                corr_matrix = np.corrcoef(cluster_acts.T)
+                # Get upper triangle (excluding diagonal)
+                upper_tri_indices = np.triu_indices_from(corr_matrix, k=1)
+                pairwise_corrs = corr_matrix[upper_tri_indices]
+                mean_corr = float(np.mean(pairwise_corrs))
+                metrics[f"within_cluster_correlation_{cluster_id}"] = mean_corr
+                within_cluster_corrs.append(mean_corr)
+            except Exception:
+                # Skip if correlation fails (e.g., constant activations)
+                continue
+
+        if within_cluster_corrs:
+            metrics["within_cluster_correlation_mean"] = float(np.mean(within_cluster_corrs))
+
+        # 2. Between-cluster independence (correlation of cluster-level activations)
+        # Compute cluster activation signals: weighted sum of latent activations
+        cluster_activation_signals = []
+        for cluster_id in range(n_clusters):
+            cluster_weights = assignment_matrix[:, cluster_id]
+            if cluster_weights.sum() > 0:
+                # Weighted sum: samples × latents @ weights = samples
+                cluster_signal = (feature_acts * cluster_weights[None, :]).sum(axis=1)
+                cluster_activation_signals.append(cluster_signal)
+
+        if len(cluster_activation_signals) >= 2:
+            cluster_signals_matrix = np.stack(cluster_activation_signals, axis=1)
+            try:
+                between_corr_matrix = np.corrcoef(cluster_signals_matrix.T)
+                # Get off-diagonal elements
+                np.fill_diagonal(between_corr_matrix, 0)
+                n_pairs = n_clusters * (n_clusters - 1) / 2
+                if n_pairs > 0:
+                    between_corr_mean = float(np.sum(np.abs(between_corr_matrix)) / (2 * n_pairs))
+                    metrics["between_cluster_correlation_mean"] = between_corr_mean
+            except Exception:
+                pass
+
+        # 3. Per-cluster activation statistics
+        for cluster_id in range(n_clusters):
+            cluster_weights = assignment_matrix[:, cluster_id]
+            cluster_members = np.where(cluster_weights > 0)[0]
+
+            if len(cluster_members) == 0:
+                continue
+
+            # Weighted cluster activations per sample
+            cluster_acts_per_sample = (feature_acts[:, cluster_members] * cluster_weights[cluster_members][None, :]).sum(axis=1)
+
+            # Sparsity: fraction of samples where cluster activates
+            activation_threshold = 1e-6
+            active_samples = cluster_acts_per_sample > activation_threshold
+            sparsity = float(active_samples.mean())
+            metrics[f"cluster_{cluster_id}_activation_sparsity"] = sparsity
+
+        return metrics

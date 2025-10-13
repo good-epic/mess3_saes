@@ -67,6 +67,15 @@ from mess3_gmg_analysis_utils import (
 
 
 @dataclass
+class RankEstimationDetails:
+    """Details about how subspace rank was estimated."""
+    variance_rank: int  # Rank suggested by variance threshold
+    gap_rank: int  # Rank suggested by singular value gap
+    final_rank: int  # Actual rank chosen (min of variance_rank and gap_rank)
+    limiting_method: str  # "variance", "gap", or "both" (if equal)
+
+
+@dataclass
 class SubspaceClusterResult:
     """Result container for subspace clustering."""
 
@@ -80,6 +89,9 @@ class SubspaceClusterResult:
 
     # Per-cluster ranks (useful when subspace_rank=None and auto-detected)
     cluster_ranks: Dict[int, int] | None = None
+
+    # Rank estimation details per cluster (when auto-detected)
+    rank_estimation_details: Dict[int, RankEstimationDetails] | None = None
 
     # Diagnostics
     principal_angles: Dict[Tuple[int, int], np.ndarray] | None = None
@@ -310,7 +322,7 @@ def estimate_subspace_rank_svd(
     vectors: np.ndarray,
     variance_threshold: float = 0.95,
     gap_threshold: float = 2.0,
-) -> int:
+) -> RankEstimationDetails:
     """Estimate subspace rank from singular value decay.
 
     Uses two heuristics:
@@ -323,20 +335,35 @@ def estimate_subspace_rank_svd(
         gap_threshold: Minimum ratio sigma_i/sigma_{i+1} to detect gap
 
     Returns:
-        Estimated rank (minimum of both heuristics)
+        RankEstimationDetails with variance_rank, gap_rank, final_rank, and limiting_method
     """
     if len(vectors) == 0:
-        return 1
+        return RankEstimationDetails(
+            variance_rank=1,
+            gap_rank=1,
+            final_rank=1,
+            limiting_method="both"
+        )
 
     U, s, Vt = svd(vectors, full_matrices=False)
 
     if len(s) == 0:
-        return 1
+        return RankEstimationDetails(
+            variance_rank=1,
+            gap_rank=1,
+            final_rank=1,
+            limiting_method="both"
+        )
 
     # Method 1: Cumulative variance
     total_var = np.sum(s**2)
     if total_var == 0:
-        return 1
+        return RankEstimationDetails(
+            variance_rank=1,
+            gap_rank=1,
+            final_rank=1,
+            limiting_method="both"
+        )
     cumsum_var = np.cumsum(s**2)
     variance_rank = int(np.searchsorted(cumsum_var / total_var, variance_threshold) + 1)
 
@@ -348,8 +375,22 @@ def estimate_subspace_rank_svd(
     else:
         gap_rank = 1
 
-    # Return minimum of both estimates, capped at available vectors
-    return min(variance_rank, gap_rank, len(vectors))
+    # Determine final rank and which method limited it
+    final_rank = min(variance_rank, gap_rank)
+
+    if variance_rank == gap_rank:
+        limiting_method = "both"
+    elif final_rank == variance_rank:
+        limiting_method = "variance"
+    else:
+        limiting_method = "gap"
+
+    return RankEstimationDetails(
+        variance_rank=variance_rank,
+        gap_rank=gap_rank,
+        final_rank=final_rank,
+        limiting_method=limiting_method
+    )
 
 
 def estimate_n_clusters_eigengap(
@@ -565,6 +606,7 @@ def k_subspaces_clustering(
     # Alternating optimization
     labels = None
     prev_labels = None
+    rank_details: Dict[int, RankEstimationDetails] = {}
 
     for iter_idx in range(max_iters):
         # Assignment step
@@ -593,11 +635,13 @@ def k_subspaces_clustering(
                 # Determine rank for this cluster
                 if subspace_rank is None:
                     # Auto-detect rank using SVD
-                    cluster_rank = estimate_subspace_rank_svd(
+                    rank_est = estimate_subspace_rank_svd(
                         cluster_vectors,
                         variance_threshold=variance_threshold,
                         gap_threshold=gap_threshold,
                     )
+                    cluster_rank = rank_est.final_rank
+                    rank_details[cluster_id] = rank_est
                 else:
                     cluster_rank = min(subspace_rank, len(cluster_vectors))
 
@@ -626,6 +670,7 @@ def k_subspaces_clustering(
         subspace_rank=subspace_rank,
         method="k_subspaces",
         cluster_ranks=cluster_ranks,
+        rank_estimation_details=rank_details if rank_details else None,
     )
     result.initial_clusters = {cid: seed_clusters[cid].tolist() for cid in seed_clusters}
     return result
@@ -748,6 +793,7 @@ def ensc_clustering(
     # Fit subspaces to each cluster
     subspace_bases: Dict[int, np.ndarray] = {}
     reconstruction_errors: Dict[int, float] = {}
+    rank_details: Dict[int, RankEstimationDetails] = {}
 
     for cluster_id in range(n_clusters):
         cluster_mask = labels == cluster_id
@@ -759,11 +805,13 @@ def ensc_clustering(
         # Determine rank for this cluster
         if subspace_rank is None:
             # Auto-detect rank using SVD
-            cluster_rank = estimate_subspace_rank_svd(
+            rank_est = estimate_subspace_rank_svd(
                 cluster_vectors,
                 variance_threshold=variance_threshold,
                 gap_threshold=gap_threshold,
             )
+            cluster_rank = rank_est.final_rank
+            rank_details[cluster_id] = rank_est
         else:
             cluster_rank = min(subspace_rank, len(cluster_vectors))
 
@@ -790,6 +838,7 @@ def ensc_clustering(
         subspace_rank=subspace_rank,
         method="ensc",
         cluster_ranks=cluster_ranks,
+        rank_estimation_details=rank_details if rank_details else None,
     )
 
 

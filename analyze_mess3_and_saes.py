@@ -13,8 +13,6 @@ from simplexity.generative_processes.torch_generator import generate_data_batch
 import argparse, sys, os
 from BatchTopK.sae import TopKSAE, VanillaSAE
 
-from mess3_saes import train_sae_on_site
-
 import plotly.graph_objects as go
 import numpy as np
 from tqdm import tqdm
@@ -31,7 +29,7 @@ import importlib
 import sys
 import os
 
-from mess3_saes_epdfs import (
+from epdf_utils import (
     sample_residual_stream_activations,
     build_epdfs_for_all_saes,
     plot_epdfs,
@@ -39,22 +37,21 @@ from mess3_saes_epdfs import (
     LatentEPDF,
     get_global_triangle_vertices,
     )
+from training_and_analysis_utils import (
+    project_decoder_directions,
+    plot_decoder_projections,
+    )
+
 from mess3_saes_seq_analysis import (
-    generate_last50_loss_plots,
     generate_l0_bar_plots,
+    generate_last50_loss_plots,
     generate_vanilla_l0_average_line_plots,
     analyze_latent_activation_by_sequence,
     summarize_latent_sequence_results,
+    plot_token_fingerprints,
     plot_latent_histograms,
     compute_latent_token_fingerprints,
-    plot_token_fingerprints,
-    )
-
-from mess3_saes_pca import (
-    project_decoder_directions,
-    plot_decoder_projections,
 )
-
 
 
 #%%
@@ -93,12 +90,12 @@ parser.add_argument("--seq_len", type=int, default=None, help="Sequence length u
 
 # Model loading
 parser.add_argument("--load_model", type=str, default="outputs/checkpoints/multipartite_001/checkpoint_step_500000_final.pt", help="Path to a saved model checkpoint (.pt). If provided, skip training and load this model.")
-parser.add_argument("--load_saes", type=str, default="outputs/saes/multipartite_001", help="Path to a folder containing SAE checkpoints (.pt) and metrics_summary.json")
+parser.add_argument("--load_saes", type=str, default="outputs/saes/multipartite_003e", help="Path to a folder containing SAE checkpoints (.pt) and metrics_summary.json")
 
 # Parse known to be notebook-friendly
 args, _ = parser.parse_known_args()
 
-output_dir = "outputs/saes/reports"
+output_dir = args.load_saes
 os.makedirs(output_dir, exist_ok=True)
 
 

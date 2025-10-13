@@ -9,6 +9,7 @@ class SpectralParams:
     """Parameters for spectral clustering."""
     sim_metric: Literal["cosine", "euclidean", "phi"] = "cosine"
     max_clusters: int = 12
+    min_clusters: int = 2
     plot_eigengap: bool = False
     center_decoder_rows: bool = False
 
@@ -23,6 +24,8 @@ class SubspaceParams:
     r_values: List[int] = field(default_factory=lambda: [2, 3, 4, 5])
     cosine_dedup_threshold: float = 0.995
     seed_lock_mode: Literal["fixed", "release_after_init"] = "fixed"
+    variance_threshold: float = 0.95  # Cumulative variance for auto rank detection
+    gap_threshold: float = 2.0  # Singular value gap ratio for auto rank detection
 
 
 @dataclass
@@ -33,6 +36,8 @@ class ENSCParams:
     lambda1: float = 0.01
     lambda2: float = 0.001
     cosine_dedup_threshold: float = 0.995
+    variance_threshold: float = 0.95  # Cumulative variance for auto rank detection
+    gap_threshold: float = 2.0  # Singular value gap ratio for auto rank detection
 
 
 @dataclass
@@ -113,7 +118,8 @@ class GeometryFittingConfig:
     normalize_vectors: bool = True
 
     # Filtering/refinement
-    per_point_distortion_threshold: float = 0.5
+    threshold_mode: Literal["normalized", "raw"] = "normalized"
+    per_point_threshold: float = 0.5
     optimal_distortion_threshold: float = 1.0
     filter_metrics: List[str] = field(default_factory=lambda: ["gw_full"])
 
@@ -155,6 +161,7 @@ class ClusteringConfig:
         spectral_params = SpectralParams(
             sim_metric=args.sim_metric,
             max_clusters=args.max_clusters,
+            min_clusters=args.min_clusters,
             plot_eigengap=args.plot_eigengap,
             center_decoder_rows=args.center_decoder_rows,
         )
@@ -167,6 +174,8 @@ class ClusteringConfig:
             r_values=args.subspace_r_values,
             cosine_dedup_threshold=args.cosine_dedup_threshold,
             seed_lock_mode=args.seed_lock_mode,
+            variance_threshold=args.subspace_variance_threshold,
+            gap_threshold=args.subspace_gap_threshold,
         )
 
         ensc_params = ENSCParams(
@@ -175,6 +184,8 @@ class ClusteringConfig:
             lambda1=args.ensc_lambda1,
             lambda2=args.ensc_lambda2,
             cosine_dedup_threshold=args.cosine_dedup_threshold,
+            variance_threshold=args.subspace_variance_threshold,
+            gap_threshold=args.subspace_gap_threshold,
         )
 
         belief_seeding = BeliefSeedingConfig(
@@ -228,9 +239,10 @@ class ClusteringConfig:
             gw_epsilon=getattr(args, 'geo_gw_epsilon', 0.1),
             sinkhorn_epsilon=getattr(args, 'geo_sinkhorn_epsilon', 0.1),
             sinkhorn_max_iter=getattr(args, 'geo_sinkhorn_max_iter', 1000),
-            per_point_distortion_threshold=getattr(args, 'geo_per_point_distortion_threshold', 0.5),
+            threshold_mode=getattr(args, 'geo_threshold_mode', 'normalized'),
+            per_point_threshold=getattr(args, 'geo_per_point_threshold', 0.5),
             optimal_distortion_threshold=getattr(args, 'geo_optimal_distortion_threshold', 1.0),
-            filter_metrics=getattr(args, 'geo_filter_metrics', ['local', 'gw_full']),
+            filter_metrics=getattr(args, 'geo_filter_metrics', ['gw_full']),
         )
 
         # Extract SAE type and parameter

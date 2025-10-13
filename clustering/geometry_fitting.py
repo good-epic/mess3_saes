@@ -61,7 +61,8 @@ class GeometryFittingConfig:
     normalize_vectors: bool = True
 
     # Filtering/refinement thresholds
-    per_point_distortion_threshold: float = 0.5  # Per-point distortion cutoff
+    threshold_mode: Literal["normalized", "raw"] = "normalized"
+    per_point_threshold: float = 0.5  # Threshold value (interpretation depends on threshold_mode)
     optimal_distortion_threshold: float = 1.0  # Optimal GW distortion above this = poor fit
 
     # Which metrics to use for filtering
@@ -126,12 +127,19 @@ class ClusterGeometryFits:
     best_optimal_distance: float  # GW optimal distance of best fit
     all_fits: Dict[str, GeometryFitResult]  # geometry_name -> fit result
 
-    # Filtering details (populated during refinement)
+    # Two-stage filtering details
+    preliminary_keep_mask: Optional[np.ndarray] = None  # Stage 1: Points kept after consensus filtering
+
+    # Final filtering details (populated during refinement)
     filtered_member_indices: Optional[np.ndarray] = None  # Indices that passed filtering
     removed_member_indices: Optional[np.ndarray] = None  # Indices that were removed
     filter_scores_raw: Optional[Dict[str, np.ndarray]] = None  # Raw per-point scores per metric
     filter_scores_normalized: Optional[Dict[str, np.ndarray]] = None  # Normalized [0,1] scores
     filter_scores_averaged: Optional[np.ndarray] = None  # Final averaged scores used for filtering
+    raw_thresholds: Optional[Dict[str, float]] = None  # Raw threshold values per metric
+    normalized_thresholds: Optional[Dict[str, float]] = None  # Normalized threshold values per metric
+    threshold_mode: Optional[str] = None  # "normalized" or "raw"
+    threshold_applied: Optional[float] = None  # The actual threshold value applied
 
     def to_summary_dict(self, include_raw_arrays: bool = True) -> Dict[str, Any]:
         """Convert to summary dictionary with all geometry fits.
@@ -150,18 +158,45 @@ class ClusterGeometryFits:
             }
         }
 
-        # Add filtering details if available
+        # Add preliminary filtering (stage 1) details
+        if self.preliminary_keep_mask is not None:
+            n_preliminary_kept = int(self.preliminary_keep_mask.sum())
+            n_preliminary_removed = int((~self.preliminary_keep_mask).sum())
+            summary["preliminary_filtering"] = {
+                "n_kept": n_preliminary_kept,
+                "n_removed": n_preliminary_removed,
+                "description": "Stage 1: Removed points with high distortion in all top 3 geometries"
+            }
+
+        # Add final filtering (stage 2) details if available
         if self.filtered_member_indices is not None:
-            summary["filtering"] = {
+            summary["final_filtering"] = {
                 "n_kept": int(len(self.filtered_member_indices)),
                 "n_removed": int(len(self.removed_member_indices)) if self.removed_member_indices is not None else 0,
                 "kept_indices": self.filtered_member_indices.tolist(),
                 "removed_indices": self.removed_member_indices.tolist() if self.removed_member_indices is not None else [],
+                "description": "Stage 2: Removed points with high distortion in final best geometry"
             }
+
+            # Add threshold values and mode
+            if self.threshold_mode is not None:
+                summary["final_filtering"]["threshold_mode"] = self.threshold_mode
+            if self.threshold_applied is not None:
+                summary["final_filtering"]["threshold_applied"] = float(self.threshold_applied)
+            if self.normalized_thresholds is not None:
+                summary["final_filtering"]["normalized_thresholds"] = {
+                    metric_name: float(threshold)
+                    for metric_name, threshold in self.normalized_thresholds.items()
+                }
+            if self.raw_thresholds is not None:
+                summary["final_filtering"]["raw_thresholds"] = {
+                    metric_name: float(threshold)
+                    for metric_name, threshold in self.raw_thresholds.items()
+                }
 
             # Add per-point filter scores
             if self.filter_scores_raw is not None:
-                summary["filtering"]["per_point_scores"] = {
+                summary["final_filtering"]["per_point_scores"] = {
                     "raw": {
                         metric_name: scores.astype(float).tolist()
                         for metric_name, scores in self.filter_scores_raw.items()
@@ -429,7 +464,7 @@ class GeometryRefinementPipeline:
                     print(f"  Skipping (too few points)")
                 continue
 
-            # Fit to all geometries
+            # Fit to all geometries (initial fit with full cluster)
             fits = self.fitter.fit_cluster_to_geometries(
                 cluster_points, geometries, verbose=verbose
             )
@@ -439,7 +474,54 @@ class GeometryRefinementPipeline:
                     print(f"  No valid fits")
                 continue
 
-            # Find best-fitting geometry (lowest GW optimal distance)
+            # Rank geometries by optimal distance
+            sorted_geometries = sorted(fits.keys(), key=lambda g: fits[g].optimal_distance)
+
+            if verbose:
+                print(f"  Top 3 initial fits: {', '.join([f'{g}={fits[g].optimal_distance:.4f}' for g in sorted_geometries[:3]])}")
+
+            # Stage 1: Preliminary filtering using top 3 geometries
+            top_k = min(3, len(sorted_geometries))
+            top_geoms = sorted_geometries[:top_k]
+
+            # Identify points with high distortion in ALL top geometries
+            preliminary_keep_mask = self._preliminary_filter(
+                cluster_points, fits, top_geoms, verbose=verbose
+            )
+
+            if verbose:
+                n_removed = (~preliminary_keep_mask).sum()
+                if n_removed > 0:
+                    print(f"  Stage 1: Removed {n_removed} points (high distortion in all top {top_k} geometries)")
+
+            # Get filtered cluster points
+            filtered_cluster_points = cluster_points[preliminary_keep_mask]
+
+            # Stage 2: Refit top geometries with filtered points
+            if len(filtered_cluster_points) >= 2 and filtered_cluster_points.shape[0] < cluster_points.shape[0]:
+                if verbose:
+                    print(f"  Stage 2: Refitting top {top_k} geometries with {len(filtered_cluster_points)} filtered points")
+
+                refits = {}
+                for geom_name in top_geoms:
+                    geom = next(g for g in geometries if g.get_name() == geom_name)
+                    try:
+                        refit_result = self.fitter._fit_single_geometry(filtered_cluster_points, geom)
+                        refits[geom_name] = refit_result
+                    except Exception as e:
+                        if verbose:
+                            print(f"    Warning: Refit failed for {geom_name}: {e}")
+                        # Keep original fit if refit fails
+                        refits[geom_name] = fits[geom_name]
+
+                # Update fits with refits
+                for geom_name, refit in refits.items():
+                    fits[geom_name] = refit
+
+                if verbose:
+                    print(f"  Refit results: {', '.join([f'{g}={refits[g].optimal_distance:.4f}' for g in refits.keys()])}")
+
+            # Select final best geometry (from refits if available, otherwise from initial fits)
             best_geom = min(fits.keys(), key=lambda g: fits[g].optimal_distance)
             best_fit = fits[best_geom]
             best_optimal_distance = best_fit.optimal_distance
@@ -449,11 +531,12 @@ class GeometryRefinementPipeline:
                 initial_member_mask=member_mask,
                 best_geometry=best_geom,
                 best_optimal_distance=best_optimal_distance,
-                all_fits=fits
+                all_fits=fits,
+                preliminary_keep_mask=preliminary_keep_mask  # Store for reference
             )
 
             if verbose:
-                print(f"  Best: {best_geom}, GW_dist={best_optimal_distance:.4f}")
+                print(f"  Final best: {best_geom}, GW_dist={best_optimal_distance:.4f}")
 
         # 4. Refine memberships using per-point distortion metrics
         refined_assignments = self._refine_memberships(
@@ -520,6 +603,51 @@ class GeometryRefinementPipeline:
 
         return cluster_members
 
+    def _preliminary_filter(
+        self,
+        cluster_points: np.ndarray,
+        fits: Dict[str, GeometryFitResult],
+        top_geoms: List[str],
+        verbose: bool = False
+    ) -> np.ndarray:
+        """Stage 1 filtering: Remove points with high distortion in ALL top geometries.
+
+        Args:
+            cluster_points: Original cluster points (n_points, d_model)
+            fits: All geometry fit results
+            top_geoms: List of top geometry names (usually top 3)
+            verbose: Print progress
+
+        Returns:
+            Boolean mask of points to keep
+        """
+        n_points = len(cluster_points)
+
+        # For each point, check if it has high distortion in ALL top geometries
+        high_in_all = np.ones(n_points, dtype=bool)  # Start assuming all are bad
+
+        for geom_name in top_geoms:
+            fit = fits[geom_name]
+
+            # Get distortion scores for this geometry
+            distortions = fit.gw_distortion_contributions
+
+            # Apply threshold based on mode
+            if self.config.threshold_mode == "normalized":
+                # Normalize to [0, 1]
+                distortions_norm = (distortions - distortions.min()) / (distortions.max() - distortions.min() + 1e-10)
+                high_distortion = distortions_norm > self.config.per_point_threshold
+            else:  # "raw"
+                high_distortion = distortions > self.config.per_point_threshold
+
+            # Point only removed if high in ALL top geometries
+            high_in_all = high_in_all & high_distortion
+
+        # Keep points that are NOT high in all top geometries
+        keep_mask = ~high_in_all
+
+        return keep_mask
+
     def _refine_memberships(
         self,
         decoder_dirs: np.ndarray,
@@ -562,14 +690,66 @@ class GeometryRefinementPipeline:
             # Average filter scores
             avg_score = np.mean(filter_scores_list, axis=0)
 
-            # Keep latents with low distortion
-            keep_mask = avg_score <= self.config.per_point_distortion_threshold
+            # Apply threshold based on mode
+            if self.config.threshold_mode == "normalized":
+                # Apply threshold to normalized scores
+                keep_mask = avg_score <= self.config.per_point_threshold
+                threshold_applied = self.config.per_point_threshold
+                threshold_type = "normalized"
+            else:  # "raw"
+                # Apply threshold directly to raw scores
+                avg_raw_score = np.mean([filter_scores_raw[m] for m in self.config.filter_metrics], axis=0)
+                keep_mask = avg_raw_score <= self.config.per_point_threshold
+                threshold_applied = self.config.per_point_threshold
+                threshold_type = "raw"
 
             # Update soft assignments: zero out high-distortion members
-            member_indices = np.where(member_mask)[0]
+            all_member_indices = np.where(member_mask)[0]
+
+            # Determine which member indices the metrics correspond to
+            # The metrics could correspond to either filtered points or all points depending on whether refit happened
+            if fit_result.preliminary_keep_mask is not None:
+                # Check if metrics match filtered points or all points by comparing shapes
+                n_filtered = fit_result.preliminary_keep_mask.sum()
+                n_metrics = len(avg_score)
+
+                if n_metrics == n_filtered and n_filtered < len(all_member_indices):
+                    # Metrics correspond to filtered members (refit happened)
+                    member_indices = all_member_indices[fit_result.preliminary_keep_mask]
+                else:
+                    # Metrics correspond to all members (no refit or refit failed)
+                    member_indices = all_member_indices
+            else:
+                # No preliminary filtering - metrics correspond to all members
+                member_indices = all_member_indices
+
+            # Apply refinement filter
             kept_indices = member_indices[keep_mask]
             remove_indices = member_indices[~keep_mask]
             refined[remove_indices, cluster_id] = 0.0
+
+            # Compute threshold values in both spaces for reporting
+            raw_thresholds = {}
+            normalized_thresholds = {}
+            for metric_name in self.config.filter_metrics:
+                scores_raw = filter_scores_raw[metric_name]
+                scores_norm = filter_scores_normalized[metric_name]
+                raw_min = scores_raw.min()
+                raw_max = scores_raw.max()
+
+                if self.config.threshold_mode == "normalized":
+                    # Compute raw equivalent of normalized threshold
+                    raw_threshold = self.config.per_point_threshold * (raw_max - raw_min) + raw_min
+                    raw_thresholds[metric_name] = raw_threshold
+                    normalized_thresholds[metric_name] = self.config.per_point_threshold
+                else:  # "raw"
+                    # Compute normalized equivalent of raw threshold
+                    if raw_max - raw_min > 1e-10:
+                        normalized_threshold = (self.config.per_point_threshold - raw_min) / (raw_max - raw_min)
+                    else:
+                        normalized_threshold = 0.5
+                    raw_thresholds[metric_name] = self.config.per_point_threshold
+                    normalized_thresholds[metric_name] = normalized_threshold
 
             # Store filtering details in fit_result
             fit_result.filtered_member_indices = kept_indices
@@ -577,6 +757,10 @@ class GeometryRefinementPipeline:
             fit_result.filter_scores_raw = filter_scores_raw
             fit_result.filter_scores_normalized = filter_scores_normalized
             fit_result.filter_scores_averaged = avg_score
+            fit_result.raw_thresholds = raw_thresholds
+            fit_result.normalized_thresholds = normalized_thresholds
+            fit_result.threshold_mode = self.config.threshold_mode
+            fit_result.threshold_applied = threshold_applied
 
             if verbose and len(remove_indices) > 0:
                 print(f"  Cluster {cluster_id}: removed {len(remove_indices)} high-distortion latents")
