@@ -75,7 +75,9 @@ class SiteClusteringPipeline:
             raise FileNotFoundError(f"SAE checkpoint not found at {sae_path}")
 
         ckpt = torch.load(sae_path, map_location=device, weights_only=False)
-        sae = sae_class(ckpt["cfg"]).to(device)
+        sae_cfg = dict(ckpt["cfg"])
+        sae_cfg["device"] = device
+        sae = sae_class(sae_cfg).to(device)
         sae.load_state_dict(ckpt["state_dict"])
         sae.eval()
 
