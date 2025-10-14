@@ -644,10 +644,14 @@ for site_idx, site in enumerate(sites):
                             ckpt = torch.load(sae_path, map_location=device, weights_only=False)
                             if args.sae_type == "top_k":
                                 from BatchTopK.sae import TopKSAE
-                                sae = TopKSAE(ckpt["cfg"]).to(device)
+                                topk_cfg = dict(ckpt["cfg"])
+                                topk_cfg["device"] = device
+                                sae = TopKSAE(topk_cfg).to(device)
                             else:
                                 from BatchTopK.sae import VanillaSAE
-                                sae = VanillaSAE(ckpt["cfg"]).to(device)
+                                vanilla_cfg = dict(ckpt["cfg"])
+                                vanilla_cfg["device"] = device
+                                sae = VanillaSAE(vanilla_cfg).to(device)
                             sae.load_state_dict(ckpt["state_dict"])
                             sae.eval()
 
