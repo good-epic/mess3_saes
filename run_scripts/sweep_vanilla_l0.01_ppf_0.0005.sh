@@ -58,7 +58,7 @@ for cluster_config in "${CLUSTER_CONFIGS[@]}"; do
           --model_ckpt "/workspace/outputs/checkpoints/multipartite_003/checkpoint_step_6000_best.pt" \
           --device "cpu" \
           --seed 43 \
-          --process_config "process_configs.json" \
+          --process_config "${SCRIPT_DIR}/../process_configs.json" \
           --process_config_name "3xmess3_2xtquant_003" \
           --d_model 128 \
           --n_heads 4 \
