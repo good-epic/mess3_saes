@@ -52,7 +52,7 @@ for cluster_config in "${CLUSTER_CONFIGS[@]}"; do
           --metrics_summary "/workspace/outputs/saes/multipartite_003e/metrics_summary.json" \
           --output_dir "/workspace/outputs/reports/multipartite_003e" \
           --model_ckpt "/workspace/outputs/checkpoints/multipartite_003/checkpoint_step_6000_best.pt" \
-          --device "cuda" \
+          --device "cpu" \
           --seed 43 \
           --process_config "process_configs.json" \
           --process_config_name "3xmess3_2xtquant_003" \
