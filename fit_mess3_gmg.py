@@ -645,12 +645,14 @@ for site_idx, site in enumerate(sites):
                             if args.sae_type == "top_k":
                                 from BatchTopK.sae import TopKSAE
                                 topk_cfg = dict(ckpt["cfg"])
-                                topk_cfg["device"] = device
+                                topk_cfg["device"] = "cuda" if device.startswith("cuda") else "cpu"
+                                ckpt["cfg"]["device"] = topk_cfg["device"]
                                 sae = TopKSAE(topk_cfg).to(device)
                             else:
                                 from BatchTopK.sae import VanillaSAE
                                 vanilla_cfg = dict(ckpt["cfg"])
-                                vanilla_cfg["device"] = device
+                                vanilla_cfg["device"] = "cuda" if device.startswith("cuda") else "cpu"
+                                ckpt["cfg"]["device"] = vanilla_cfg["device"]
                                 sae = VanillaSAE(vanilla_cfg).to(device)
                             sae.load_state_dict(ckpt["state_dict"])
                             sae.eval()
