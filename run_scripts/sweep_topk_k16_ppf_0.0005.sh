@@ -2,7 +2,7 @@
 
 # Fixed parameters for this script
 SAE_TYPE="topk"
-SAE_VALUE="8"
+SAE_VALUE="16"
 PER_POINT_THRESHOLD="0.0005"
 
 # Parameter arrays for sweep
@@ -13,6 +13,10 @@ SIM_METRICS=("cosine" "euclidean")
 
 # Counter for progress
 TOTAL_RUNS=48
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_BIN=${PYTHON_BIN:-python}
+
 CURRENT_RUN=0
 
 echo "Starting sweep: Top K k=$SAE_VALUE, per-point filtering=$PER_POINT_THRESHOLD"
@@ -45,7 +49,7 @@ for cluster_config in "${CLUSTER_CONFIGS[@]}"; do
 
         # Run experiment
         START_TIME=$(date +%s)
-        python -u fit_mess3_gmg.py \
+        ${PYTHON_BIN} -u "${SCRIPT_DIR}/../fit_mess3_gmg.py" \
           $SAE_ARGS \
           $CLUSTER_ARGS \
           --sae_folder "/workspace/outputs/saes/multipartite_003e" \

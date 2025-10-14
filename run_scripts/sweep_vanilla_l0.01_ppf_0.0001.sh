@@ -2,8 +2,8 @@
 
 # Fixed parameters for this script
 SAE_TYPE="vanilla"
-SAE_VALUE="0.09"
-PER_POINT_THRESHOLD="0.001"
+SAE_VALUE="0.01"
+PER_POINT_THRESHOLD="0.0001"
 
 # Parameter arrays for sweep
 CLUSTER_CONFIGS=("auto_0.83_2.0" "auto_0.83_2.5" "auto_0.9_2.0" "auto_0.9_2.5" "manual_6" "manual_9")
@@ -13,6 +13,10 @@ SIM_METRICS=("cosine" "euclidean")
 
 # Counter for progress
 TOTAL_RUNS=48
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_BIN=${PYTHON_BIN:-python}
+
 CURRENT_RUN=0
 
 echo "Starting sweep: Vanilla lambda=$SAE_VALUE, per-point filtering=$PER_POINT_THRESHOLD"
@@ -45,7 +49,7 @@ for cluster_config in "${CLUSTER_CONFIGS[@]}"; do
 
         # Run experiment
         START_TIME=$(date +%s)
-        python -u fit_mess3_gmg.py \
+        ${PYTHON_BIN} -u "${SCRIPT_DIR}/../fit_mess3_gmg.py" \
           $SAE_ARGS \
           $CLUSTER_ARGS \
           --sae_folder "/workspace/outputs/saes/multipartite_003e" \

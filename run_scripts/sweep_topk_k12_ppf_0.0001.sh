@@ -1,8 +1,8 @@
 #!/usr/bin/bash
 
 # Fixed parameters for this script
-SAE_TYPE="vanilla"
-SAE_VALUE="0.01"
+SAE_TYPE="topk"
+SAE_VALUE="12"
 PER_POINT_THRESHOLD="0.0001"
 
 # Parameter arrays for sweep
@@ -13,9 +13,13 @@ SIM_METRICS=("cosine" "euclidean")
 
 # Counter for progress
 TOTAL_RUNS=48
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_BIN=${PYTHON_BIN:-python}
+
 CURRENT_RUN=0
 
-echo "Starting sweep: Vanilla lambda=$SAE_VALUE, per-point filtering=$PER_POINT_THRESHOLD"
+echo "Starting sweep: Top K k=$SAE_VALUE, per-point filtering=$PER_POINT_THRESHOLD"
 echo "Total runs: $TOTAL_RUNS"
 echo "=================================================="
 
@@ -40,12 +44,12 @@ for cluster_config in "${CLUSTER_CONFIGS[@]}"; do
         fi
 
         # Construct MLFlow run name
-        RUN_NAME="vanilla_l${SAE_VALUE}_${CLUSTER_STR}_dedup${dedup}_lat${latent_act}_${sim_metric}_ppf${PER_POINT_THRESHOLD}"
-        SAE_ARGS="--sae_type vanilla --force_lambda $SAE_VALUE"
+        RUN_NAME="topk_k${SAE_VALUE}_${CLUSTER_STR}_dedup${dedup}_lat${latent_act}_${sim_metric}_ppf${PER_POINT_THRESHOLD}"
+        SAE_ARGS="--sae_type top_k --force_k $SAE_VALUE"
 
         # Run experiment
         START_TIME=$(date +%s)
-        python -u fit_mess3_gmg.py \
+        ${PYTHON_BIN} -u "${SCRIPT_DIR}/../fit_mess3_gmg.py" \
           $SAE_ARGS \
           $CLUSTER_ARGS \
           --sae_folder "/workspace/outputs/saes/multipartite_003e" \
