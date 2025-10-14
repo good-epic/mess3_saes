@@ -7,7 +7,7 @@ set -euo pipefail
 #export XLA_PYTHON_CLIENT_PREALLOCATE=false
 #export XLA_PYTHON_CLIENT_MEM_FRACTION=.90
 
-CHECKPOINT_DIR="outputs/checkpoints/multipartite_003"
+CHECKPOINT_DIR="/workspace/outputs/checkpoints/multipartite_003a"
 
 # python -u train_simplexity_3xmess3_2xtquant.py \
 #     --d_model 128 \
@@ -57,19 +57,24 @@ python -u train_mess3_and_saes.py \
     --act_fn relu \
     --device cuda \
     --dict_mul 4 \
-    --l1_coeff_seq 0.001 0.005 0.01 0.05 0.1 0.15 \
-    --k 3 4 5 6 7 8 10 12 14 16 19 22 25 \
+    --l1_coeff_seq 0.02 0.03 0.04 0.06 0.07 0.08 0.09 0.125 \
     --input_unit_norm True \
     --no_input_unit_norm False \
     --n_batches_to_dead 5 \
     --aux_penalty 0.03125 \
     --bandwidth 0.001 \
-    --sae_steps 50000 \
     --sae_batch_size 64 \
-    --sae_output_dir outputs/saes/multipartite_003e \
+    --sae_output_dir /workspace/outputs/saes/multipartite_003e \
     --load_model "${FINAL_CHECKPOINT}" \
     --process_config "process_configs.json" \
     --process_config_name "3xmess3_2xtquant_003" \
+    --sae_steps 50000 \
+    --sae_early_stopping_min_steps 15000 \
     --sae_early_stopping_patience 30 \
-    --sae_early_stopping_delta 1e-6 \
-    --sae_early_stopping_min_steps 20000
+    --sae_early_stopping_delta 1e-7 \
+    --sae_early_stopping_beta 0.995 \
+    --sae_log_interval 250 \
+    --sae_scheduler_final_ratio 0.15
+
+#    --l1_coeff_seq 0.001 0.005 0.01 0.05 0.1 0.15 \
+#    --k 3 4 5 6 7 8 10 12 14 16 19 22 25 \
