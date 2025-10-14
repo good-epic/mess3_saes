@@ -82,7 +82,7 @@ for cluster_config in "${CLUSTER_CONFIGS[@]}"; do
           --geo_threshold_mode raw \
           --geo_per_point_threshold $PER_POINT_THRESHOLD \
           --log_to_mlflow \
-          --mlflow_experiment "mp_clustering_sweep" \
+          --mlflow_experiment "/Shared/mp_clustering_sweep" \
           --mlflow_run_name_base "$RUN_NAME"
 
         END_TIME=$(date +%s)
