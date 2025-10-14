@@ -5,6 +5,7 @@ import os
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 import argparse
 import json
+import math
 from datetime import datetime
 from typing import Any, Dict, List
 
@@ -100,6 +101,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--model_ckpt", type=str, default="outputs/checkpoints/multipartite_002/checkpoint_step_125000.pt", help="Transformer checkpoint path")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"], help="Computation device")
     parser.add_argument("--seed", type=int, default=0, help="Random seed")
+    parser.add_argument("--log_to_mlflow", action="store_true", help="Log metrics and artifacts to MLflow")
+    parser.add_argument("--mlflow_experiment", type=str, default=None, help="MLflow experiment path (e.g., /Shared/my-experiment)")
+    parser.add_argument("--mlflow_run_name_base", type=str, default=None, help="Base run name; timestamp is appended automatically")
 
     # Process configuration
     parser.add_argument("--process_config", type=str, default="process_configs.json", help="Path to JSON describing a stack of generative processes or a mapping of named configurations")
@@ -256,6 +260,76 @@ args = _parse_args()
 device = _resolve_device(args.device)
 torch.manual_seed(args.seed)
 np.random.seed(args.seed)
+
+mlflow_enabled = bool(args.log_to_mlflow)
+mlflow_module = None
+mlflow_run_id = None
+mlflow_run_name = None
+
+if mlflow_enabled:
+    if not args.mlflow_experiment:
+        raise ValueError("--mlflow_experiment is required when --log_to_mlflow is enabled")
+    if not args.mlflow_run_name_base:
+        raise ValueError("--mlflow_run_name_base is required when --log_to_mlflow is enabled")
+
+    from mlflow_utils import start_or_continue_run, log_script_params  # noqa: E402
+    import mlflow as mlflow_module  # noqa: E402
+
+    mlflow_run_name = f"{args.mlflow_run_name_base}_{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    try:
+        mlflow_run_id = start_or_continue_run(
+            script_name="fit_mess3_gmg",
+            experiment_name=args.mlflow_experiment,
+            run_name=mlflow_run_name,
+        )
+    except Exception as mlflow_exc:
+        raise RuntimeError(f"Failed to initialise MLflow run: {mlflow_exc}") from mlflow_exc
+
+    log_script_params("fit_mess3_gmg", args)
+    mlflow_module.log_param("fit_mess3_gmg_run_name", mlflow_run_name)
+    mlflow_module.log_param("fit_mess3_gmg_run_id", mlflow_run_id)
+    tracking_host = os.getenv("DATABRICKS_HOST")
+    if tracking_host:
+        mlflow_module.log_param("fit_mess3_gmg_tracking_uri", tracking_host)
+
+    import atexit  # noqa: E402
+
+    def _end_run_at_exit() -> None:
+        if mlflow_module.active_run():
+            mlflow_module.end_run()
+
+    atexit.register(_end_run_at_exit)
+
+    # PCA plots are not useful for logging runs; skip them automatically when MLflow logging is active.
+    args.skip_pca_plots = True
+    print("MLflow logging enabled; skipping PCA plot generation.")
+
+    def _extract_numeric(data: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a nested dictionary containing only numeric leaves."""
+        numeric_only: Dict[str, Any] = {}
+        for key, value in data.items():
+            if isinstance(value, dict):
+                nested = _extract_numeric(value)
+                if nested:
+                    numeric_only[key] = nested
+            elif isinstance(value, (int, float, np.floating, np.integer)):
+                numeric_only[key] = float(value)
+        return numeric_only
+
+    def _log_numeric(prefix: str, payload: Dict[str, Any]) -> None:
+        for key, value in payload.items():
+            metric_key = f"{prefix}/{key}" if prefix else key
+            if isinstance(value, dict):
+                _log_numeric(metric_key, value)
+            else:
+                if value is None or (isinstance(value, float) and not math.isfinite(value)):
+                    continue
+                mlflow_module.log_metric(metric_key, float(value))
+
+else:
+    mlflow_enabled = False
+
+mlflow_active_run = mlflow_enabled
 
 process_cfg_raw, components, data_source = _load_process_stack(args, PRESET_PROCESS_CONFIGS)
 if isinstance(data_source, MultipartiteSampler):
@@ -618,8 +692,75 @@ for site_idx, site in enumerate(sites):
                     import traceback
                     traceback.print_exc()
 
+    if mlflow_enabled:
+        if result.metrics:
+            metrics_numeric = _extract_numeric(result.metrics)
+            if metrics_numeric:
+                _log_numeric(f"{site}/metrics", metrics_numeric)
+
+        if result.component_assignment_soft:
+            soft_payload = {
+                key: value
+                for key, value in result.component_assignment_soft.items()
+                if key not in {"assignments", "noise_clusters"}
+            }
+            numeric_soft = _extract_numeric(soft_payload)
+            if numeric_soft:
+                _log_numeric(f"{site}/component_assignment_soft", numeric_soft)
+            if "noise_clusters" in result.component_assignment_soft:
+                mlflow_module.log_param(
+                    f"{site}_component_assignment_soft_noise_clusters",
+                    json.dumps(result.component_assignment_soft["noise_clusters"]),
+                )
+            if "assignments" in result.component_assignment_soft:
+                mlflow_module.log_param(
+                    f"{site}_component_assignment_soft_assignments",
+                    json.dumps(result.component_assignment_soft["assignments"]),
+                )
+
+        if result.component_assignment_refined:
+            refined_payload = {
+                key: value
+                for key, value in result.component_assignment_refined.items()
+                if key not in {"assignments", "noise_clusters"}
+            }
+            numeric_refined = _extract_numeric(refined_payload)
+            if numeric_refined:
+                _log_numeric(f"{site}/component_assignment_refined", numeric_refined)
+            if "noise_clusters" in result.component_assignment_refined:
+                mlflow_module.log_param(
+                    f"{site}_component_assignment_refined_noise_clusters",
+                    json.dumps(result.component_assignment_refined["noise_clusters"]),
+                )
+            if "assignments" in result.component_assignment_refined:
+                mlflow_module.log_param(
+                    f"{site}_component_assignment_refined_assignments",
+                    json.dumps(result.component_assignment_refined["assignments"]),
+                )
+
+        if result.coherence_metrics_soft:
+            soft_coherence = _extract_numeric(result.coherence_metrics_soft)
+            if soft_coherence:
+                _log_numeric(f"{site}/coherence_metrics_soft", soft_coherence)
+
+        if result.subspace_diagnostics:
+            within_energy = result.subspace_diagnostics.get("within_projection_energy")
+            if isinstance(within_energy, dict):
+                within_numeric = _extract_numeric(within_energy)
+                if within_numeric:
+                    _log_numeric(f"{site}/within_projection_energy", within_numeric)
+            between_energy = result.subspace_diagnostics.get("between_projection_energy")
+            if isinstance(between_energy, (int, float, np.floating, np.integer)):
+                if math.isfinite(float(between_energy)):
+                    mlflow_module.log_metric(f"{site}/between_projection_energy", float(between_energy))
+
     # Save result
     result.save_to_directory(site_dir, process_info, average_l2)
+
+    if mlflow_enabled:
+        cluster_summary_path = os.path.join(site_dir, "cluster_summary.json")
+        if os.path.exists(cluster_summary_path):
+            mlflow_module.log_artifact(cluster_summary_path, artifact_path=site)
 
     print(f"{site}: saved to {site_dir}")
     if metrics:
@@ -656,3 +797,6 @@ if per_site_cluster_rates and any(per_site_cluster_rates[site] for site in per_s
     )
 
 print(f"Analysis complete. Outputs written to {run_dir}")
+
+if mlflow_active_run and mlflow_module is not None and mlflow_module.active_run():
+    mlflow_module.end_run()

@@ -1,5 +1,6 @@
 #!/usr/bin/bash
 
+START_TIME=$(date +%s)
 python -u fit_mess3_gmg.py \
     --sae_folder "outputs/saes/multipartite_003e" \
     --metrics_summary "outputs/saes/multipartite_003e/metrics_summary.json" \
@@ -39,6 +40,10 @@ python -u fit_mess3_gmg.py \
     --geo_sinkhorn_epsilon 0.2 \
     --geo_threshold_mode raw \
     --geo_per_point_threshold 0.0005
+END_TIME=$(date +%s)
+DURATION=$((END_TIME - START_TIME))
+echo "Runtime: $((DURATION / 60)) minutes and $((DURATION % 60)) seconds."
+
 #    --sae_type "vanilla" \
 #    --force_lambda 0.05
 

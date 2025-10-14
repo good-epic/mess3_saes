@@ -2,13 +2,12 @@
 import mlflow
 import os
 
-def start_or_continue_run(script_name, tracking_uri=None, token=None, experiment_name=None, run_name=None):
+def start_or_continue_run(script_name, token=None, experiment_name=None, run_name=None):
     """
     Start new run or continue existing one with proper Databricks authentication.
     
     Args:
         script_name: Name of the script (used for logging)
-        tracking_uri: Databricks workspace URL (defaults to DATABRICKS_HOST env var)
         token: Databricks token (defaults to DATABRICKS_TOKEN env var)
         experiment_name: Experiment name - must be absolute path for Databricks
                         e.g., '/Shared/my-experiment'
@@ -22,10 +21,10 @@ def start_or_continue_run(script_name, tracking_uri=None, token=None, experiment
         ValueError: If required parameters are missing
     """
     # Get tracking_uri (workspace URL)
-    tracking_uri = tracking_uri or os.getenv('DATABRICKS_HOST')
+    tracking_uri = os.getenv('DATABRICKS_HOST')
     if not tracking_uri:
         raise ValueError(
-            "tracking_uri is required. Provide it as an argument or set DATABRICKS_HOST environment variable."
+            "DATABRICKS_HOST environment variable must be set to your workspace URL."
         )
     
     # Get token

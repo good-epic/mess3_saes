@@ -4,11 +4,11 @@ import os
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import torch
+from sklearn.linear_model import Ridge
 
 from mess3_gmg_analysis_utils import (
     collect_cluster_reconstructions,
     fit_pca_for_clusters,
-    fit_residual_to_belief_map,
     plot_cluster_pca,
     project_decoder_directions_to_pca,
 )
@@ -193,31 +193,13 @@ class ClusterAnalyzer:
             return None
 
         try:
-            acts_np = acts_flat.detach().cpu().numpy()
-            beliefs_concat = np.concatenate(list(component_beliefs_flat.values()), axis=1)
+            def _prepare_targets(comp_name: str, matrix: np.ndarray) -> Tuple[np.ndarray, int]:
+                if comp_name.startswith("tom_quantum"):
+                    if matrix.shape[1] <= 1:
+                        return np.empty((matrix.shape[0], 0), dtype=matrix.dtype), 1
+                    return matrix[:, 1:], 1
+                return matrix, 0
 
-            readout_coef, readout_intercept = fit_residual_to_belief_map(
-                acts_np,
-                beliefs_concat,
-                alpha=ridge_alpha,
-            )
-
-            if decoder_dirs.shape[1] != readout_coef.shape[0]:
-                raise ValueError(
-                    f"Decoder width {decoder_dirs.shape[1]} must equal residual_to_belief rows {readout_coef.shape[0]}"
-                )
-
-            latent_sens_full = decoder_dirs @ readout_coef
-
-            # Build component slices
-            component_slices: Dict[str, Tuple[int, int]] = {}
-            offset = 0
-            for comp_name, comp_matrix in component_beliefs_flat.items():
-                comp_dim = comp_matrix.shape[1]
-                component_slices[comp_name] = (offset, offset + comp_dim)
-                offset += comp_dim
-
-            # Compute R² per cluster
             cluster_r2_summary = {}
             for cluster_id in range(int(n_clusters)):
                 # Get cluster members and their weights
@@ -245,21 +227,43 @@ class ClusterAnalyzer:
                     # Hard assignment: unweighted features
                     cluster_features = feature_acts_np[:, latent_ids]
 
+                # Restrict scoring to samples where the cluster actually activates.
+                active_mask = np.any(cluster_features != 0.0, axis=1)
+                if not np.any(active_mask):
+                    continue
+
+                cluster_features_active = cluster_features[active_mask]
+                if cluster_features_active.shape[0] < 2:
+                    continue  # Not enough data to fit a regression
+
                 for comp_name in component_order:
-                    start, end = component_slices[comp_name]
-                    comp_targets = component_beliefs_flat[comp_name]
-                    comp_targets_centered = comp_targets - readout_intercept[start:end]
-                    cluster_sens = latent_sens_full[latent_ids][:, start:end]
-                    preds = cluster_features @ cluster_sens
-                    residual = comp_targets_centered - preds
-                    ss_res = np.sum(residual ** 2, axis=0)
-                    centered = comp_targets_centered - comp_targets_centered.mean(axis=0, keepdims=True)
-                    ss_tot = np.sum(centered ** 2, axis=0)
+                    comp_targets_raw = component_beliefs_flat[comp_name]
+                    comp_targets_prepped, dropped_dims = _prepare_targets(comp_name, comp_targets_raw)
+
+                    if comp_targets_prepped.shape[1] == 0:
+                        continue
+
+                    comp_targets_active = comp_targets_prepped[active_mask]
+
+                    try:
+                        ridge = Ridge(alpha=ridge_alpha, fit_intercept=True)
+                        ridge.fit(cluster_features_active, comp_targets_active)
+                        preds_refit = ridge.predict(cluster_features_active)
+                    except Exception as exc_refit:
+                        print(f"{site}: ridge refit failed for cluster {cluster_id} component {comp_name} ({exc_refit})")
+                        continue
+
+                    target_mean = comp_targets_active.mean(axis=0, keepdims=True)
+                    ss_res = np.sum((comp_targets_active - preds_refit) ** 2, axis=0)
+                    ss_tot = np.sum((comp_targets_active - target_mean) ** 2, axis=0)
                     denom = np.where(ss_tot == 0.0, 1.0, ss_tot)
                     r2 = 1.0 - ss_res / denom
+
                     cluster_entry[comp_name] = {
                         "per_dimension": r2.astype(float).tolist(),
                         "mean_r2": float(np.mean(r2)),
+                        "n_active_samples": int(active_mask.sum()),
+                        "dropped_constant_dims": int(dropped_dims),
                     }
 
                 if cluster_entry:
