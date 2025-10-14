@@ -123,6 +123,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--clustering_method", type=str, default="k_subspaces", choices=["spectral", "k_subspaces", "ensc"], help="Clustering method for decoder directions")
     parser.add_argument("--sim_metric", type=str, default="cosine", choices=["cosine", "euclidean", "phi"], help="Similarity metric for decoder clustering (spectral method only)")
     parser.add_argument("--max_clusters", type=int, default=12, help="Upper bound for eigengap clustering (spectral method only)")
+    parser.add_argument("--min_clusters", type=int, default=2, help="Lower bound for eigengap clustering (spectral method only)")
     parser.add_argument("--plot_eigengap", action="store_true", help="Plot eigengap spectrum diagnostics (spectral method only)")
     parser.add_argument("--center_decoder_rows", action="store_true", help="Center and renormalize decoder rows before computing similarities (spectral method only)")
 
@@ -132,6 +133,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--use_grid_search", action="store_true", help="Use grid search instead of automatic parameter selection for k_subspaces")
     parser.add_argument("--subspace_k_values", type=int, nargs="+", default=[4, 5, 6, 7, 8], help="K values to try in grid search for k_subspaces (only used with --use_grid_search)")
     parser.add_argument("--subspace_r_values", type=int, nargs="+", default=[2, 3, 4, 5], help="Subspace rank values to try in grid search for k_subspaces (only used with --use_grid_search)")
+    parser.add_argument("--subspace_variance_threshold", type=float, default=0.95, help="Cumulative variance threshold for auto rank detection (k_subspaces/ensc, only used when subspace_rank=None)")
+    parser.add_argument("--subspace_gap_threshold", type=float, default=2.0, help="Singular value gap ratio threshold for auto rank detection (k_subspaces/ensc, only used when subspace_rank=None)")
     parser.add_argument("--ensc_lambda1", type=float, default=0.01, help="L1 regularization weight for ENSC")
     parser.add_argument("--ensc_lambda2", type=float, default=0.001, help="L2 regularization weight for ENSC")
     parser.add_argument("--cosine_dedup_threshold", type=float, default=0.995, help="Cosine similarity threshold for removing near-duplicate decoder directions")
@@ -181,10 +184,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--geo_gw_epsilon", type=float, default=0.1, help="Entropic regularization for Gromov-Wasserstein")
     parser.add_argument("--geo_sinkhorn_epsilon", type=float, default=0.1, help="Entropic regularization for Sinkhorn")
     parser.add_argument("--geo_sinkhorn_max_iter", type=int, default=1000, help="Maximum iterations for Sinkhorn algorithm")
-    parser.add_argument("--geo_per_point_distortion_threshold", type=float, default=0.5, help="Per-point distortion threshold for filtering")
+    parser.add_argument("--geo_threshold_mode", type=str, default="normalized", choices=["normalized", "raw"],
+                        help="Threshold mode: 'normalized' applies threshold to [0,1] normalized scores per cluster, 'raw' applies threshold to raw values across all clusters")
+    parser.add_argument("--geo_per_point_threshold", type=float, default=0.5,
+                        help="Per-point threshold for filtering. If mode='normalized', this is applied to [0,1] normalized scores (default 0.5). If mode='raw', this is applied to raw GW contribution values.")
     parser.add_argument("--geo_optimal_distortion_threshold", type=float, default=1.0, help="Optimal GW distortion threshold above which cluster fit is poor")
-    parser.add_argument("--geo_filter_metrics", type=str, nargs="+", default=["gw_full"],
-                        choices=["gw_full"],
+    parser.add_argument("--geo_filter_metrics", type=str, nargs="+", default=["gw_full"], choices=["gw_full"],
                         help="Per-point distortion metric to use for filtering (currently only gw_full supported)")
 
     args, _ = parser.parse_known_args()
@@ -474,6 +479,7 @@ for site_idx, site in enumerate(sites):
         model=model,
         cache=cache,
         data_source=data_source,
+        site_dir=site_dir,
         component_beliefs_flat=component_belief_flat_cache,
         component_order=component_order,
         component_metadata=component_meta_map,
@@ -548,6 +554,65 @@ for site_idx, site in enumerate(sites):
                     )
                     result.add_geometry_refinement(refined_result)
                     print(f"{site}: geometry refinement complete")
+
+                    # Compute refined R² and assignment after geometry refinement
+                    if component_order and component_belief_flat_cache:
+                        from clustering.analysis import ClusterAnalyzer
+
+                        # Need to reconstruct the data that was used in the pipeline
+                        # Get the feature activations and other data from result
+                        if hasattr(result, '_epdf_data') and result._epdf_data:
+                            acts_flat = result._epdf_data['acts_flat']
+                            decoder_dirs_full = result._epdf_data['decoder_dirs']
+
+                            # Encode features
+                            from mess3_gmg_analysis_utils import sae_encode_features
+                            ckpt = torch.load(sae_path, map_location=device, weights_only=False)
+                            if args.sae_type == "top_k":
+                                from BatchTopK.sae import TopKSAE
+                                sae = TopKSAE(ckpt["cfg"]).to(device)
+                            else:
+                                from BatchTopK.sae import VanillaSAE
+                                sae = VanillaSAE(ckpt["cfg"]).to(device)
+                            sae.load_state_dict(ckpt["state_dict"])
+                            sae.eval()
+
+                            with torch.no_grad():
+                                feature_acts, _, _ = sae_encode_features(sae, acts_flat)
+                            feature_np = feature_acts.detach().cpu().numpy()
+
+                            analyzer = ClusterAnalyzer(config.analysis_config)
+
+                            # Filter to active latents for refined R²
+                            # refined_assignments has shape (n_active_latents, n_clusters)
+                            active_feature_np = feature_np[:, result.active_indices]
+                            active_decoder_dirs = decoder_dirs_full[result.active_indices]
+                            active_cluster_labels = result.cluster_labels[result.active_indices]
+
+                            # Compute refined R²
+                            result.belief_r2_summary_refined = analyzer.compute_belief_r2(
+                                acts_flat,
+                                active_feature_np,
+                                active_decoder_dirs,
+                                active_cluster_labels,
+                                result.n_clusters,
+                                component_belief_flat_cache,
+                                component_order,
+                                config.belief_seeding.ridge_alpha,
+                                site,
+                                soft_assignments=refined_result.refined_assignments,
+                                assignment_name="refined",
+                            )
+
+                            # Compute optimal assignment for refined R²
+                            if result.belief_r2_summary_refined:
+                                result.component_assignment_refined = analyzer.compute_optimal_component_assignment(
+                                    result.belief_r2_summary_refined,
+                                    component_order,
+                                    result.n_clusters,
+                                )
+                                print(f"{site}: refined R² and optimal assignment computed")
+
                 except Exception as e:
                     print(f"{site}: geometry refinement failed: {e}")
                     import traceback

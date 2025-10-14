@@ -17,10 +17,13 @@ python -u fit_mess3_gmg.py \
     --act_fn "relu" \
     --sim_metric "cosine" \
     --clustering_method "k_subspaces" \
+    --subspace_variance_threshold 0.85 \
+    --subspace_gap_threshold 2.0 \
+    --min_clusters 6 \
     --max_clusters 12 \
     --plot_eigengap \
-    --ensc_lambda1 0.01 \
-    --ensc_lambda2 0.001 \
+    --ensc_lambda1 0.001 \
+    --ensc_lambda2 0.0005 \
     --cosine_dedup_threshold 0.99 \
     --sample_sequences 1024 \
     --max_activations 50000 \
@@ -29,12 +32,17 @@ python -u fit_mess3_gmg.py \
     --latent_activity_threshold 0.01 \
     --latent_activation_eps 1e-6 \
     --activation_batches 8 \
-    --subspace_n_clusters 8 \
     --refine_with_geometries \
     --geo_include_circle \
     --geo_filter_metrics gw_full \
     --geo_sinkhorn_max_iter 5000 \
-    --geo_sinkhorn_epsilon 0.2
+    --geo_sinkhorn_epsilon 0.2 \
+    --geo_threshold_mode raw \
+    --geo_per_point_threshold 0.0005
+#    --sae_type "vanilla" \
+#    --force_lambda 0.05
+
+#    --subspace_n_clusters 6 \
 
 #    --build_cluster_epdfs \
 #    --epdf_sites layer_0 layer_1 layer_2 \

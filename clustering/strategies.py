@@ -117,6 +117,7 @@ class SpectralClusteringStrategy(ClusteringStrategy):
         cluster_labels, n_clusters = spectral_clustering_with_eigengap(
             sim_matrix,
             max_clusters=min(params.max_clusters, decoder_active.shape[0]),
+            min_clusters=params.min_clusters,
             random_state=config.seed,
             plot=params.plot_eigengap,
             plot_path=eig_plot,
@@ -208,33 +209,16 @@ class KSubspacesClusteringStrategy(ClusteringStrategy):
         """Run k-subspaces clustering."""
         params: SubspaceParams = config.subspace_params
 
-        # Determine protected positions for deduplication
-        protected_positions = None
-        if config.belief_seeding.protect_seed_duplicates and belief_seed_clusters:
-            protected_positions = sorted({
-                int(idx) for indices in belief_seed_clusters.values() for idx in indices
-            })
+        # decoder_active is already normalized and deduplicated by the pipeline
+        decoder_normalized = decoder_active
+        kept_indices = np.arange(len(decoder_active))  # All indices kept (already deduped)
+        normalized_to_full_idx = active_indices
 
-        # Normalize and deduplicate
-        decoder_normalized, kept_indices = normalize_and_deduplicate(
-            decoder_active,
-            cosine_threshold=params.cosine_dedup_threshold,
-            protected_indices=protected_positions,
-        )
-
-        # Map to full indices
-        normalized_to_full_idx = active_indices[kept_indices]
-
-        # Map seed clusters to normalized space
+        # Belief seed clusters are already in correct space (no remapping needed)
         initial_clusters_normalized: Dict[int, List[int]] = {}
         if belief_seed_clusters:
-            index_map = {int(active_idx): int(norm_idx) for norm_idx, active_idx in enumerate(kept_indices)}
-            for cluster_id, active_list in belief_seed_clusters.items():
-                normalized_list = [index_map[int(idx)] for idx in active_list if int(idx) in index_map]
-                if normalized_list:
-                    initial_clusters_normalized[cluster_id] = normalized_list
-
-        print(f"{site}: after deduplication, kept {len(decoder_normalized)}/{len(decoder_active)} active latents")
+            # Clusters are already using indices in the deduplicated active space
+            initial_clusters_normalized = belief_seed_clusters
 
         # Handle trivial cases
         if len(decoder_normalized) == 0:
@@ -306,6 +290,8 @@ class KSubspacesClusteringStrategy(ClusteringStrategy):
                 random_state=config.seed,
                 initial_clusters=initial_clusters_normalized if initial_clusters_normalized else None,
                 lock_mode=params.seed_lock_mode,
+                variance_threshold=params.variance_threshold,
+                gap_threshold=params.gap_threshold,
             )
 
             if params.n_clusters is None or params.subspace_rank is None:
@@ -321,20 +307,19 @@ class KSubspacesClusteringStrategy(ClusteringStrategy):
                     auto_info.append(f"r={subspace_result.subspace_rank}")
                 print(f"{site}: {', '.join(auto_info)}, error={subspace_result.total_reconstruction_error:.4f}")
 
+                # Print rank estimation details if available
+                if params.subspace_rank is None and subspace_result.rank_estimation_details:
+                    for cluster_id in sorted(subspace_result.rank_estimation_details.keys()):
+                        details = subspace_result.rank_estimation_details[cluster_id]
+                        print(f"  Cluster {cluster_id}: variance→r={details.variance_rank}, "
+                              f"gap→r={details.gap_rank}, final→r={details.final_rank} "
+                              f"(limited by {details.limiting_method})")
+
         # Add diagnostics
         subspace_result = add_diagnostics_to_result(subspace_result, decoder_normalized)
 
-        # Map labels back to full active set (including duplicates)
-        cluster_labels_active = np.full(len(decoder_active), -1, dtype=int)
-        cluster_labels_active[kept_indices] = subspace_result.cluster_labels
-
-        # Assign duplicates to nearest kept point's cluster
-        for dup_idx in range(len(decoder_active)):
-            if cluster_labels_active[dup_idx] == -1:
-                dup_vec = decoder_active[dup_idx]
-                similarities = np.abs(np.dot(decoder_normalized, dup_vec))
-                nearest_kept = np.argmax(similarities)
-                cluster_labels_active[dup_idx] = subspace_result.cluster_labels[nearest_kept]
+        # decoder_active is already deduplicated, so labels map directly
+        cluster_labels_active = subspace_result.cluster_labels
 
         # Build diagnostics
         diagnostics = self._build_diagnostics(subspace_result, params, config)
@@ -442,6 +427,19 @@ class KSubspacesClusteringStrategy(ClusteringStrategy):
                 int(k): int(v) for k, v in subspace_result.cluster_ranks.items()
             }
 
+        if subspace_result.rank_estimation_details is not None:
+            diagnostics["rank_estimation_details"] = {
+                int(k): {
+                    "variance_rank": v.variance_rank,
+                    "gap_rank": v.gap_rank,
+                    "final_rank": v.final_rank,
+                    "limiting_method": v.limiting_method,
+                }
+                for k, v in subspace_result.rank_estimation_details.items()
+            }
+            diagnostics["variance_threshold"] = params.variance_threshold
+            diagnostics["gap_threshold"] = params.gap_threshold
+
         if subspace_result.principal_angles is not None:
             principal_angles_deg = {}
             min_principal_angles = {}
@@ -487,16 +485,10 @@ class ENSCClusteringStrategy(ClusteringStrategy):
         """Run ENSC clustering."""
         params: ENSCParams = config.ensc_params
 
-        # Normalize and deduplicate
-        decoder_normalized, kept_indices = normalize_and_deduplicate(
-            decoder_active,
-            cosine_threshold=params.cosine_dedup_threshold,
-            protected_indices=None,
-        )
-
-        normalized_to_full_idx = active_indices[kept_indices]
-
-        print(f"{site}: after deduplication, kept {len(decoder_normalized)}/{len(decoder_active)} active latents")
+        # decoder_active is already normalized and deduplicated by the pipeline
+        decoder_normalized = decoder_active
+        kept_indices = np.arange(len(decoder_active))  # All indices kept (already deduped)
+        normalized_to_full_idx = active_indices
 
         # Handle trivial cases
         if len(decoder_normalized) == 0:
@@ -527,6 +519,8 @@ class ENSCClusteringStrategy(ClusteringStrategy):
             lambda_1=params.lambda1,
             lambda_2=params.lambda2,
             random_state=config.seed,
+            variance_threshold=params.variance_threshold,
+            gap_threshold=params.gap_threshold,
         )
 
         if params.n_clusters is None or params.subspace_rank is None:
@@ -542,20 +536,19 @@ class ENSCClusteringStrategy(ClusteringStrategy):
                 auto_info.append(f"r={subspace_result.subspace_rank}")
             print(f"{site}: {', '.join(auto_info)}, error={subspace_result.total_reconstruction_error:.4f}")
 
+            # Print rank estimation details if available
+            if params.subspace_rank is None and subspace_result.rank_estimation_details:
+                for cluster_id in sorted(subspace_result.rank_estimation_details.keys()):
+                    details = subspace_result.rank_estimation_details[cluster_id]
+                    print(f"  Cluster {cluster_id}: variance→r={details.variance_rank}, "
+                          f"gap→r={details.gap_rank}, final→r={details.final_rank} "
+                          f"(limited by {details.limiting_method})")
+
         # Add diagnostics
         subspace_result = add_diagnostics_to_result(subspace_result, decoder_normalized)
 
-        # Map labels back to full active set
-        cluster_labels_active = np.full(len(decoder_active), -1, dtype=int)
-        cluster_labels_active[kept_indices] = subspace_result.cluster_labels
-
-        # Assign duplicates
-        for dup_idx in range(len(decoder_active)):
-            if cluster_labels_active[dup_idx] == -1:
-                dup_vec = decoder_active[dup_idx]
-                similarities = np.abs(np.dot(decoder_normalized, dup_vec))
-                nearest_kept = np.argmax(similarities)
-                cluster_labels_active[dup_idx] = subspace_result.cluster_labels[nearest_kept]
+        # decoder_active is already deduplicated, so labels map directly
+        cluster_labels_active = subspace_result.cluster_labels
 
         # Build diagnostics (similar to k-subspaces)
         diagnostics = {
@@ -570,6 +563,19 @@ class ENSCClusteringStrategy(ClusteringStrategy):
             diagnostics["cluster_ranks"] = {
                 int(k): int(v) for k, v in subspace_result.cluster_ranks.items()
             }
+
+        if subspace_result.rank_estimation_details is not None:
+            diagnostics["rank_estimation_details"] = {
+                int(k): {
+                    "variance_rank": v.variance_rank,
+                    "gap_rank": v.gap_rank,
+                    "final_rank": v.final_rank,
+                    "limiting_method": v.limiting_method,
+                }
+                for k, v in subspace_result.rank_estimation_details.items()
+            }
+            diagnostics["variance_threshold"] = params.variance_threshold
+            diagnostics["gap_threshold"] = params.gap_threshold
 
         # Compute soft weights from self-representation matrix or reconstruction errors
         soft_weights = self._compute_ensc_soft_weights(

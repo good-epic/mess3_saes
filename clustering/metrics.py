@@ -141,19 +141,194 @@ class BeliefR2Evaluator(MetricEvaluator):
         """
         metrics = {}
 
-        if result.belief_r2_summary is None:
+        # Hard R²
+        if result.belief_r2_summary is not None:
+            all_r2_values = []
+            for cluster_id, cluster_r2 in result.belief_r2_summary.items():
+                for comp_name, comp_r2 in cluster_r2.items():
+                    mean_r2 = comp_r2.get("mean_r2", 0.0)
+                    metrics[f"hard_cluster_{cluster_id}_{comp_name}_r2"] = mean_r2
+                    all_r2_values.append(mean_r2)
+
+            if all_r2_values:
+                metrics["hard_mean_belief_r2"] = float(np.mean(all_r2_values))
+                metrics["hard_min_belief_r2"] = float(np.min(all_r2_values))
+
+        # Soft R²
+        if result.belief_r2_summary_soft is not None:
+            all_r2_values = []
+            for cluster_id, cluster_r2 in result.belief_r2_summary_soft.items():
+                for comp_name, comp_r2 in cluster_r2.items():
+                    mean_r2 = comp_r2.get("mean_r2", 0.0)
+                    metrics[f"soft_cluster_{cluster_id}_{comp_name}_r2"] = mean_r2
+                    all_r2_values.append(mean_r2)
+
+            if all_r2_values:
+                metrics["soft_mean_belief_r2"] = float(np.mean(all_r2_values))
+                metrics["soft_min_belief_r2"] = float(np.min(all_r2_values))
+
+        # Refined R² (after geometry refinement)
+        if result.belief_r2_summary_refined is not None:
+            all_r2_values = []
+            for cluster_id, cluster_r2 in result.belief_r2_summary_refined.items():
+                for comp_name, comp_r2 in cluster_r2.items():
+                    mean_r2 = comp_r2.get("mean_r2", 0.0)
+                    metrics[f"refined_cluster_{cluster_id}_{comp_name}_r2"] = mean_r2
+                    all_r2_values.append(mean_r2)
+
+            if all_r2_values:
+                metrics["refined_mean_belief_r2"] = float(np.mean(all_r2_values))
+                metrics["refined_min_belief_r2"] = float(np.min(all_r2_values))
+
+        return metrics
+
+
+class OptimalAssignmentEvaluator(MetricEvaluator):
+    """Evaluates optimal component-to-cluster assignments."""
+
+    def evaluate(self, result: 'ClusteringResult', **kwargs) -> Dict[str, float]:
+        """Evaluate optimal assignment metrics.
+
+        Args:
+            result: ClusteringResult (should have component_assignment fields)
+            **kwargs: Ignored
+
+        Returns:
+            Dict with assignment metrics
+        """
+        metrics = {}
+
+        # Hard assignment
+        if result.component_assignment is not None:
+            assignment = result.component_assignment
+            metrics["hard_assignment_total_r2"] = float(assignment.get("total_r2", 0.0))
+            metrics["hard_assignment_mean_r2"] = float(assignment.get("mean_assigned_r2", 0.0))
+
+            # Per-component metrics
+            for comp_name, cluster_id in assignment.get("assignments", {}).items():
+                metrics[f"comp_{comp_name}_hard_cluster"] = int(cluster_id)
+                score = assignment.get("assignment_scores", {}).get(comp_name, 0.0)
+                metrics[f"comp_{comp_name}_hard_r2"] = float(score)
+
+        # Soft assignment
+        if result.component_assignment_soft is not None:
+            assignment = result.component_assignment_soft
+            metrics["soft_assignment_total_r2"] = float(assignment.get("total_r2", 0.0))
+            metrics["soft_assignment_mean_r2"] = float(assignment.get("mean_assigned_r2", 0.0))
+
+            # Per-component metrics
+            for comp_name, cluster_id in assignment.get("assignments", {}).items():
+                metrics[f"comp_{comp_name}_soft_cluster"] = int(cluster_id)
+                score = assignment.get("assignment_scores", {}).get(comp_name, 0.0)
+                metrics[f"comp_{comp_name}_soft_r2"] = float(score)
+
+        # Refined assignment (after geometry refinement)
+        if result.component_assignment_refined is not None:
+            assignment = result.component_assignment_refined
+            metrics["refined_assignment_total_r2"] = float(assignment.get("total_r2", 0.0))
+            metrics["refined_assignment_mean_r2"] = float(assignment.get("mean_assigned_r2", 0.0))
+
+            # Per-component metrics
+            for comp_name, cluster_id in assignment.get("assignments", {}).items():
+                metrics[f"comp_{comp_name}_refined_cluster"] = int(cluster_id)
+                score = assignment.get("assignment_scores", {}).get(comp_name, 0.0)
+                metrics[f"comp_{comp_name}_refined_r2"] = float(score)
+
+        return metrics
+
+
+class ClusterQualityEvaluator(MetricEvaluator):
+    """Evaluates cluster quality using silhouette and Davies-Bouldin scores."""
+
+    def evaluate(
+        self,
+        result: 'ClusteringResult',
+        decoder_dirs: Optional[np.ndarray] = None,
+        **kwargs
+    ) -> Dict[str, float]:
+        """Evaluate cluster quality metrics.
+
+        Args:
+            result: ClusteringResult
+            decoder_dirs: Full decoder directions (n_latents, d_model)
+            **kwargs: Ignored
+
+        Returns:
+            Dict with cluster quality metrics
+        """
+        metrics = {}
+
+        if decoder_dirs is None:
             return metrics
 
-        all_r2_values = []
-        for cluster_id, cluster_r2 in result.belief_r2_summary.items():
-            for comp_name, comp_r2 in cluster_r2.items():
-                mean_r2 = comp_r2.get("mean_r2", 0.0)
-                metrics[f"cluster_{cluster_id}_{comp_name}_r2"] = mean_r2
-                all_r2_values.append(mean_r2)
+        from sklearn.metrics import silhouette_score, davies_bouldin_score, calinski_harabasz_score
 
-        if all_r2_values:
-            metrics["mean_belief_r2"] = float(np.mean(all_r2_values))
-            metrics["min_belief_r2"] = float(np.min(all_r2_values))
+        # Filter to active latents only
+        active_mask = result.cluster_labels >= 0
+        if active_mask.sum() < 2:
+            return metrics
+
+        active_labels = result.cluster_labels[active_mask]
+        active_decoder = decoder_dirs[active_mask]
+
+        # Need at least 2 clusters
+        n_unique_clusters = len(np.unique(active_labels))
+        if n_unique_clusters < 2:
+            return metrics
+
+        # Ensure each cluster has at least 2 samples
+        for label in np.unique(active_labels):
+            if (active_labels == label).sum() < 2:
+                # Skip if any cluster has < 2 samples
+                return metrics
+
+        try:
+            # Normalize decoder directions for better metric behavior
+            active_decoder_norm = active_decoder / (np.linalg.norm(active_decoder, axis=1, keepdims=True) + 1e-8)
+
+            # Silhouette score (higher is better, range [-1, 1])
+            silhouette = silhouette_score(active_decoder_norm, active_labels, metric='cosine')
+            metrics["hard_clustering_silhouette_score"] = float(silhouette)
+
+            # Davies-Bouldin score (lower is better, range [0, inf))
+            davies_bouldin = davies_bouldin_score(active_decoder_norm, active_labels)
+            metrics["hard_clustering_davies_bouldin_score"] = float(davies_bouldin)
+
+            # Calinski-Harabasz score (higher is better, range [0, inf))
+            calinski = calinski_harabasz_score(active_decoder_norm, active_labels)
+            metrics["hard_clustering_calinski_harabasz_score"] = float(calinski)
+
+        except Exception as e:
+            # Silently skip if computation fails
+            pass
+
+        return metrics
+
+
+class ActivationCoherenceEvaluator(MetricEvaluator):
+    """Evaluates activation coherence within and between clusters."""
+
+    def evaluate(self, result: 'ClusteringResult', **kwargs) -> Dict[str, float]:
+        """Evaluate activation coherence metrics.
+
+        Args:
+            result: ClusteringResult (should have coherence_metrics fields)
+            **kwargs: Ignored
+
+        Returns:
+            Dict with coherence metrics
+        """
+        metrics = {}
+
+        # Hard coherence
+        if result.coherence_metrics is not None:
+            for key, value in result.coherence_metrics.items():
+                metrics[f"hard_{key}"] = float(value)
+
+        # Soft coherence
+        if result.coherence_metrics_soft is not None:
+            for key, value in result.coherence_metrics_soft.items():
+                metrics[f"soft_{key}"] = float(value)
 
         return metrics
 
@@ -198,6 +373,9 @@ def create_default_evaluators() -> List[MetricEvaluator]:
     #     )
 
     evaluators.append(BeliefR2Evaluator())
+    evaluators.append(OptimalAssignmentEvaluator())
+    evaluators.append(ClusterQualityEvaluator())
+    evaluators.append(ActivationCoherenceEvaluator())
 
     return evaluators
 

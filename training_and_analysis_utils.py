@@ -1793,13 +1793,14 @@ def build_similarity_matrix(data, method="cosine", latent_acts=None, phi_compute
         raise ValueError(f"Unknown similarity method: {method}")
 
 
-def spectral_clustering_with_eigengap(sim_matrix, max_clusters=10, random_state=0, plot=False, plot_path=None):
+def spectral_clustering_with_eigengap(sim_matrix, max_clusters=10, min_clusters=2, random_state=0, plot=False, plot_path=None):
     """
     Run spectral clustering using dense similarity matrix and eigengap heuristic.
 
     Args:
         sim_matrix (ndarray): n x n similarity matrix (cosine sim).
         max_clusters (int): check eigengaps among first max_clusters eigenvalues.
+        min_clusters (int): minimum number of clusters to select.
         random_state (int): for k-means stability.
         plot (bool): if True, plot eigenvalues and highlight the chosen gap.
 
@@ -1824,10 +1825,10 @@ def spectral_clustering_with_eigengap(sim_matrix, max_clusters=10, random_state=
     usable_count = min(eigvals.shape[0], max_clusters + 1)
     gaps = np.diff(eigvals[:usable_count])
     if gaps.size == 0:
-        best_k = 1
+        best_k = min_clusters
     else:
-        best_k = int(np.argmax(gaps) + 1)
-    print(f"Chosen number of clusters via eigengap: k={best_k}")
+        best_k = max(min_clusters, int(np.argmax(gaps) + 1))
+    print(f"Chosen number of clusters via eigengap: k={best_k} (min={min_clusters}, max={max_clusters})")
 
     if plot or plot_path is not None:
         fig = plt.figure(figsize=(6,4))

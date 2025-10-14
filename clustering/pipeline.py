@@ -8,6 +8,7 @@ import torch
 from BatchTopK.sae import TopKSAE, VanillaSAE
 from multipartite_utils import collect_latent_activity_data
 from mess3_gmg_analysis_utils import sae_encode_features
+from subspace_clustering_utils import normalize_and_deduplicate
 
 from .config import ClusteringConfig
 from .results import ClusteringResult
@@ -34,6 +35,7 @@ class SiteClusteringPipeline:
         model,
         cache: Dict,
         data_source,
+        site_dir: str,
         component_beliefs_flat: Optional[Dict[str, np.ndarray]] = None,
         component_order: Optional[List[str]] = None,
         component_metadata: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -47,6 +49,7 @@ class SiteClusteringPipeline:
             model: Transformer model
             cache: Activation cache from model
             data_source: Data source for sampling
+            site_dir: Output directory for site-specific files
             component_beliefs_flat: Component beliefs (for seeding/R²)
             component_order: Ordered component names
             component_metadata: Component metadata (for EPDFs)
@@ -138,6 +141,27 @@ class SiteClusteringPipeline:
             )
 
         decoder_active = decoder_dirs[active_indices]
+        n_active_before_dedup = len(decoder_active)
+
+        # Normalize and deduplicate upfront (before any other processing)
+        # Determine protected positions for deduplication (belief-seeded indices if applicable)
+        protected_positions = None
+        if config.belief_seeding.enabled and config.belief_seeding.protect_seed_duplicates:
+            # Note: We can't protect belief seeds yet since we haven't computed them
+            # Belief seeding will happen after dedup, so protection isn't applicable here
+            pass
+
+        decoder_normalized, kept_indices_in_active = normalize_and_deduplicate(
+            decoder_active,
+            cosine_threshold=config.subspace_params.cosine_dedup_threshold,
+            protected_indices=protected_positions,
+        )
+
+        # Update active_indices to refer to kept (deduplicated) indices
+        active_indices = active_indices[kept_indices_in_active]
+        decoder_active = decoder_normalized  # Use deduplicated, normalized decoder
+
+        print(f"{site}: after deduplication, kept {len(decoder_active)}/{n_active_before_dedup} active latents")
 
         # Belief-aligned seeding
         belief_seeder = BeliefSeeder(config.belief_seeding)
@@ -182,19 +206,10 @@ class SiteClusteringPipeline:
                 active_indices,
                 config,
                 site,
-                "",  # site_dir not needed during clustering
+                site_dir,
                 latent_activity_matrix=latent_activity_matrix,
                 belief_seed_clusters=belief_seed_result.seed_clusters_active if belief_seed_result and belief_seed_result.succeeded else None,
                 component_order=component_order,
-            )
-
-        # Update belief seeding after deduplication (for subspace methods)
-        if belief_seed_result and belief_seed_result.succeeded and strategy_result.kept_indices is not None:
-            belief_seed_result = belief_seeder.update_after_deduplication(
-                belief_seed_result,
-                strategy_result.kept_indices,
-                active_indices,
-                site,
             )
 
         # Map labels to full set
@@ -240,8 +255,12 @@ class SiteClusteringPipeline:
                 config.sampling_config.min_cluster_samples,
             )
 
-        # Belief R² scoring
+        # Belief R² scoring (hard + soft assignments)
         belief_r2_summary = None
+        belief_r2_summary_soft = None
+        component_assignment = None
+        component_assignment_soft = None
+
         if component_beliefs_flat and component_order:
             # Re-subsample beliefs if needed
             component_beliefs_for_scoring = {}
@@ -251,6 +270,7 @@ class SiteClusteringPipeline:
                     comp_flat = comp_flat[subsample_idx]
                 component_beliefs_for_scoring[comp_name] = comp_flat
 
+            # Compute hard R²
             belief_r2_summary = analyzer.compute_belief_r2(
                 acts_flat,
                 feature_np_for_r2,
@@ -261,7 +281,76 @@ class SiteClusteringPipeline:
                 component_order,
                 config.belief_seeding.ridge_alpha,
                 site,
+                soft_assignments=None,
+                assignment_name="hard",
             )
+
+            # Compute optimal assignment for hard R²
+            if belief_r2_summary:
+                component_assignment = analyzer.compute_optimal_component_assignment(
+                    belief_r2_summary,
+                    component_order,
+                    strategy_result.n_clusters,
+                )
+
+            # Compute soft R² if soft assignments exist
+            if strategy_result.soft_weights is not None:
+                # Filter to active latents for soft R²
+                # soft_weights has shape (n_active_latents, n_clusters)
+                # Need to pass filtered data matching this shape
+                active_feature_acts = feature_np_for_r2[:, active_indices]
+                active_decoder_dirs = decoder_dirs[active_indices]
+                active_cluster_labels = cluster_labels_full[active_indices]
+
+                belief_r2_summary_soft = analyzer.compute_belief_r2(
+                    acts_flat,
+                    active_feature_acts,
+                    active_decoder_dirs,
+                    active_cluster_labels,
+                    strategy_result.n_clusters,
+                    component_beliefs_for_scoring,
+                    component_order,
+                    config.belief_seeding.ridge_alpha,
+                    site,
+                    soft_assignments=strategy_result.soft_weights,
+                    assignment_name="soft",
+                )
+
+                # Compute optimal assignment for soft R²
+                if belief_r2_summary_soft:
+                    component_assignment_soft = analyzer.compute_optimal_component_assignment(
+                        belief_r2_summary_soft,
+                        component_order,
+                        strategy_result.n_clusters,
+                    )
+
+        # Activation coherence metrics
+        coherence_metrics = None
+        coherence_metrics_soft = None
+        if feature_np_for_r2 is not None and cluster_labels_full is not None:
+            # Hard coherence
+            coherence_metrics = analyzer.compute_activation_coherence_metrics(
+                feature_np_for_r2,
+                cluster_labels_full,
+                strategy_result.n_clusters,
+                soft_assignments=None,
+            )
+
+            # Soft coherence (if soft assignments exist)
+            if strategy_result.soft_weights is not None:
+                # Filter to active latents only for soft coherence
+                # soft_weights shape: (n_active_latents, n_clusters)
+                # feature_np_for_r2 shape: (n_samples, n_latents_total)
+                # We need to filter feature_np_for_r2 to only active latents
+                active_feature_acts = feature_np_for_r2[:, active_indices]
+                active_cluster_labels = cluster_labels_full[active_indices]
+
+                coherence_metrics_soft = analyzer.compute_activation_coherence_metrics(
+                    active_feature_acts,
+                    active_cluster_labels,
+                    strategy_result.n_clusters,
+                    soft_assignments=strategy_result.soft_weights,
+                )
 
         # Build result
         result = ClusteringResult(
@@ -278,6 +367,11 @@ class SiteClusteringPipeline:
             cluster_stats=cluster_stats,
             belief_seed_metadata=belief_seed_result.metadata if belief_seed_result and belief_seed_result.succeeded else None,
             belief_r2_summary=belief_r2_summary,
+            belief_r2_summary_soft=belief_r2_summary_soft,
+            component_assignment=component_assignment,
+            component_assignment_soft=component_assignment_soft,
+            coherence_metrics=coherence_metrics,
+            coherence_metrics_soft=coherence_metrics_soft,
             subspace_diagnostics=strategy_result.diagnostics,
             pca_results=pca_results,
         )
