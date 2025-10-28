@@ -283,26 +283,29 @@ if mlflow_enabled:
             run_name=mlflow_run_name,
         )
     except Exception as mlflow_exc:
-        raise RuntimeError(f"Failed to initialise MLflow run: {mlflow_exc}") from mlflow_exc
+        print(f"fit_mess3_gmg: MLflow disabled for this run ({mlflow_exc})")
+        mlflow_enabled = False
+        mlflow_run_id = None
 
-    log_script_params("fit_mess3_gmg", args)
-    mlflow_module.log_param("fit_mess3_gmg_run_name", mlflow_run_name)
-    mlflow_module.log_param("fit_mess3_gmg_run_id", mlflow_run_id)
-    tracking_host = os.getenv("DATABRICKS_HOST")
-    if tracking_host:
-        mlflow_module.log_param("fit_mess3_gmg_tracking_uri", tracking_host)
+    if mlflow_run_id is not None:
+        log_script_params("fit_mess3_gmg", args)
+        mlflow_module.log_param("fit_mess3_gmg_run_name", mlflow_run_name)
+        mlflow_module.log_param("fit_mess3_gmg_run_id", mlflow_run_id)
+        tracking_host = os.getenv("DATABRICKS_HOST")
+        if tracking_host:
+            mlflow_module.log_param("fit_mess3_gmg_tracking_uri", tracking_host)
 
-    import atexit  # noqa: E402
+        import atexit  # noqa: E402
 
-    def _end_run_at_exit() -> None:
-        if mlflow_module.active_run():
-            mlflow_module.end_run()
+        def _end_run_at_exit() -> None:
+            if mlflow_module.active_run():
+                mlflow_module.end_run()
 
-    atexit.register(_end_run_at_exit)
+        atexit.register(_end_run_at_exit)
 
-    # PCA plots are not useful for logging runs; skip them automatically when MLflow logging is active.
-    args.skip_pca_plots = True
-    print("MLflow logging enabled; skipping PCA plot generation.")
+        # PCA plots are not useful for logging runs; skip them automatically when MLflow logging is active.
+        args.skip_pca_plots = True
+        print("MLflow logging enabled; skipping PCA plot generation.")
 
     def _extract_numeric(data: Dict[str, Any]) -> Dict[str, Any]:
         """Return a nested dictionary containing only numeric leaves."""
@@ -328,8 +331,9 @@ if mlflow_enabled:
 
 else:
     mlflow_enabled = False
+    mlflow_run_id = None
 
-mlflow_active_run = mlflow_enabled
+mlflow_active_run = mlflow_enabled and mlflow_run_id is not None
 
 process_cfg_raw, components, data_source = _load_process_stack(args, PRESET_PROCESS_CONFIGS)
 if isinstance(data_source, MultipartiteSampler):

@@ -129,27 +129,27 @@ parser.add_argument("--seed", type=int, default=0, help="Random seed for analysi
 parser.add_argument("--d_head", type=int, default=32)
 
 # SAE hyperparameters
-parser.add_argument("--dict_mul", type=int, default=4)
-parser.add_argument("--k", type=int, nargs="+", default=[3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 19, 22, 25])
-#parser.add_argument("--l1_coeff_seq", type=float, nargs="+", default=[0.01, 0.015, 0.02, 0.025, 0.05, 0.075] + [round(x, 3) for x in np.arange(0.1, 0.151, 0.005)])
-#parser.add_argument("--l1_coeff_beliefs", type=float, nargs="+", default=[1e-3, 0.01, 0.015, 0.02, 0.025, 0.05] + [round(x, 2) for x in np.arange(0.1, 0.651, 0.05)])
-parser.add_argument("--l1_coeff_seq", type=float, nargs="+", default=[0.001, 0.005, 0.01, 0.05, 0.1, 0.15])
-parser.add_argument("--l1_coeff_beliefs", type=float, nargs="+", default=None)
-parser.add_argument("--input_unit_norm", dest="input_unit_norm", action="store_true", default=True)
-parser.add_argument("--no_input_unit_norm", dest="input_unit_norm", action="store_false")
-parser.add_argument("--n_batches_to_dead", type=int, default=5)
-parser.add_argument("--top_k_aux", type=int, default=None)
-parser.add_argument("--aux_penalty", type=float, default=0.03125)
+# parser.add_argument("--dict_mul", type=int, default=4)
+# parser.add_argument("--k", type=int, nargs="+", default=[3, 4, 5, 6, 7, 8, 10, 12, 14, 16, 19, 22, 25])
+# #parser.add_argument("--l1_coeff_seq", type=float, nargs="+", default=[0.01, 0.015, 0.02, 0.025, 0.05, 0.075] + [round(x, 3) for x in np.arange(0.1, 0.151, 0.005)])
+# #parser.add_argument("--l1_coeff_beliefs", type=float, nargs="+", default=[1e-3, 0.01, 0.015, 0.02, 0.025, 0.05] + [round(x, 2) for x in np.arange(0.1, 0.651, 0.05)])
+# parser.add_argument("--l1_coeff_seq", type=float, nargs="+", default=[0.001, 0.005, 0.01, 0.05, 0.1, 0.15])
+# parser.add_argument("--l1_coeff_beliefs", type=float, nargs="+", default=None)
+# parser.add_argument("--input_unit_norm", dest="input_unit_norm", action="store_true", default=True)
+# parser.add_argument("--no_input_unit_norm", dest="input_unit_norm", action="store_false")
+# parser.add_argument("--n_batches_to_dead", type=int, default=5)
+# parser.add_argument("--top_k_aux", type=int, default=None)
+# parser.add_argument("--aux_penalty", type=float, default=0.03125)
 parser.add_argument("--bandwidth", type=float, default=0.001)
 
 # SAE training loop controls
 parser.add_argument("--seq_len", type=int, default=None, help="Sequence length used for analysis/visualization batches; defaults to n_ctx",)
 parser.add_argument("--analysis_batch_size", type=int, default=8192, help="Batch size for exploratory sampling from the multipartite stack",)
-parser.add_argument("--fig_out_dir", type=str, default="outputs/reports/multipartite_002", help="Directory to save matplotlib figures")
+parser.add_argument("--fig_out_dir", type=str, default="outputs/reports/multipartite_003e", help="Directory to save matplotlib figures")
 parser.add_argument("--plot_pcas", action="store_true", default=False, help="Plot all the 2 and 3 combinations of PCs")
 
 parser.add_argument("--linear_prediction_layer", type=str, default="layer_2", help="Layer name to use for linear-prediction visualizations, e.g. 'layer_2'")
-parser.add_argument("--sae_folder", type=str, default="outputs/saes/multipartite_002", help="Folder containing SAE checkpoints for EPDF analysis")
+parser.add_argument("--sae_folder", type=str, default="outputs/saes/multipartite_003e", help="Folder containing SAE checkpoints for EPDF analysis")
 parser.add_argument("--metrics_summary", type=str, default=None, help="Optional path to metrics_summary.json; defaults to <sae_folder>/metrics_summary.json")
 parser.add_argument("--build_epdfs", action="store_true", default=False, help="Generate multipartite EPDF visualizations")
 parser.add_argument("--epdf_output_dir", type=str, default=None, help="Output directory for EPDF figures; defaults to <fig_out_dir>/epdfs")
@@ -165,14 +165,17 @@ parser.add_argument("--verbose_memory", action="store_true", default=False, help
 
 # Model loading
 #parser.add_argument("--load_model", type=str, default=None, help="Path to a saved model checkpoint (.pt). If provided, skip training and load this model.")
-parser.add_argument("--load_model", type=str, default="outputs/checkpoints/multipartite_002/checkpoint_step_125000.pt", help="Path to a saved model checkpoint (.pt). If provided, skip training and load this model.")
+parser.add_argument("--load_model", type=str, default="outputs/checkpoints/multipartite_003/checkpoint_step_6000_best.pt", help="Path to a saved model checkpoint (.pt). If provided, skip training and load this model.")
 parser.add_argument("--process_config", type=str, default="process_configs.json", help="Path to JSON describing a stack of generative processes or a mapping of named configurations")
-parser.add_argument("--process_config_name", type=str, default="3xmess3_2xtquant_002", help="Key within --process_config when the file stores multiple named configurations")
+parser.add_argument("--process_config_name", type=str, default="3xmess3_2xtquant_003", help="Key within --process_config when the file stores multiple named configurations")
 parser.add_argument("--process_preset", type=str, default=None, help="Named preset for generative process configuration")
 parser.add_argument("--pc_inds", type=str, default="pc_inds.json", help="JSON file describing the PCA indices for each component")
 
 # Parse known to be notebook-friendly
 args, _ = parser.parse_known_args()
+
+args.plot_pcas = True
+args.build_epdfs = False
 
 if args.process_config and args.process_preset:
     parser.error("Specify at most one of --process_config or --process_preset")
@@ -856,6 +859,9 @@ prediction_positions = evaluation_positions
 tri_vertices = np.array([[0.0, 0.0], [1.0, 0.0], [0.5, float(np.sqrt(3)/2.0)]])
 tri_x = np.r_[tri_vertices[:, 0], tri_vertices[0, 0]]
 tri_y = np.r_[tri_vertices[:, 1], tri_vertices[0, 1]]
+os.makedirs(args.fig_out_dir, exist_ok=True)
+belief_out_dir = os.path.join(args.fig_out_dir, "beliefs" + "_" + args.linear_prediction_layer)
+os.makedirs(os.path.join(belief_out_dir), exist_ok=True)
 
 for idx, meta in enumerate(component_metadata):
     if meta["type"] != "mess3":
@@ -913,10 +919,8 @@ for idx, meta in enumerate(component_metadata):
 
         fig.suptitle(f"Mess3 {comp_name}: belief simplex (pos {pos})", fontsize=13)
         fig.tight_layout()
-        os.makedirs(args.fig_out_dir, exist_ok=True)
-        os.makedirs(os.path.join(args.fig_out_dir, "beliefs"), exist_ok=True)
         safe_name = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in comp_name)
-        out_path = os.path.join(args.fig_out_dir, "beliefs", f"mess3_pred_simplex2d_{safe_name}_pos{pos}_beliefrgb.png")
+        out_path = os.path.join(belief_out_dir, f"mess3_pred_simplex2d_{safe_name}_pos{pos}_beliefrgb.png")
         fig.savefig(out_path, dpi=160)
         plt.close(fig)
         print(f"Saved Mess3 simplex comparison (belief RGB) → {out_path}")
@@ -939,7 +943,7 @@ for idx, meta in enumerate(component_metadata):
 
         fig_lbl.suptitle(f"Mess3 {comp_name}: belief simplex (pos {pos})", fontsize=13)
         fig_lbl.tight_layout()
-        out_path_lbl = os.path.join(args.fig_out_dir, "beliefs", f"mess3_pred_simplex2d_{safe_name}_pos{pos}_truecolors.png")
+        out_path_lbl = os.path.join(belief_out_dir, f"mess3_pred_simplex2d_{safe_name}_pos{pos}_truecolors.png")
         fig_lbl.savefig(out_path_lbl, dpi=160)
         plt.close(fig_lbl)
         print(f"Saved Mess3 simplex comparison (true colors @ predicted positions) → {out_path_lbl}")
@@ -1027,7 +1031,7 @@ for idx, meta in enumerate(component_metadata):
         fig.tight_layout()
         os.makedirs(args.fig_out_dir, exist_ok=True)
         safe_name = "".join(c if c.isalnum() or c in ("_", "-") else "_" for c in comp_name)
-        out_path = os.path.join(args.fig_out_dir, "beliefs", f"tomq_coherence_{safe_name}_pos{pos}_emissionmix.png")
+        out_path = os.path.join(belief_out_dir, f"tomq_coherence_{safe_name}_pos{pos}_emissionmix.png")
         fig.savefig(out_path, dpi=170)
         plt.close(fig)
         print(f"Saved Tom Quantum coherence plot (emission-weighted colors) → {out_path}")
@@ -1050,7 +1054,7 @@ for idx, meta in enumerate(component_metadata):
 
         fig_lbl.suptitle(f"TomQ {comp_name}: coherence plane (pos {pos})", fontsize=13)
         fig_lbl.tight_layout()
-        out_path_lbl = os.path.join(args.fig_out_dir, "beliefs", f"tomq_coherence_{safe_name}_pos{pos}_truecolors.png")
+        out_path_lbl = os.path.join(belief_out_dir, f"tomq_coherence_{safe_name}_pos{pos}_truecolors.png")
         fig_lbl.savefig(out_path_lbl, dpi=170)
         plt.close(fig_lbl)
         print(f"Saved Tom Quantum coherence plot (true colors @ predicted positions) → {out_path_lbl}")
@@ -1247,7 +1251,7 @@ for pos in evaluation_positions:
     fig.suptitle(f"Belief vs predicted geometry (position {pos})", fontsize=15)
     fig.tight_layout(rect=(0, 0.02, 1, 0.95))
     os.makedirs(args.fig_out_dir, exist_ok=True)
-    grid_out = os.path.join(args.fig_out_dir, "beliefs", f"belief_prediction_grid_pos{pos}.png")
+    grid_out = os.path.join(belief_out_dir, f"belief_prediction_grid_pos{pos}.png")
     fig.savefig(grid_out, dpi=170)
     plt.close(fig)
     print(f"Saved composite belief/prediction grid → {grid_out}")
@@ -1269,7 +1273,7 @@ mess3_grid_fig = plot_mess3_belief_grid(
     seed=123,
     sample_size=2500,
 )
-mess3_grid_path = os.path.join(args.fig_out_dir, "beliefs", "mess3_belief_grid_pos9.png")
+mess3_grid_path = os.path.join(belief_out_dir, "mess3_belief_grid_pos9.png")
 mess3_grid_fig.savefig(mess3_grid_path, dpi=170)
 plt.close(mess3_grid_fig)
 print(f"Saved Mess3 parameter grid → {mess3_grid_path}")
@@ -1283,7 +1287,7 @@ tomq_08013_fig = plot_tom_quantum_coherence(
     seed=432,
     sample_size=4000,
 )
-tomq_08013_path = os.path.join(args.fig_out_dir, "beliefs", "tomq_true_geometry_alpha0.8_beta1.3_pos9.png")
+tomq_08013_path = os.path.join(belief_out_dir, "tomq_true_geometry_alpha0.8_beta1.3_pos9.png")
 tomq_08013_fig.savefig(tomq_08013_path, dpi=180)
 plt.close(tomq_08013_fig)
 print(f"Saved TomQ true geometry (alpha=0.8, beta=1.3) → {tomq_08013_path}")
@@ -1297,7 +1301,7 @@ central_tomq_fig = plot_tom_quantum_coherence(
     seed=456,
     sample_size=4000,
 )
-tomq_central_path = os.path.join(args.fig_out_dir, "beliefs", "tomq_true_geometry_alpha1.0_beta_sqrt51_pos9.png")
+tomq_central_path = os.path.join(belief_out_dir, "tomq_true_geometry_alpha1.0_beta_sqrt51_pos9.png")
 central_tomq_fig.savefig(tomq_central_path, dpi=180)
 plt.close(central_tomq_fig)
 print(f"Saved TomQ true geometry (alpha=1.0, beta=sqrt(51)) → {tomq_central_path}")
@@ -1315,7 +1319,7 @@ tomq_grid_sweep_fig = plot_tom_quantum_coherence_grid(
     seed=789,
     sample_size=3500,
 )
-tomq_grid_sweep_path = os.path.join(args.fig_out_dir, "beliefs", "tomq_coherence_grid_pos9.png")
+tomq_grid_sweep_path = os.path.join(belief_out_dir, "tomq_coherence_grid_pos9.png")
 tomq_grid_sweep_fig.savefig(tomq_grid_sweep_path, dpi=170)
 plt.close(tomq_grid_sweep_fig)
 print(f"Saved TomQ parameter grid → {tomq_grid_sweep_path}")
@@ -1331,7 +1335,7 @@ tomq_grid_wide_fig = plot_tom_quantum_coherence_grid(
     seed=987,
     sample_size=3000,
 )
-tomq_grid_wide_path = os.path.join(args.fig_out_dir, "beliefs", "tomq_coherence_grid_wide_pos9.png")
+tomq_grid_wide_path = os.path.join(belief_out_dir, "tomq_coherence_grid_wide_pos9.png")
 tomq_grid_wide_fig.savefig(tomq_grid_wide_path, dpi=170)
 plt.close(tomq_grid_wide_fig)
 print(f"Saved TomQ wide parameter grid → {tomq_grid_wide_path}")
@@ -1387,12 +1391,11 @@ if plot_pcas:
                 width=900,
                 show=False,
                 title_text=f"3D PCA PCs {pc_inds[0]+1},{pc_inds[1]+1},{pc_inds[2]+1}",
-                output_dir=args.fig_out_dir,
+                output_dir=os.path.join(args.fig_out_dir, "pca_plots_" + args.linear_prediction_layer),
                 save=["html"],
                 mess3_label_to_color=mess3_label_to_color,
                 tom_label_to_color=tom_label_to_color
             )
-    #%%
     pca_indices = list(range(pca_coords.shape[1]))
     if len(pca_indices) >= 2:
         comb_2 = list(combinations(pca_indices, 2))
@@ -1408,7 +1411,7 @@ if plot_pcas:
                 width=700,
                 show=False,
                 title_text=f"2D PCA PCs {pc_inds[0]+1},{pc_inds[1]+1}",
-                output_dir=args.fig_out_dir,
+                output_dir=os.path.join(args.fig_out_dir, "pca_plots_" + args.linear_prediction_layer),
                 save=["html"],
                 mess3_label_to_color=mess3_label_to_color,
                 tom_label_to_color=tom_label_to_color,

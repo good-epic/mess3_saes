@@ -1514,7 +1514,7 @@ def plot_pca_subplots(
     title_text=None,
     output_dir="outputs/reports",
     save=None,
-    n_points_to_plot=2000
+    n_points_to_plot=1000
 ):
     """
     Plots interactive PCA subplots for Mess3 and Tom Quantum labels.
@@ -1679,7 +1679,7 @@ def plot_pca_subplots(
             raise ValueError("save must be None or a list/tuple of 'png', 'html', 'json'")
         save_formats = [str(fmt).lower() for fmt in save]
         if save_formats:
-            os.makedirs(os.path.join(output_dir, "pca_plots"), exist_ok=True)
+            os.makedirs(output_dir, exist_ok=True)
             if title_text is not None:
                 safe_title = "".join(c if c.isalnum() or c in (' ', '_', '-') else "_" for c in title_text)
                 base_filename = f"pca_subplots_{safe_title.strip().replace(' ', '_')}_PCs_{pc_label_str}"
@@ -1687,7 +1687,7 @@ def plot_pca_subplots(
                 base_filename = f"pca_subplots_PCs_{pc_label_str}"
 
             for fmt in save_formats:
-                filepath = os.path.join(output_dir, "pca_plots", base_filename + f".{fmt}")
+                filepath = os.path.join(output_dir, base_filename + f".{fmt}")
                 if fmt == "png":
                     fig.write_image(filepath)
                 elif fmt == "html":

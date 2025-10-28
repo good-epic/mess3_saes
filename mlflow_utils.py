@@ -45,7 +45,8 @@ def start_or_continue_run(script_name, token=None, experiment_name=None, run_nam
     try:
         mlflow.search_experiments(max_results=1)
     except Exception as e:
-        raise ValueError(f"Authentication failed. Check your credentials. Error: {e}")
+        print(f"[{script_name}] Warning: MLflow authentication check failed ({e}); proceeding without logging.")
+        return None
     
     # Check if continuing existing run
     run_id = os.getenv('MLFLOW_RUN_ID')

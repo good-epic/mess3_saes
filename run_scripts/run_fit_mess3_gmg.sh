@@ -23,8 +23,6 @@ python -u fit_mess3_gmg.py \
     --min_clusters 6 \
     --max_clusters 12 \
     --plot_eigengap \
-    --ensc_lambda1 0.001 \
-    --ensc_lambda2 0.0005 \
     --cosine_dedup_threshold 0.99 \
     --sample_sequences 1024 \
     --max_activations 50000 \
@@ -44,6 +42,8 @@ END_TIME=$(date +%s)
 DURATION=$((END_TIME - START_TIME))
 echo "Runtime: $((DURATION / 60)) minutes and $((DURATION % 60)) seconds."
 
+#    --ensc_lambda1 0.001 \
+#    --ensc_lambda2 0.0005 \
 #    --sae_type "vanilla" \
 #    --force_lambda 0.05
 

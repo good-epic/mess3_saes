@@ -11,7 +11,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from sklearn.decomposition import PCA
-from sklearn.linear_model import Ridge, LassoCV
+from sklearn.linear_model import ElasticNet, Ridge, LassoCV
 from sklearn.preprocessing import StandardScaler
 
 from BatchTopK.sae import TopKSAE, VanillaSAE
@@ -220,24 +220,121 @@ def lasso_select_latents(
     max_iter: int = 5000,
     random_state: int | None = None,
     alpha: float | None = None,
+    l1_ratio: float = 0.9,
+    stability_fraction: float = 0.5,
+    stability_runs: int = 50,
+    stability_threshold: float = 0.7,
+    selection_stats: dict | None = None,
 ) -> Tuple[np.ndarray, float, float]:
     if design_matrix.shape[0] != target.shape[0]:
         raise ValueError(
             f"Design matrix and target must align on samples; got {design_matrix.shape[0]} and {target.shape[0]}"
         )
-    scaler = StandardScaler(with_mean=True, with_std=True)
-    X_scaled = scaler.fit_transform(design_matrix)
-    # Let LassoCV pick the L1 strength via cross-validation unless alpha is forced.
-    model = LassoCV(
-        alphas=None if alpha is None else [alpha],
-        cv=cv,
+    if alpha is None:
+        scaler = StandardScaler(with_mean=True, with_std=True)
+        X_scaled = scaler.fit_transform(design_matrix)
+        model = LassoCV(
+            alphas=None,
+            cv=cv,
+            max_iter=max_iter,
+            random_state=random_state,
+        )
+        model.fit(X_scaled, target)
+        coef = model.coef_ / np.where(scaler.scale_ == 0.0, 1.0, scaler.scale_)
+        intercept = model.intercept_ - float(np.dot(coef, scaler.mean_))
+        if selection_stats is not None:
+            selection_stats["frequency"] = (np.abs(coef) > 0.0).astype(float)
+            selection_stats["avg_coef"] = coef.astype(np.float64)
+        return coef.astype(np.float64), intercept, float(model.alpha_)
+
+    return _elasticnet_stability_select(
+        design_matrix,
+        target,
+        alpha=alpha,
         max_iter=max_iter,
         random_state=random_state,
+        l1_ratio=l1_ratio,
+        stability_fraction=stability_fraction,
+        stability_runs=stability_runs,
+        stability_threshold=stability_threshold,
+        selection_stats=selection_stats,
     )
-    model.fit(X_scaled, target)
-    coef = model.coef_ / np.where(scaler.scale_ == 0.0, 1.0, scaler.scale_)
-    intercept = model.intercept_ - float(np.dot(coef, scaler.mean_))
-    return coef.astype(np.float64), intercept, float(model.alpha_)
+
+
+def _elasticnet_stability_select(
+    design_matrix: np.ndarray,
+    target: np.ndarray,
+    *,
+    alpha: float,
+    max_iter: int,
+    random_state: int | None,
+    l1_ratio: float,
+    stability_fraction: float,
+    stability_runs: int,
+    stability_threshold: float,
+    selection_stats: dict | None,
+) -> Tuple[np.ndarray, float, float]:
+    if not (0.0 < stability_fraction <= 1.0):
+        raise ValueError("stability_fraction must lie in (0, 1]")
+    if stability_runs <= 0:
+        raise ValueError("stability_runs must be >= 1")
+    if not (0.0 < l1_ratio <= 1.0):
+        raise ValueError("elastic net l1_ratio must lie in (0, 1]")
+
+    n_samples, n_features = design_matrix.shape
+    if n_samples < 2:
+        raise ValueError("Need at least two samples for stability selection")
+
+    rng = np.random.default_rng(random_state)
+    selection_counts = np.zeros(n_features, dtype=np.float64)
+    coef_sums = np.zeros(n_features, dtype=np.float64)
+
+    for _ in range(stability_runs):
+        subset = max(2, int(round(stability_fraction * n_samples)))
+        subset = min(subset, n_samples)
+        indices = rng.choice(n_samples, size=subset, replace=False)
+        X_subset = design_matrix[indices]
+        y_subset = target[indices]
+
+        scaler = StandardScaler(with_mean=True, with_std=True)
+        X_scaled = scaler.fit_transform(X_subset)
+        model = ElasticNet(
+            alpha=alpha,
+            l1_ratio=l1_ratio,
+            max_iter=max_iter,
+            random_state=rng.integers(0, 2**32 - 1),
+            fit_intercept=True,
+        )
+        model.fit(X_scaled, y_subset)
+
+        scale = np.where(scaler.scale_ == 0.0, 1.0, scaler.scale_)
+        coef = model.coef_ / scale
+        nonzero = np.abs(coef) > 1e-8
+        selection_counts[nonzero] += 1.0
+        coef_sums[nonzero] += coef[nonzero]
+
+    frequencies = selection_counts / float(stability_runs)
+    selected_mask = frequencies >= stability_threshold
+
+    final_coef = np.zeros(n_features, dtype=np.float64)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        avg_coef = np.where(selection_counts > 0.0, coef_sums / selection_counts, 0.0)
+    final_coef[selected_mask] = avg_coef[selected_mask]
+    if selected_mask.any():
+        sel_idx = np.flatnonzero(selected_mask)
+        zero_idx = sel_idx[np.abs(final_coef[sel_idx]) < 1e-12]
+        if zero_idx.size > 0:
+            final_coef[zero_idx] = frequencies[zero_idx]
+
+    design_means = design_matrix.mean(axis=0)
+    intercept = float(target.mean() - np.dot(design_means, final_coef))
+
+    if selection_stats is not None:
+        selection_stats["frequency"] = frequencies
+        selection_stats["avg_coef"] = final_coef.copy()
+        selection_stats["selection_counts"] = selection_counts
+
+    return final_coef, intercept, float(alpha)
 
 
 def sae_encode_features(sae, acts: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:

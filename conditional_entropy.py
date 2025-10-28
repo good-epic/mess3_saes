@@ -156,8 +156,8 @@ def estimate_bloch_walk_entropy_mc(alpha=1, beta=np.sqrt(51),
 
 
 # Grid scan for Tom Quantum parameters
-tq_alpha_values = [0.5, 0.7, 0.9, 1.0, 1.2, 1.5]
-tq_beta_values = [3.0, 5.0, 7.0, 9.0, 11.0]
+tq_alpha_values = [0.5, 0.7, 0.88, 1.0, 1.12, 1.2, 1.5, 2.0, 2.5,]
+tq_beta_values = [1.0, 2.0, 2.5, 3.0, 4.0, 5.64, 7.0, 8.64, 9.0, 11.0]
 
 tq_results = []
 ghmm = build_generalized_hidden_markov_model("tom_quantum", alpha=1.0, beta=7.1)
@@ -267,8 +267,8 @@ print(tq_df.head())
 
 
 # Grid scan for Mess3 parameters
-mess3_a_values = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-mess3_x_values = [0.05, 0.1, 0.15, 0.2, 0.25, 0.35, 0.4, 0.45]
+mess3_a_values = [0.1, 0.3, 0.5, 0.55, 0.6, 0.7, 0.75, 0.8, 0.85,0.9, 0.95]
+mess3_x_values = [0.05, 0.075, 0.1, 0.12, 0.14, 0.18, 0.2, 0.25, 0.325, 0.4, 0.45]
 
 mess3_results = []
 mess3_d_vocab = None
@@ -419,7 +419,7 @@ ax.set_xlabel('alpha')
 ax.set_ylabel('beta')
 
 plt.tight_layout()
-plt.savefig('tom_quantum_entropy_heatmap.png', dpi=150, bbox_inches='tight')
+plt.savefig('tom_quantum_entropy_heatmap_2.png', dpi=150, bbox_inches='tight')
 plt.show()
 
 # 2. Scatter plots: CE vs each metric
@@ -451,7 +451,7 @@ for idx in range(len(tq_metric_cols), len(axes)):
     axes[idx].axis('off')
 
 plt.tight_layout()
-plt.savefig('tom_quantum_ce_vs_metrics.png', dpi=150, bbox_inches='tight')
+plt.savefig('tom_quantum_ce_vs_metrics_2.png', dpi=150, bbox_inches='tight')
 plt.show()
 
 print("Tom Quantum visualizations saved!")
@@ -486,7 +486,7 @@ ax.set_xlabel('a (asymmetry)')
 ax.set_ylabel('x (noise)')
 
 plt.tight_layout()
-plt.savefig('mess3_entropy_heatmap.png', dpi=150, bbox_inches='tight')
+plt.savefig('mess3_entropy_heatmap_2.png', dpi=150, bbox_inches='tight')
 plt.show()
 
 # 2. Scatter plots: CE vs each matrix metric
@@ -518,7 +518,7 @@ for idx in range(len(metric_cols), len(axes)):
     axes[idx].axis('off')
 
 plt.tight_layout()
-plt.savefig('mess3_ce_vs_metrics.png', dpi=150, bbox_inches='tight')
+plt.savefig('mess3_ce_vs_metrics_2.png', dpi=150, bbox_inches='tight')
 plt.show()
 
 print("Mess3 visualizations saved!")

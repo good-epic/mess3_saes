@@ -101,6 +101,8 @@ parser.add_argument("--process_config_name", type=str, default=None, help="Key w
 args, _ = parser.parse_known_args()
 
 _process_cfg_raw, components, data_source = _load_process_stack(args, {})
+
+#%%
 type_counts: dict[str, int] = {}
 for comp in components:
     type_counts[comp.process_type] = type_counts.get(comp.process_type, 0) + 1
