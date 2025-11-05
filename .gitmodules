@@ -4,6 +4,3 @@
 [submodule "epsilon-transformers"]
 	path = epsilon-transformers
 	url = https://github.com/adamimos/epsilon-transformers.git
-[submodule "AAnet"]
-	path = AAnet
-	url = https://github.com/KrishnaswamyLab/AAnet.git

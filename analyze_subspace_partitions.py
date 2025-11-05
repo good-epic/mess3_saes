@@ -13,8 +13,14 @@ For each requested activation site, this script:
 The goal is to mirror the downstream analysis previously built around
 Sparse Autoencoders, without depending on SAE checkpoints.
 """
-
 from __future__ import annotations
+
+## REQUIRED. NEVER DELETE THIS ##
+import os
+os.environ["JAX_PLATFORM_NAME"] = "cpu"
+os.environ["JAX_PLATFORMS"] = "cpu"
+import jax
+##################################
 
 import argparse
 import json
@@ -23,7 +29,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
-import jax
 import numpy as np
 import torch
 from tqdm import tqdm
@@ -318,6 +323,15 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--output_dir", type=str, required=True, help="Directory for analysis outputs")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"], help="Computation device")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for sampling")
+
+    # Transformer config fallbacks (used when the checkpoint lacks a saved config)
+    parser.add_argument("--d_model", type=int, default=128)
+    parser.add_argument("--n_heads", type=int, default=4)
+    parser.add_argument("--n_layers", type=int, default=3)
+    parser.add_argument("--n_ctx", type=int, default=16)
+    parser.add_argument("--d_head", type=int, default=32)
+    parser.add_argument("--d_vocab", type=int, default=None)
+    parser.add_argument("--act_fn", type=str, default="relu")
 
     # Sampling settings
     parser.add_argument("--sites", type=str, nargs="+", required=True, help="List of site names (e.g., layer_0 layer_1)")

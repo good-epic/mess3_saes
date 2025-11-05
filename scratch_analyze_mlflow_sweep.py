@@ -241,6 +241,7 @@ for i, (t, colnames) in enumerate(col_dict.items()):
     metrics[t]["other_r2_mean"] = []
     metrics[t]["other_r2_max"] = []
     metrics[t]["r2_diff"] = []
+    metrics[t]["r2_max_diff"] = []
     metrics[t]["assigned_geo_dim"] = []
     metrics[t]["inferred_geo_dim"] = []
     metrics[t]["geo_dim_diff"] = []
@@ -253,13 +254,26 @@ for i, (t, colnames) in enumerate(col_dict.items()):
         # print(f"{x[3]=}")
         n_good_rows = 0
         all_r2_mean = np.nanmean(list(x[0].values())) if x and len(x[0]) > 0 else np.nan
+        if all_r2_mean > 0.61:
+            print("\nMean R² is greater than 0.61")
+            pprint(x[0])
+            pprint(x[2])
+            #for xx in x:
+            #    pprint(xx)
         all_other_r2_mean = 0
         for comp, index in x[2].items():
             # print(f"{comp=}")
             # print(f"{index=}")
             if comp == "noise":
                 continue
-            other_r2_mean = np.mean([v for k,v in x[1][str(index)].items() if k != comp])
+            cluster_r2_map = x[1].get(str(index), {})
+            other_vals = [v for k, v in cluster_r2_map.items() if k != comp]
+            if other_vals:
+                other_r2_mean = float(np.mean(other_vals))
+                other_r2_max = float(np.max(other_vals))
+            else:
+                other_r2_mean = np.nan
+                other_r2_max = np.nan
             all_other_r2_mean += other_r2_mean
             agd = dim_from_geo(comp)
             try:
@@ -274,9 +288,12 @@ for i, (t, colnames) in enumerate(col_dict.items()):
                     if m:
                         mismatch_errors += 1
                 continue
+            assigned_r2_val = x[0].get(str(index), np.nan)
             metrics[t]["other_r2_mean"].append(other_r2_mean)
-            metrics[t]["r2_diff"].append(x[0][str(index)] - other_r2_mean)
-            metrics[t]["assigned_r2"].append(x[0][str(index)])
+            metrics[t]["other_r2_max"].append(other_r2_max)
+            metrics[t]["assigned_r2"].append(assigned_r2_val)
+            metrics[t]["r2_diff"].append(assigned_r2_val - other_r2_mean if not np.isnan(other_r2_mean) else np.nan)
+            metrics[t]["r2_max_diff"].append(assigned_r2_val - other_r2_max if not np.isnan(other_r2_max) else np.nan)
             metrics[t]["assigned_geo_dim"].append(agd)
             metrics[t]["inferred_geo_dim"].append(igd)
             metrics[t]["geo_dim_diff"].append(agd - igd)
@@ -286,6 +303,52 @@ for i, (t, colnames) in enumerate(col_dict.items()):
         metrics[t]["all_r2_diff"].extend([(all_r2_mean - all_other_r2_mean / len(x[2]))] * n_good_rows)
             # break
     metrics[t]["mismatch_errors"] = mismatch_errors
+
+#%%
+
+def find_top_row(df, assignment_type="hard"):
+    """Return the first row (and its metadata) with the highest mean cluster R²."""
+    col = f"assigned_belief_cluster_r2_{assignment_type}"
+    top_idx = None
+    top_score = -np.inf
+
+    for idx, row in df.iterrows():
+        cluster_dict = row.get(col)
+        if not isinstance(cluster_dict, dict) or not cluster_dict:
+            continue  # skip rows without valid data
+
+        cluster_mean_r2 = np.mean(list(cluster_dict.values()))
+        if not cluster_mean_r2:
+            continue
+
+        if cluster_mean_r2 > top_score:
+            top_score = cluster_mean_r2
+            top_idx = idx
+
+    if top_idx is None:
+        return None, None
+
+    row = df.loc[top_idx]
+    meta = {
+        "index": top_idx,
+        "layer": row.get("layer"),
+        "assignment_type": assignment_type,
+        "mean_cluster_r2": top_score,
+    }
+    return meta, row
+
+# Usage example:
+meta, best_row = find_top_row(df, assignment_type="hard")
+if best_row is not None:
+    print(meta)
+    with pd.option_context("display.max_columns", None, "display.max_colwidth", None):
+        display(best_row)
+
+
+#%%
+
+pprint(best_row.to_dict())
+
 
 #%%
 for t in metrics:
@@ -323,6 +386,204 @@ for t in metrics:
     plt.show()
 
 
+#%%
+
+for t in metrics:
+    if "other_r2_max" not in metrics[t] or "geo_dim_diff" not in metrics[t]:
+        continue
+    other_r2_max = metrics[t]["other_r2_max"]
+    geo_dim_diff = metrics[t]["geo_dim_diff"]
+
+    # Group r2_diff values by the value of geo_dim_diff
+    from collections import defaultdict
+
+    grouped = defaultdict(list)
+    for gdd, or2d in zip(geo_dim_diff, other_r2_max):
+        grouped[gdd].append(or2d)
+
+    # Sort groups by geo_dim_diff value
+    sorted_keys = sorted(grouped.keys())
+    data = [grouped[k] for k in sorted_keys]
+
+    plt.figure(figsize=(10, 6))
+    plt.boxplot(data, labels=[str(k) for k in sorted_keys], showfliers=False)
+    plt.xlabel("geo_dim_diff (assigned_geo_dim - inferred_geo_dim)")
+    plt.ylabel("other_r2_max")
+    plt.title(f"Boxplot of other_r2_max grouped by geo_dim_diff for '{t}'")
+    plt.tight_layout()
+    plt.show()
+
+
+
+#%%
+
+for t in metrics:
+    if "r2_max_diff" not in metrics[t] or "geo_dim_diff" not in metrics[t]:
+        continue
+    r2_max_diff = metrics[t]["r2_max_diff"]
+    geo_dim_diff = metrics[t]["geo_dim_diff"]
+
+    # Group r2_diff values by the value of geo_dim_diff
+    from collections import defaultdict
+
+    grouped = defaultdict(list)
+    for gdd, or2d in zip(geo_dim_diff, r2_max_diff):
+        grouped[gdd].append(or2d)
+
+    # Sort groups by geo_dim_diff value
+    sorted_keys = sorted(grouped.keys())
+    data = [grouped[k] for k in sorted_keys]
+
+    plt.figure(figsize=(10, 6))
+    plt.boxplot(data, labels=[str(k) for k in sorted_keys], showfliers=False)
+    plt.xlabel("geo_dim_diff (assigned_geo_dim - inferred_geo_dim)")
+    plt.ylabel("r2_max_diff")
+    plt.title(f"Boxplot of r2_max_diff grouped by geo_dim_diff for '{t}'")
+    plt.tight_layout()
+    plt.show()
+
+
+#%%
+
+# Pairwise scatter plots: assigned_r2 vs [other_r2_mean, other_r2_max, r2_diff, r2_max_diff], colored by geo_dim_diff
+scatter_metrics = [
+    ("other_r2_mean", "Assigned R² vs Other R² Mean"),
+    ("other_r2_max", "Assigned R² vs Other R² Max"),
+    ("r2_diff", "Assigned R² vs R² Diff"),
+    ("r2_max_diff", "Assigned R² vs R² Max Diff")
+]
+
+for t in metrics:
+    assigned_r2 = metrics[t].get("assigned_r2")
+    geo_dim_diff = np.array(metrics[t].get("geo_dim_diff"))
+
+    if assigned_r2 is None or geo_dim_diff is None:
+        continue
+
+    for metric_key, plot_title in scatter_metrics:
+        yvals = metrics[t].get(metric_key)
+        if yvals is None:
+            continue
+        # Convert to arrays
+        assigned = np.array(assigned_r2)
+        y = np.array(yvals)
+        gdd = np.array(geo_dim_diff)
+        if len(assigned) != len(y) or len(assigned) != len(gdd):
+            continue  # skip mismatched data
+
+        plt.figure(figsize=(7, 6))
+        scatter = plt.scatter(assigned, y, c=gdd, cmap="viridis", alpha=0.7, s=32)
+        plt.xlabel("assigned_r2")
+        plt.ylabel(metric_key)
+        cbar = plt.colorbar(scatter)
+        cbar.set_label("geo_dim_diff")
+        plt.title(f"{plot_title} ({t})")
+        plt.tight_layout()
+        plt.show()
+
+
+#%%
+
+# Make scatterplots: (other_r2_mean, r2_diff), (other_r2_mean, r2_max_diff),
+#                    (other_r2_max, r2_diff), (other_r2_max, r2_max_diff)
+cross_axis_pairs = [
+    ("other_r2_mean", "r2_diff", "Other R² Mean", "R² Diff"),
+    ("other_r2_mean", "r2_max_diff", "Other R² Mean", "R² Max Diff"),
+    ("other_r2_max", "r2_diff", "Other R² Max", "R² Diff"),
+    ("other_r2_max", "r2_max_diff", "Other R² Max", "R² Max Diff")
+]
+for t in metrics:
+    geo_dim_diff = np.array(metrics[t].get("geo_dim_diff"))
+    if geo_dim_diff is None:
+        continue
+
+    for xkey, ykey, xlabel, ylabel in cross_axis_pairs:
+        xvals = metrics[t].get(xkey)
+        yvals = metrics[t].get(ykey)
+        gdd = metrics[t].get("geo_dim_diff")
+        if xvals is None or yvals is None or gdd is None:
+            continue
+        x = np.array(xvals)
+        y = np.array(yvals)
+        c = np.array(gdd)
+        # Skip if lengths don't match
+        if len(x) != len(y) or len(x) != len(c):
+            continue
+
+        plt.figure(figsize=(7, 6))
+        scatter = plt.scatter(x, y, c=c, cmap="viridis", alpha=0.7, s=32)
+        plt.xlabel(xlabel)
+        plt.ylabel(ylabel)
+        cbar = plt.colorbar(scatter)
+        cbar.set_label("geo_dim_diff")
+        plt.title(f"{xlabel} vs {ylabel} ({t})")
+        plt.tight_layout()
+        plt.show()
+
+
+#%%
+
+
+
+# Find the average geo_dim_diff when r2_max_diff is negative versus positive
+
+for t in metrics:
+    geo_dim_diff = np.array(metrics[t].get("geo_dim_diff"))
+    r2_max_diff = np.array(metrics[t].get("r2_max_diff"))
+    if geo_dim_diff is None or r2_max_diff is None:
+        continue
+
+    # Make sure arrays have the same length
+    if len(geo_dim_diff) != len(r2_max_diff):
+        print(f"Skipping {t} due to length mismatch.")
+        continue
+
+    neg_mask = r2_max_diff < 0
+    pos_mask = r2_max_diff >= 0
+
+    avg_gdd_neg = np.nanmean(geo_dim_diff[neg_mask]) if np.any(neg_mask) else np.nan
+    avg_gdd_pos = np.nanmean(geo_dim_diff[pos_mask]) if np.any(pos_mask) else np.nan
+
+    print(f"\nFor '{t}':")
+    print(f"  Average geo_dim_diff where r2_max_diff < 0: {avg_gdd_neg}")
+    print(f"  Average geo_dim_diff where r2_max_diff >= 0: {avg_gdd_pos}")
+
+
+
+#%%
+
+import numpy as np
+
+# Summarize all_r2_mean statistics separately for each t (task/key in metrics)
+for t in metrics:
+    arr = metrics[t].get("all_r2_mean")
+    if arr is None:
+        print(f"Skipping '{t}' (no all_r2_mean).")
+        continue
+    arr = np.asarray(arr)
+    arr = arr[~np.isnan(arr)]
+    if arr.size == 0:
+        print(f"Skipping '{t}' (all all_r2_mean NaN).")
+        continue
+
+    print(f"\nSummary of all_r2_mean for '{t}':")
+    print(f"  min: {np.min(arr)}")
+    print(f"  max: {np.max(arr)}")
+    # Deciles: 0%, 10%, ..., 100%
+    deciles = np.percentile(arr, np.arange(0, 110, 10))
+    print(f"  deciles (0%, 10%, ..., 100%):")
+    for i, v in enumerate(deciles):
+        print(f"    {i*10}%: {v}")
+    for p in [1, 5, 95, 99]:
+        val = np.percentile(arr, p)
+        print(f"  {p}th percentile: {val}")
+
+
+
+
+
+################################################################
+############### Older code below ###############################
 
 
 #%%
