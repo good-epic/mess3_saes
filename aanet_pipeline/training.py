@@ -272,7 +272,6 @@ def _train_single_run(
             mode="min",
             factor=config.lr_factor,
             patience=config.lr_patience,
-            verbose=False,
         )
 
     epoch_history: List[Dict[str, float]] = []
