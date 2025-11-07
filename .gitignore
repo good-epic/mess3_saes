@@ -5,5 +5,8 @@ __pycache__/
 output_*.txt
 *png
 *csv
-
+scratch/aanet_analysis_layer1
+scratch/projection_histograms_layer1
+scratch/projection_histograms_layer1_filtered
 AAnet/example_notebooks/data/
+.venv

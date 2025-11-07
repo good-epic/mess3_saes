@@ -34,6 +34,7 @@ from aanet_pipeline import (
     load_cluster_summary,
     parse_cluster_descriptors,
     train_aanet_model,
+    drop_overlapping_latents,
 )
 from multipartite_utils import build_components_from_config, MultipartiteSampler
 
@@ -104,6 +105,19 @@ def _parse_args() -> argparse.Namespace:
     extrema_group.add_argument("--extrema-disable-subsample", action="store_true", help="Disable internal subsampling.")
     extrema_group.add_argument("--extrema-max-points", type=int, default=10000, help="Maximum samples used for extrema computation.")
     extrema_group.add_argument("--extrema-seed", type=int, default=0, help="Seed for extrema subsampling.")
+
+    overlap_group = parser.add_argument_group("overlap filtering")
+    overlap_group.add_argument(
+        "--drop-overlapping-latents",
+        action="store_true",
+        help="Drop latents whose second-smallest cross-cluster projection error <= overlap threshold.",
+    )
+    overlap_group.add_argument(
+        "--overlap-threshold",
+        type=float,
+        default=1e-6,
+        help="Threshold on the second-smallest projection error used to deem latents overlapping.",
+    )
 
     parser.add_argument("--save-models", action="store_true", help="Persist trained AAnet weights.")
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing outputs.")
@@ -310,11 +324,29 @@ def main() -> None:
         if not summary_path.exists():
             raise FileNotFoundError(f"Cluster summary not found: {summary_path}")
 
+        layer_records: List[dict] = []
+        layer_dir = output_root / f"layer_{layer}"
+        _ensure_dir(layer_dir, overwrite=args.overwrite)
+
         summary = load_cluster_summary(summary_path)
         descriptors = parse_cluster_descriptors(summary, include_noise=True)
         if not descriptors:
             print(f"No clusters found for layer {layer}, skipping.")
             continue
+
+        overlap_report = None
+        if args.drop_overlapping_latents:
+            descriptors, overlap_report = drop_overlapping_latents(
+                sae.W_dec.detach().cpu(),
+                descriptors,
+                threshold=args.overlap_threshold,
+            )
+            dropped = overlap_report.get("total_dropped", 0)
+            print(
+                f"Layer {layer}: dropped {dropped} overlapping latents "
+                f"(threshold={args.overlap_threshold})."
+            )
+            _write_json(layer_dir / "overlap_filter.json", overlap_report)
 
         datasets, _ = build_cluster_datasets(
             model=model,
@@ -332,10 +364,6 @@ def main() -> None:
             seed=args.sampling_seed + layer,
             token_positions=args.token_indices,
         )
-
-        layer_records: List[dict] = []
-        layer_dir = output_root / f"layer_{layer}"
-        _ensure_dir(layer_dir, overwrite=args.overwrite)
 
         extrema_cache: Dict[int, torch.Tensor | None] = {}
         for desc in descriptors:

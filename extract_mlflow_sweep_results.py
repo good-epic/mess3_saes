@@ -253,7 +253,19 @@ def extract_layer_metrics(cluster_summary: Dict[str, Any], layer: str) -> Dict[s
     """
     metrics = {"layer": layer}
 
-    # Energy contrast ratio
+    # Cluster quality metrics
+    principal_angles = cluster_summary.get("principal_angles_deg", None)
+    metrics["principal_angles_deg"] = json.dumps(principal_angles) if principal_angles is not None else None
+
+    min_principal_angles = cluster_summary.get("min_principal_angles_deg", None)
+    metrics["min_principal_angles_deg"] = json.dumps(min_principal_angles) if min_principal_angles is not None else None
+
+    metrics["overall_min_principal_angle_deg"] = cluster_summary.get("overall_min_principal_angle_deg", None)
+
+    within_projection_energy = cluster_summary.get("within_projection_energy", None)
+    metrics["within_projection_energy"] = json.dumps(within_projection_energy) if within_projection_energy is not None else None
+
+    metrics["between_projection_energy"] = cluster_summary.get("between_projection_energy", None)
     metrics["energy_contrast_ratio"] = cluster_summary.get("energy_contrast_ratio", None)
 
     # Component assignments (hard, soft, refined)
