@@ -25,12 +25,17 @@ import argparse
 import json
 import math
 import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
+import matplotlib
+matplotlib.use("Agg", force=True)
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import Ridge
+from tqdm.auto import tqdm
 
 import latent_geometry_create_metrics as lgcm
 from clustering.geometry_fitting import GeometryFittingConfig, GeometryFitter
@@ -45,6 +50,15 @@ DEFAULT_SINKHORN_MAX_ITER = 1000
 DEFAULT_GW_MAX_ITER = 100
 DEFAULT_GW_TOL = 1e-9
 DEFAULT_GEOMETRY_TARGET_SAMPLES = 1000
+DEFAULT_TOP_R2_PATTERN = "top_r2_run_layer_{layer}_cluster_summary.json"
+
+
+@dataclass
+class TopR2Info:
+    assignments: Dict[int, int]
+    column_ids: List[int]
+    column_labels: List[str]
+    label_by_id: Dict[int, str]
 
 
 def _safe_label(label: str) -> str:
@@ -52,6 +66,145 @@ def _safe_label(label: str) -> str:
     sanitized = re.sub(r"[^0-9A-Za-z]+", "_", label)
     sanitized = sanitized.strip("_")
     return sanitized or "config"
+
+
+def _site_to_layer_index(site: str) -> Optional[int]:
+    match = re.match(r".*?(\d+)$", site)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _load_top_r2_info(
+    args: argparse.Namespace,
+    site: str,
+    cache: Dict[str, Optional[TopR2Info]],
+) -> Optional[TopR2Info]:
+    if not args.top_r2_summary_dir:
+        return None
+    if site in cache:
+        return cache[site]
+
+    layer_idx = _site_to_layer_index(site)
+    if layer_idx is None:
+        cache[site] = None
+        return None
+
+    summary_path = Path(args.top_r2_summary_dir) / args.top_r2_summary_pattern.format(layer=layer_idx)
+    if not summary_path.exists():
+        print(f"Warning: top-R² summary not found at {summary_path}; skipping overlap plots for {site}.")
+        cache[site] = None
+        return None
+
+    with summary_path.open("r") as fh:
+        data = json.load(fh)
+
+    assignment_block: Mapping[str, Any] = data.get("component_assignment_hard", {})  # type: ignore[assignment]
+    component_assignments: Mapping[str, int] = assignment_block.get("assignments", {})  # type: ignore[assignment]
+    noise_clusters = [int(val) for val in assignment_block.get("noise_clusters", [])]
+    component_order = assignment_block.get("component_order")
+    if component_order is None:
+        component_order = list(component_assignments.keys())
+
+    column_ids: List[int] = []
+    column_labels: List[str] = []
+    label_by_id: Dict[int, str] = {}
+
+    for comp in component_order:
+        cluster_id = int(component_assignments.get(comp, -1))
+        if cluster_id < 0:
+            continue
+        if cluster_id not in column_ids:
+            column_ids.append(cluster_id)
+            column_labels.append(comp)
+            label_by_id[cluster_id] = comp
+
+    for cluster_id in noise_clusters:
+        if cluster_id not in column_ids:
+            column_ids.append(cluster_id)
+            label = f"noise_{cluster_id}"
+            column_labels.append(label)
+            label_by_id[cluster_id] = label
+
+    for cluster_key in data.get("clusters", {}).keys():
+        cluster_id = int(cluster_key)
+        if cluster_id not in column_ids:
+            column_ids.append(cluster_id)
+            fallback = f"cluster_{cluster_id}"
+            column_labels.append(fallback)
+            label_by_id[cluster_id] = fallback
+
+    latent_assignments_raw: Mapping[str, int] = data.get("latent_cluster_assignments", {})  # type: ignore[assignment]
+    latent_assignments: Dict[int, int] = {int(idx): int(cid) for idx, cid in latent_assignments_raw.items()}
+
+    info = TopR2Info(
+        assignments=latent_assignments,
+        column_ids=column_ids,
+        column_labels=column_labels,
+        label_by_id=label_by_id,
+    )
+    cache[site] = info
+    return info
+
+
+def _plot_cluster_overlap_bars(
+    *,
+    annotated_df: pd.DataFrame,
+    component_order: Sequence[str],
+    top_r2_info: TopR2Info,
+    output_path: Path,
+) -> None:
+    if annotated_df.empty:
+        return
+
+    filtered = annotated_df.dropna(subset=["assigned_component_name"])
+    if filtered.empty:
+        return
+
+    row_labels = [comp for comp in component_order if comp in filtered["assigned_component_name"].values]
+    if not row_labels:
+        row_labels = sorted(filtered["assigned_component_name"].dropna().unique())
+    if not row_labels:
+        return
+
+    row_index = {label: idx for idx, label in enumerate(row_labels)}
+    col_index = {cid: idx for idx, cid in enumerate(top_r2_info.column_ids)}
+
+    counts = np.zeros((len(row_labels), len(top_r2_info.column_ids)), dtype=np.float32)
+
+    for latent_idx, comp_name in zip(filtered["latent_index"], filtered["assigned_component_name"]):
+        if comp_name not in row_index:
+            continue
+        top_cluster = top_r2_info.assignments.get(int(latent_idx))
+        if top_cluster is None or top_cluster not in col_index:
+            continue
+        counts[row_index[comp_name], col_index[top_cluster]] += 1.0
+
+    if counts.sum() == 0:
+        return
+
+    x = np.arange(len(row_labels))
+    n_cols = len(top_r2_info.column_ids)
+    width = 0.8 / max(n_cols, 1)
+    offsets = (np.arange(n_cols) - (n_cols - 1) / 2.0) * width
+
+    fig, ax = plt.subplots(figsize=(max(6, len(row_labels) * 1.2), 4.5))
+    for col_idx, (offset, label) in enumerate(zip(offsets, top_r2_info.column_labels)):
+        ax.bar(x + offset, counts[:, col_idx], width=width, label=label)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(row_labels, rotation=35, ha="right")
+    ax.set_ylabel("Latent count")
+    ax.set_xlabel("Cheat cluster component")
+    ax.set_title("Cheat vs. top-R² cluster overlaps")
+    ax.legend(loc="upper right", fontsize=8)
+    ax.grid(axis="y", linestyle="--", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
 
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
@@ -196,6 +349,24 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--geo_no_normalize_vectors",
         action="store_true",
         help="Disable normalization of decoder directions before GW fitting.",
+    )
+    extra_parser.add_argument(
+        "--top_r2_summary_dir",
+        type=str,
+        default="outputs/reports/multipartite_003e",
+        help="Directory containing top-R² cluster summary JSON files.",
+    )
+    extra_parser.add_argument(
+        "--top_r2_summary_pattern",
+        type=str,
+        default=DEFAULT_TOP_R2_PATTERN,
+        help="Filename pattern for top-R² cluster summaries (use {layer} placeholder).",
+    )
+    extra_parser.add_argument(
+        "--top_r2_compare_k",
+        type=int,
+        default=12,
+        help="Top-k value corresponding to the hyperparameter-sweep best R² run.",
     )
 
     extra_args, _ = extra_parser.parse_known_args(argv)
@@ -460,7 +631,13 @@ def evaluate_configuration(
     decoder_dirs = metrics_entry.get("decoder_dirs")
 
     cluster_summaries: List[Dict[str, Any]] = []
-    for cluster_label, cluster_df in subset.groupby("assigned_cluster"):
+    grouped = list(subset.groupby("assigned_cluster"))
+    site_label = subset["site"].iloc[0] if "site" in subset.columns else "site"
+    for cluster_label, cluster_df in tqdm(
+        grouped,
+        desc=f"{site_label}: fitting clusters",
+        leave=False,
+    ):
         latent_indices = cluster_df["latent_index"].astype(int).to_numpy()
         cluster_scores = _fit_cluster_component_r2(
             feature_matrix,
@@ -512,12 +689,14 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     Path(args.cluster_output_dir).mkdir(parents=True, exist_ok=True)
 
     fitter, geometries = _build_geometry_tools(args)
+    top_r2_cache: Dict[str, Optional[TopR2Info]] = {}
 
     print("Recomputing latent metrics and cached activations...")
     df, _l0_df, metric_store = lgcm.run_analysis(args)
 
     summaries: Dict[str, Any] = {}
-    for key, metrics_entry in metric_store.items():
+    config_items = list(metric_store.items())
+    for key, metrics_entry in tqdm(config_items, desc="Configurations"):
         site, sae_type, param_value = key
 
         if sae_type == "top_k" and not _matches_param(param_value, args.eval_top_k):
@@ -561,6 +740,26 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             ]
             csv_path = Path(args.cluster_output_dir) / f"{safe_name}_assignments.csv"
             annotated_df.loc[:, [col for col in csv_cols if col in annotated_df.columns]].to_csv(csv_path, index=False)
+
+        if (
+            sae_type == "top_k"
+            and args.top_r2_summary_dir
+            and int(round(param_value)) == int(args.top_r2_compare_k)
+        ):
+            top_r2_info = _load_top_r2_info(args, site, top_r2_cache)
+            if top_r2_info is not None:
+                component_order = metrics_entry.get("component_order")
+                if component_order is None:
+                    component_order = sorted(
+                        annotated_df["assigned_component_name"].dropna().unique()
+                    )
+                overlap_path = Path(args.cluster_output_dir) / f"{safe_name}_top_r2_overlap.png"
+                _plot_cluster_overlap_bars(
+                    annotated_df=annotated_df,
+                    component_order=component_order,
+                    top_r2_info=top_r2_info,
+                    output_path=overlap_path,
+                )
 
         summaries[safe_name] = config_summary
         print(

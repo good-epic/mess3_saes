@@ -16,18 +16,21 @@ ARGS=(
     --process_config "${ROOT_DIR}/process_configs.json"
     --process_config_name 3xmess3_2xtquant_003
     --sites layer_1 layer_2
-    --top_k_vals 14
-    --eval_top_k 14
+    --top_k_vals 12
+    --eval_top_k 12
     --r2_cutoff 0.01
     --ridge_alpha 1e-3
     --device cuda
     --save_assignments_csv
-    --compute_geometry
     --geo_simplex_k_min 1
     --geo_simplex_k_max 7
     --geo_gw_epsilon 0.1
     --geo_sinkhorn_epsilon 0.1
+    --top_r2_summary_dir "${ROOT_DIR}/outputs/reports/multipartite_003e"
+    --top_r2_summary_pattern "top_r2_run_layer_{layer}_cluster_summary.json"
+    --top_r2_compare_k 12
 )
+#    --compute_geometry
 
 printf 'Running latent_geometry_eval_clusters with args:\n'
 first_arg=true

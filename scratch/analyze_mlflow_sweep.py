@@ -1,4 +1,8 @@
 #%%
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import numpy as np
 import pandas as pd
 import ast
@@ -8,7 +12,7 @@ import traceback
 from clustering import SimplexGeometry, CircleGeometry, HypersphereGeometry
 
 
-df = pd.read_csv("mlflow_sweep_results_20251018_174112.csv")
+df = pd.read_csv("../mlflow_sweep_results_20251105_222254.csv")
 
 pd.set_option('display.max_columns', None)
 
@@ -343,7 +347,9 @@ if best_row is not None:
     print(meta)
     with pd.option_context("display.max_columns", None, "display.max_colwidth", None):
         display(best_row)
-
+#%%
+print(meta)
+pprint(df.loc[meta["index"]].to_dict())
 
 #%%
 
