@@ -12,11 +12,11 @@ mkdir -p "${OUTPUT_DIR}"
 ARGS=(
     --process-config "${ROOT_DIR}/process_configs.json"
     --process-config-name "3xmess3_2xtquant_003"
-    --model-ckpt "${ROOT_DIR}/outputs/checkpoints/multipartite_003/checkpoint_step_6000_best.pt"
-    --sae-root "${ROOT_DIR}/outputs/saes/multipartite_003e"
-    --cluster-summary-dir "${ROOT_DIR}/outputs/reports/multipartite_003e"
+    --model-ckpt "/workspace/outputs/checkpoints/multipartite_003/checkpoint_step_6000_best.pt"
+    --sae-root "/workspace/outputs/saes/multipartite_003e"
+    --cluster-summary-dir "/workspace/outputs/reports/multipartite_003e"
     --cluster-summary-pattern "top_r2_run_layer_{layer}_cluster_summary.json"
-    --output-dir "${OUTPUT_DIR}"
+    --output-dir "/workspace/outputs/reports/multipartite_003e/AAnet_filtered_skinny_1"
     --d-model 128
     --n-heads 4
     --n-layers 3
@@ -24,12 +24,12 @@ ARGS=(
     --d-head 32
     --act-fn "relu"
     --device "cuda"
-    --layers 0 1 2
+    --layers 1 2
     --topk 12
     --batch-size 256
     --seq-len 16
     --num-batches 512
-    --activation-threshold 1e-6
+    --activation-threshold 0.01
     --max-samples-per-cluster 1000000
     --min-cluster-samples 100000
     --sampling-seed 123
@@ -39,19 +39,19 @@ ARGS=(
     --aanet-batch-size 256
     --aanet-lr 0.001
     --aanet-weight-decay 0.0
-    --aanet-layer-widths 256 128
+    --aanet-layer-widths 64 32
     --aanet-simplex-scale 1.0
     --aanet-noise 0.05
     --aanet-noise-relative
     --aanet-gamma-reconstruction 1.0
-    --aanet-gamma-archetypal 1.0
-    --aanet-gamma-extrema 1.0
-    --aanet-min-samples 50000
+    --aanet-gamma-archetypal 4.0
+    --aanet-gamma-extrema 2.0
+    --aanet-min-samples 35000
     --aanet-num-workers 0
     --aanet-seed 43
     --aanet-val-fraction 0.1
     --aanet-val-min-size 1024
-    --aanet-early-stop-patience 20
+    --aanet-early-stop-patience 15
     --aanet-early-stop-delta 1e-6
     --aanet-lr-patience 10
     --aanet-lr-factor 0.5
@@ -59,7 +59,7 @@ ARGS=(
     --aanet-restarts-no-extrema 3
     --extrema-enabled
     --extrema-knn 200
-    --extrema-max-points 60000
+    --extrema-max-points 50000
     --extrema-seed 431
     --save-models
     --overwrite
