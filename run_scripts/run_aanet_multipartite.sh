@@ -6,34 +6,34 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
-OUTPUT_DIR="${ROOT_DIR}/outputs/reports/multipartite_003e/AAnet"
+OUTPUT_DIR="/workspace/outputs/reports/multipartite_004/AAnet"
 mkdir -p "${OUTPUT_DIR}"
 
 ARGS=(
-    --process-config "${ROOT_DIR}/process_configs.json"
-    --process-config-name "3xmess3_2xtquant_003"
-    --model-ckpt "${ROOT_DIR}/outputs/checkpoints/multipartite_003/checkpoint_step_6000_best.pt"
-    --sae-root "${ROOT_DIR}/outputs/saes/multipartite_003e"
-    --cluster-summary-dir "${ROOT_DIR}/outputs/reports/multipartite_003e"
-    --cluster-summary-pattern "top_r2_run_layer_{layer}_cluster_summary.json"
-    --output-dir "${OUTPUT_DIR}"
+    --process-config "/root/mess3_saes/process_configs.json"
+    --process-config-name "5xmess3_001"
+    --model-ckpt "/workspace/outputs/checkpoints/multipartite_004/checkpoint_step_30001_best.pt"
+    --sae-root "/workspace/outputs/saes/multipartite_004"
+    --cluster-summary-dir "/workspace/outputs/reports/multipartite_004"
+    --cluster-summary-pattern "layer_{layer}_cluster_summary.json"
+    --output-dir "/workspace/outputs/reports/multipartite_004/AAnet"
     --d-model 128
     --n-heads 4
     --n-layers 3
-    --n-ctx 16
+    --n-ctx 32
     --d-head 32
     --act-fn "relu"
     --device "cuda"
     --layers 0 1 2
     --topk 12
     --batch-size 256
-    --seq-len 16
+    --seq-len 32
     --num-batches 512
     --activation-threshold 1e-6
     --max-samples-per-cluster 1000000
     --min-cluster-samples 100000
     --sampling-seed 123
-    --token-indices 4 9 14
+    --token-indices 14 19 24 29
     --k-values 2 3 4 5 6 7 8
     --aanet-epochs 100
     --aanet-batch-size 256
@@ -44,7 +44,7 @@ ARGS=(
     --aanet-noise 0.05
     --aanet-noise-relative
     --aanet-gamma-reconstruction 1.0
-    --aanet-gamma-archetypal 1.0
+    --aanet-gamma-archetypal 3.0
     --aanet-gamma-extrema 1.0
     --aanet-min-samples 50000
     --aanet-num-workers 0
@@ -58,8 +58,8 @@ ARGS=(
     --aanet-grad-clip 1.0
     --aanet-restarts-no-extrema 3
     --extrema-enabled
-    --extrema-knn 200
-    --extrema-max-points 60000
+    --extrema-knn 100
+    --extrema-max-points 20000
     --extrema-seed 431
     --save-models
     --overwrite
