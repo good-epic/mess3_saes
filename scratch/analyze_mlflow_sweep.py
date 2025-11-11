@@ -3,24 +3,43 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+from pathlib import Path
 import numpy as np
 import pandas as pd
 import ast
+import json
+import re
 from pprint import pprint
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 import traceback
 from clustering import SimplexGeometry, CircleGeometry, HypersphereGeometry
 
+try:
+    from scipy import stats as scipy_stats
+except ImportError:  # pragma: no cover - optional dependency
+    scipy_stats = None
 
-df = pd.read_csv("../mlflow_sweep_results_20251105_222254.csv")
+try:
+    from IPython.display import display
+except Exception:  # pragma: no cover - optional dependency
+    def display(obj):
+        print(obj)
+
+
+DATA_PATH = Path(__file__).resolve().parents[1] / "mlflow_sweep_results_20251110_181737.csv"
+df = pd.read_csv(DATA_PATH)
 
 pd.set_option('display.max_columns', None)
+
 
 def safe_eval(x):
     try:
         return ast.literal_eval(x)
     except:
         return {}
+
+
 pprint(df.columns.tolist())
 pprint(ast.literal_eval(df['best_geometries'].iloc[0]))
 
@@ -585,14 +604,493 @@ for t in metrics:
         print(f"  {p}th percentile: {val}")
 
 
+#%%
+######## Non Ground Truth Metrics ############################
+##############################################################
+
+KTH_LOWEST_PRINCIPAL_ANGLE = 4  # Default rank when averaging principal angles
 
 
+def _ensure_dict(val):
+    if isinstance(val, dict):
+        return val
+    if isinstance(val, str):
+        parsed = safe_eval(val)
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
-################################################################
-############### Older code below ###############################
+
+def _as_float(val):
+    if val is None:
+        return np.nan
+    if isinstance(val, (int, float, np.number)):
+        if isinstance(val, (float, np.floating)) and np.isnan(val):
+            return np.nan
+        return float(val)
+    try:
+        num = float(val)
+    except (TypeError, ValueError):
+        return np.nan
+    return num if not np.isnan(num) else np.nan
+
+
+def _filter_numeric(values):
+    nums = []
+    for value in values:
+        num = _as_float(value)
+        if not np.isnan(num):
+            nums.append(num)
+    return nums
+
+
+def _mean_from_dict(mapping):
+    if not isinstance(mapping, dict) or not mapping:
+        return np.nan
+    values = _filter_numeric(mapping.values())
+    return float(np.mean(values)) if values else np.nan
+
+
+def _assignment_r2_stats(payload):
+    stats = {"r2_min": np.nan, "r2_mean": np.nan, "r2_max": np.nan}
+    if not isinstance(payload, dict):
+        return stats
+    scores_dict = payload.get("assignment_scores")
+    if not isinstance(scores_dict, dict):
+        return stats
+    scores = _filter_numeric(scores_dict.values())
+    if not scores:
+        return stats
+    stats["r2_min"] = float(np.min(scores))
+    stats["r2_mean"] = float(np.mean(scores))
+    stats["r2_max"] = float(np.max(scores))
+    return stats
+
+
+def _principal_angle_kth_mean(angle_dict, kth):
+    if not isinstance(angle_dict, dict):
+        return np.nan
+    idx = max(int(kth) - 1, 0)
+    kth_vals = []
+    for values in angle_dict.values():
+        if not isinstance(values, (list, tuple)):
+            continue
+        numeric_vals = sorted(_filter_numeric(values))
+        if len(numeric_vals) > idx:
+            kth_vals.append(numeric_vals[idx])
+    return float(np.mean(kth_vals)) if kth_vals else np.nan
+
+
+def _ordinal(value):
+    value = int(value)
+    if 10 <= value % 100 <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(value % 10, "th")
+    return f"{value}{suffix}"
+
+
+def _empty_dict_series(length, index=None):
+    return pd.Series([{} for _ in range(length)], index=index)
+
+
+num_rows = len(df)
+
+# Normalize assignment payloads so we always have the same structure
+hard_assignments_series = (
+    df["hard_assignments"]
+    if "hard_assignments" in df.columns
+    else _empty_dict_series(num_rows, df.index)
+).apply(_ensure_dict)
+
+hard_assignment_scores_series = (
+    df["hard_assignment_scores"]
+    if "hard_assignment_scores" in df.columns
+    else _empty_dict_series(num_rows, df.index)
+).apply(_ensure_dict)
+
+if "hard_assignment_scores" in df.columns:
+    df["hard_assignment_scores"] = hard_assignment_scores_series
+
+if "component_assignments_hard" in df.columns:
+    component_assign_series = df["component_assignments_hard"].apply(_ensure_dict)
+else:
+    component_assign_series = pd.Series(
+        [
+            {"assignments": assigns, "assignment_scores": scores}
+            for assigns, scores in zip(hard_assignments_series, hard_assignment_scores_series)
+        ],
+        index=df.index,
+    )
+df["component_assignments_hard"] = component_assign_series
+
+# Prepare dict-based metric columns
+if "coherence_metrics_hard" in df.columns:
+    coherence_series = df["coherence_metrics_hard"].apply(_ensure_dict)
+else:
+    print("Warning: 'coherence_metrics_hard' column missing; coherence plots may be empty.")
+    coherence_series = _empty_dict_series(num_rows, df.index)
+principal_angles_series = (
+    df["principal_angles_deg"].apply(_ensure_dict)
+    if "principal_angles_deg" in df.columns
+    else _empty_dict_series(num_rows, df.index)
+)
+min_principal_series = (
+    df["min_principal_angles_deg"].apply(_ensure_dict)
+    if "min_principal_angles_deg" in df.columns
+    else _empty_dict_series(num_rows, df.index)
+)
+within_energy_series = (
+    df["within_projection_energy"].apply(_ensure_dict)
+    if "within_projection_energy" in df.columns
+    else _empty_dict_series(num_rows, df.index)
+)
+
+# Assemble plotting dataframe
+assignment_stats = component_assign_series.apply(
+    lambda payload: pd.Series(_assignment_r2_stats(payload))
+)
+plot_df = assignment_stats.copy()
+
+layer_series = (
+    df["layer"].fillna("unknown")
+    if "layer" in df.columns
+    else pd.Series(["unknown"] * num_rows, index=df.index)
+)
+plot_df["layer"] = layer_series
+
+plot_df["coherence_within_mean"] = coherence_series.apply(
+    lambda c: _as_float(c.get("within_cluster_correlation_mean")) if isinstance(c, dict) else np.nan
+)
+plot_df["coherence_between_mean"] = coherence_series.apply(
+    lambda c: _as_float(c.get("between_cluster_correlation_mean")) if isinstance(c, dict) else np.nan
+)
+plot_df["coherence_diff"] = (
+    plot_df["coherence_between_mean"] - plot_df["coherence_within_mean"]
+)
+
+plot_df["overall_min_principal_angle_deg"] = (
+    pd.to_numeric(df["overall_min_principal_angle_deg"], errors="coerce")
+    if "overall_min_principal_angle_deg" in df.columns
+    else np.nan
+)
+plot_df["principal_angle_kth_mean"] = principal_angles_series.apply(
+    lambda angles: _principal_angle_kth_mean(angles, KTH_LOWEST_PRINCIPAL_ANGLE)
+)
+plot_df["mean_min_principal_angle"] = min_principal_series.apply(_mean_from_dict)
+
+plot_df["within_projection_energy_mean"] = within_energy_series.apply(_mean_from_dict)
+plot_df["between_projection_energy"] = (
+    pd.to_numeric(df["between_projection_energy"], errors="coerce")
+    if "between_projection_energy" in df.columns
+    else np.nan
+)
+plot_df["energy_contrast_ratio"] = (
+    pd.to_numeric(df["energy_contrast_ratio"], errors="coerce")
+    if "energy_contrast_ratio" in df.columns
+    else np.nan
+)
+
+GROUND_TRUTH_AXES = [
+    ("r2_min", "Min assigned R²"),
+    ("r2_mean", "Mean assigned R²"),
+    ("r2_max", "Max assigned R²"),
+]
+
+principal_angle_label = (
+    f"Mean {_ordinal(KTH_LOWEST_PRINCIPAL_ANGLE)} lowest principal angle (deg)"
+)
+
+PLOT_GROUPS = [
+    {
+        "title": "Coherence metrics vs assigned R² (hard)",
+        "metrics": [
+            ("coherence_within_mean", "Within-cluster corr (mean)"),
+            ("coherence_between_mean", "Between-cluster corr (mean)"),
+            ("coherence_diff", "Between - within corr"),
+        ],
+    },
+    {
+        "title": "Principal angles vs assigned R²",
+        "metrics": [
+            ("overall_min_principal_angle_deg", "Overall min principal angle (deg)"),
+            ("principal_angle_kth_mean", principal_angle_label),
+            ("mean_min_principal_angle", "Mean of min principal angles (deg)"),
+        ],
+    },
+    {
+        "title": "Projection energy metrics vs assigned R²",
+        "metrics": [
+            ("within_projection_energy_mean", "Mean within projection energy"),
+            ("between_projection_energy", "Between projection energy"),
+            ("energy_contrast_ratio", "Energy contrast ratio"),
+        ],
+    },
+]
+
+layer_values = plot_df["layer"].fillna("unknown")
+layer_order = list(dict.fromkeys(layer_values.tolist()))
+if not layer_order:
+    layer_order = ["unknown"]
+cmap = plt.get_cmap("tab20")
+layer_colors = {layer: cmap(i % cmap.N) for i, layer in enumerate(layer_order)}
+legend_handles = [
+    Line2D(
+        [0],
+        [0],
+        marker="o",
+        linestyle="",
+        color=color,
+        label=layer,
+        markersize=6,
+        markeredgecolor="k",
+        markeredgewidth=0.25,
+    )
+    for layer, color in layer_colors.items()
+]
+
+has_ground_truth = any(
+    plot_df[col].notna().any() for col, _ in GROUND_TRUTH_AXES if col in plot_df.columns
+)
+
+if not has_ground_truth:
+    print("Skipping non ground truth metric plots: no assignment score data available.")
+else:
+    for group in PLOT_GROUPS:
+        metric_keys = [key for key, _ in group["metrics"]]
+        has_metric_data = any(
+            plot_df.get(key, pd.Series(dtype=float)).notna().any() for key in metric_keys
+        )
+        if not has_metric_data:
+            print(f"Skipping '{group['title']}' plots (no metric data).")
+            continue
+
+        n_rows = len(metric_keys)
+        n_cols = len(GROUND_TRUTH_AXES)
+        fig, axes = plt.subplots(
+            n_rows,
+            n_cols,
+            figsize=(4.8 * n_cols, 3.2 * n_rows),
+            sharex="col",
+            squeeze=False,
+        )
+
+        for row_idx, (metric_key, metric_label) in enumerate(group["metrics"]):
+            y_vals = plot_df.get(metric_key, pd.Series(dtype=float))
+            for col_idx, (x_key, x_label) in enumerate(GROUND_TRUTH_AXES):
+                ax = axes[row_idx][col_idx]
+                x_vals = plot_df.get(x_key, pd.Series(dtype=float))
+                valid_mask = x_vals.notna() & y_vals.notna()
+
+                plotted = False
+                for layer_name in layer_order:
+                    layer_mask = valid_mask & (layer_values == layer_name)
+                    if layer_mask.any():
+                        ax.scatter(
+                            x_vals[layer_mask],
+                            y_vals[layer_mask],
+                            alpha=0.75,
+                            s=36,
+                            color=layer_colors[layer_name],
+                            edgecolor="white",
+                            linewidth=0.4,
+                        )
+                        plotted = True
+
+                if not plotted:
+                    ax.text(
+                        0.5,
+                        0.5,
+                        "No data",
+                        ha="center",
+                        va="center",
+                        transform=ax.transAxes,
+                        color="0.4",
+                    )
+
+                if row_idx == n_rows - 1:
+                    ax.set_xlabel(x_label)
+                if col_idx == 0:
+                    ax.set_ylabel(metric_label)
+                ax.grid(True, alpha=0.25, linestyle="--", linewidth=0.7)
+
+        fig.suptitle(group["title"], fontsize=14)
+        if legend_handles:
+            fig.legend(
+                handles=legend_handles,
+                labels=[h.get_label() for h in legend_handles],
+                title="Layer",
+                loc="upper right",
+                bbox_to_anchor=(0.98, 0.98),
+            )
+            layout_rect = [0, 0, 0.88, 0.95]
+        else:
+            layout_rect = [0, 0, 1, 0.96]
+        plt.tight_layout(rect=layout_rect)
+        plt.show()
+
 
 
 #%%
+# Layer-wise regression: predict mean assigned R² using non-ground-truth metrics
+try:
+    from sklearn.linear_model import LinearRegression
+except ImportError:
+    LinearRegression = None
+
+PLOT_GROUPS = [
+    {
+        "title": "Coherence metrics vs assigned R² (hard)",
+        "metrics": [
+            ("coherence_within_mean", "Within-cluster corr (mean)"),
+            ("coherence_between_mean", "Between-cluster corr (mean)"),
+            ("coherence_diff", "Between - within corr"),
+        ],
+    },
+    {
+        "title": "Principal angles vs assigned R²",
+        "metrics": [
+            ("overall_min_principal_angle_deg", "Overall min principal angle (deg)"),
+            ("principal_angle_kth_mean", principal_angle_label),
+            ("mean_min_principal_angle", "Mean of min principal angles (deg)"),
+        ],
+    },
+    {
+        "title": "Projection energy metrics vs assigned R²",
+        "metrics": [
+            ("within_projection_energy_mean", "Mean within projection energy"),
+            ("between_projection_energy", "Between projection energy"),
+            ("energy_contrast_ratio", "Energy contrast ratio"),
+        ],
+    },
+]
+
+REGRESSION_TARGET_COL = "r2_mean"
+REGRESSION_FEATURES = sorted(
+    {metric_key for group in PLOT_GROUPS for metric_key, _ in group["metrics"] \
+        if metric_key not in ['coherence_within_mean', 'coherence_between_mean', 'mean_min_principal_angle', 'within_projection_energy_mean']}
+)
+REGRESSION_FEATURES = ["coherence_diff", "principal_angle_kth_mean", "overall_min_principal_angle_deg", "energy_contrast_ratio"]
+REGRESSION_MIN_FEATURE_COVERAGE = 0.3
+REGRESSION_MIN_ROWS = 5
+# Collect ground-truth R² stats for plotting/analysis
+r2_stats_df = plot_df[["r2_min", "r2_mean", "r2_max", "layer"]].copy()
+# Now r2_stats_df contains the min/mean/max assigned R² and layer for each row for manual use.
+
+
+def _run_layer_regression(layer_name, layer_df):
+    """Fit LinearRegression (sklearn) and report coefficients with p-values."""
+    available_features = []
+    coverage_stats = {}
+    for feat in REGRESSION_FEATURES:
+        if feat not in layer_df.columns:
+            continue
+        coverage = layer_df[feat].notna().mean()
+        coverage_stats[feat] = coverage
+        if coverage >= REGRESSION_MIN_FEATURE_COVERAGE:
+            available_features.append(feat)
+
+    if not available_features:
+        print(
+            f"Skipping regression for {layer_name}: no feature met "
+            f"coverage threshold {REGRESSION_MIN_FEATURE_COVERAGE:.0%} "
+            f"(coverage={coverage_stats})."
+        )
+        return
+
+    target_series = layer_df[REGRESSION_TARGET_COL]
+    if target_series.notna().sum() < REGRESSION_MIN_ROWS:
+        print(f"Skipping regression for {layer_name}: target '{REGRESSION_TARGET_COL}' has insufficient non-null rows.")
+        return
+
+    feature_df = layer_df[available_features].astype(float)
+    # Impute remaining NaNs with column means to avoid dropping all rows
+    feature_means = feature_df.mean(skipna=True)
+    feature_df = feature_df.fillna(feature_means)
+
+    mask = target_series.notna()
+    y = target_series[mask].to_numpy(dtype=float)
+    X = feature_df[mask].to_numpy(dtype=float)
+
+    min_samples = len(available_features) + 1  # intercept + features
+    if len(y) < max(min_samples, REGRESSION_MIN_ROWS):
+        print(
+            f"Skipping regression for {layer_name}: insufficient usable samples "
+            f"({len(y)}) after aligning target and features."
+        )
+        return
+
+    model = LinearRegression()
+    model.fit(X, y)
+    y_pred = model.predict(X)
+
+    coef = np.concatenate(([model.intercept_], model.coef_))
+    ones = np.ones((len(y), 1), dtype=float)
+    design_matrix = np.hstack([ones, X])
+    resid = y - y_pred
+
+    n_samples = len(y)
+    n_params = design_matrix.shape[1]
+    dof = n_samples - n_params
+    rss = float(np.sum(resid ** 2))
+    tss = float(np.sum((y - np.mean(y)) ** 2))
+    r_squared = 1 - rss / tss if tss > 0 else np.nan
+
+    p_values = [np.nan] * len(coef)
+    if dof > 0 and scipy_stats is not None:
+        sigma_sq = rss / dof
+        xtx = design_matrix.T @ design_matrix
+        xtx_inv = np.linalg.pinv(xtx)
+        cov = sigma_sq * xtx_inv
+        std_err = np.sqrt(np.clip(np.diag(cov), a_min=0, a_max=None))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            t_stats = np.divide(coef, std_err, out=np.full_like(coef, np.nan), where=std_err > 0)
+        p_values = 2 * scipy_stats.t.sf(np.abs(t_stats), df=dof)
+    elif scipy_stats is None:
+        print("  (SciPy not available; coefficient p-values omitted.)")
+
+    header = ["intercept"] + available_features
+    print(f"\nLayer {layer_name} regression results using features {available_features} "
+          f"(n={n_samples}, R²={r_squared:.4f}):")
+    print(f"{'Coefficient':<35}{'Estimate':>12}{'p-value':>14}")
+    for name, beta, p_val in zip(header, coef, p_values):
+        p_str = f"{p_val:.3e}" if np.isfinite(p_val) else "   n/a"
+        print(f"{name:<35}{beta:>12.5f}{p_str:>14}")
+
+    plt.figure(figsize=(5.5, 5))
+    plt.scatter(
+        y,
+        y_pred,
+        alpha=0.8,
+        color=layer_colors.get(layer_name, "#1f77b4"),
+        edgecolor="white",
+        linewidth=0.4,
+    )
+    line_min = float(np.nanmin([y.min(), y_pred.min()]))
+    line_max = float(np.nanmax([y.max(), y_pred.max()]))
+    plt.plot([line_min, line_max], [line_min, line_max], color="k", linestyle="--", linewidth=1)
+    plt.xlabel("Actual mean assigned R²")
+    plt.ylabel("Predicted mean assigned R²")
+    plt.title(f"{layer_name}: actual vs predicted assigned R²")
+    plt.grid(True, alpha=0.25, linestyle="--", linewidth=0.7)
+    plt.tight_layout()
+    plt.show()
+
+
+if LinearRegression is None:
+    print("scikit-learn is not available; skipping regression plots.")
+else:
+    missing_features = [feat for feat in REGRESSION_FEATURES if feat not in plot_df.columns]
+    if missing_features:
+        print(f"Cannot run regressions; missing features in plot_df: {missing_features}")
+    elif REGRESSION_TARGET_COL not in plot_df.columns:
+        print(f"Cannot run regressions; missing target column '{REGRESSION_TARGET_COL}'.")
+    else:
+        for layer_name in sorted(plot_df["layer"].dropna().unique()):
+            _run_layer_regression(layer_name, plot_df[plot_df["layer"] == layer_name])
+
+#%%
+############### Older code below ###############################
+################################################################
 
 cols_to_drop = [
     "layer_0_component_assignment_refined_assignments",

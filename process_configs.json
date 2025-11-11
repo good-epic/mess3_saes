@@ -2,6 +2,48 @@
     "single_mess3": [
         {"type": "mess3", "params": {"x": 0.1, "a": 0.7}}
     ],
+    "mess3_x_0.05_a_0.05": [
+        {"type": "mess3", "params": {"x": 0.05, "a": 0.7}}
+    ],
+    "mess3_x_0.1_a_0.05": [
+        {"type": "mess3", "params": {"x": 0.1, "a": 0.05}}
+    ],
+    "mess3_x_0.05_a_0.1": [
+        {"type": "mess3", "params": {"x": 0.05, "a": 0.1}}
+    ],
+    "mess3_x_0.05_a_0.7": [
+        {"type": "mess3", "params": {"x": 0.05, "a": 0.7}}
+    ],
+    "mess3_x_0.05_a_0.8": [
+        {"type": "mess3", "params": {"x": 0.05, "a": 0.8}}
+    ],
+    "mess3_x_0.05_a_0.9": [
+        {"type": "mess3", "params": {"x": 0.05, "a": 0.9}}
+    ],
+    "mess3_x_0.05_a_0.95": [
+        {"type": "mess3", "params": {"x": 0.05, "a": 0.95}}
+    ],
+    "mess3_x_0.075_a_0.9": [
+        {"type": "mess3", "params": {"x": 0.075, "a": 0.9}}
+    ],
+    "mess3_x_0.1_a_0.7": [
+        {"type": "mess3", "params": {"x": 0.1, "a": 0.7}}
+    ],
+    "mess3_x_0.1_a_0.8": [
+        {"type": "mess3", "params": {"x": 0.1, "a": 0.8}}
+    ],
+    "mess3_x_0.1_a_0.9": [
+        {"type": "mess3", "params": {"x": 0.1, "a": 0.9}}
+    ],
+    "mess3_x_0.1_a_0.95": [
+        {"type": "mess3", "params": {"x": 0.1, "a": 0.95}}
+    ],
+    "mess3_x_045._a_0.85": [
+        {"type": "mess3", "params": {"x": 0.45, "a": 0.85}}
+    ],
+    "mess3_x_045._a_0.95": [
+        {"type": "mess3", "params": {"x": 0.45, "a": 0.95}}
+    ],
     "3xmess3_2xtquant_001": [
         {
             "type": "mess3",
