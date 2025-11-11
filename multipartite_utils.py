@@ -334,10 +334,8 @@ def _load_process_stack(
             )
 
     components = build_components_from_config(process_cfg_raw)
-    if len(components) == 1:
-        data_source: object = components[0].process
-    else:
-        data_source = MultipartiteSampler(components)
+    # Always return a MultipartiteSampler so downstream code has a single sampling path.
+    data_source: MultipartiteSampler = MultipartiteSampler(components)
     return process_cfg_raw, components, data_source
 
 
