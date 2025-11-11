@@ -268,6 +268,9 @@ def extract_layer_metrics(cluster_summary: Dict[str, Any], layer: str) -> Dict[s
     metrics["between_projection_energy"] = cluster_summary.get("between_projection_energy", None)
     metrics["energy_contrast_ratio"] = cluster_summary.get("energy_contrast_ratio", None)
 
+    coherence_metrics_hard = cluster_summary.get("coherence_metrics_hard", None)
+    metrics["coherence_metrics_hard"] = json.dumps(coherence_metrics_hard) if coherence_metrics_hard is not None else None
+
     # Component assignments (hard, soft, refined)
     for assignment_type in ["hard", "soft", "refined"]:
         assignment_data = cluster_summary.get(f"component_assignment_{assignment_type}", None)
@@ -543,6 +546,7 @@ def main():
     # Metric columns in logical order
     metric_cols = [
         "energy_contrast_ratio",
+        "coherence_metrics_hard",
         # Assignments
         "hard_assignments", "hard_assignment_scores",
         "soft_assignments", "soft_assignment_scores",
