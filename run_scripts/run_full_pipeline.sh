@@ -7,7 +7,21 @@ set -euo pipefail
 #export XLA_PYTHON_CLIENT_PREALLOCATE=false
 #export XLA_PYTHON_CLIENT_MEM_FRACTION=.90
 
-CHECKPOINT_DIR="/workspace/outputs/checkpoints/mess3_x_0.05_a_0.05"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-python}"
+
+CONFIG_NAMES=(
+    "mess3_x_0.05_a_0.05"
+    "mess3_x_0.1_a_0.05"
+    "mess3_x_0.05_a_0.1"
+    "mess3_x_0.05_a_0.7"
+    "mess3_x_0.05_a_0.8"
+)
+
+for CONFIG_NAME in "${CONFIG_NAMES[@]}"; do
+echo "=== Running pipeline for ${CONFIG_NAME} ==="
+CHECKPOINT_DIR="/workspace/outputs/checkpoints/${CONFIG_NAME}"
 D_MODEL=64
 N_HEADS=4
 N_LAYERS=3
@@ -16,28 +30,28 @@ D_HEAD=32
 DICT_MUL=4
 SAE_PRIMARY_TOPK=3
 
-python -u train_transformer.py \
+"${PYTHON_BIN}" -u "${ROOT_DIR}/train_transformer.py" \
     --d_model "${D_MODEL}" \
     --n_heads "${N_HEADS}" \
     --n_layers "${N_LAYERS}" \
     --n_ctx "${N_CTX}" \
     --d_head "${D_HEAD}" \
     --checkpoint_path "${CHECKPOINT_DIR}" \
-    --fig_out_dir /workspace/outputs/reports/mess3_x_0.05_a_0.05 \
+    --fig_out_dir "/workspace/outputs/reports/${CONFIG_NAME}" \
     --num_steps 100000 \
     --act_fn relu \
     --device cuda \
     --batch_size 4096 \
     --pct_var_explained 0.99 \
-    --process_config "process_configs.json" \
-    --process_config_name "mess3_x_0.05_a_0.05" \
+    --process_config "${ROOT_DIR}/process_configs.json" \
+    --process_config_name "${CONFIG_NAME}" \
     --early_stopping_patience 30 \
     --early_stopping_delta 5e-5 \
     --early_stopping_min_steps 50000
 
 
 FINAL_CHECKPOINT=$(
-python - <<'PY' "${CHECKPOINT_DIR}"
+"${PYTHON_BIN}" - <<'PY' "${CHECKPOINT_DIR}"
 import sys
 from pathlib import Path
 
@@ -55,7 +69,7 @@ PY
 
 echo "Using final checkpoint: ${FINAL_CHECKPOINT}" 
 
-python -u train_saes.py \
+"${PYTHON_BIN}" -u "${ROOT_DIR}/train_saes.py" \
     --d_model "${D_MODEL}" \
     --n_heads "${N_HEADS}" \
     --n_layers "${N_LAYERS}" \
@@ -71,10 +85,10 @@ python -u train_saes.py \
     --aux_penalty 0.03125 \
     --bandwidth 0.001 \
     --sae_batch_size 64 \
-    --sae_output_dir /workspace/outputs/saes/mess3_x_0.05_a_0.05 \
+    --sae_output_dir "/workspace/outputs/saes/${CONFIG_NAME}" \
     --load_model "${FINAL_CHECKPOINT}" \
-    --process_config "process_configs.json" \
-    --process_config_name "mess3_x_0.05_a_0.05" \
+    --process_config "${ROOT_DIR}/process_configs.json" \
+    --process_config_name "${CONFIG_NAME}" \
     --sae_steps 50000 \
     --sae_early_stopping_min_steps 15000 \
     --sae_early_stopping_patience 30 \
@@ -86,11 +100,11 @@ python -u train_saes.py \
 #    --l1_coeff_seq 0.001 0.005 0.01 0.05 0.1 0.15 \
 #    --k 3 4 5 6 7 8 10 12 14 16 19 22 25 \
 
-CLUSTER_OUTPUT_DIR="/workspace/outputs/reports/mess3_x_0.05_a_0.05/aanet_cluster_summaries"
+CLUSTER_OUTPUT_DIR="/workspace/outputs/reports/${CONFIG_NAME}/aanet_cluster_summaries"
 mkdir -p "${CLUSTER_OUTPUT_DIR}"
 N_LATENTS=$((D_MODEL * DICT_MUL))
 for layer in 0 1 2; do
-    python - <<'PY' "${CLUSTER_OUTPUT_DIR}" "${layer}" "${N_LATENTS}" "${SAE_PRIMARY_TOPK}"
+    "${PYTHON_BIN}" - <<'PY' "${CLUSTER_OUTPUT_DIR}" "${layer}" "${N_LATENTS}" "${SAE_PRIMARY_TOPK}"
 import json
 import sys
 from pathlib import Path
@@ -128,21 +142,17 @@ print(f"Wrote {out_path}")
 PY
 done
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python}"
-
-OUTPUT_DIR="${ROOT_DIR}/outputs/reports/mess3_x_0.05_a_0.05/AAnet"
+OUTPUT_DIR="${ROOT_DIR}/outputs/reports/${CONFIG_NAME}/AAnet"
 mkdir -p "${OUTPUT_DIR}"
 
 ARGS=(
-    --process-config "/root/mess3_saes/process_configs.json"
-    --process-config-name "mess3_x_0.05_a_0.05"
+    --process-config "${ROOT_DIR}/process_configs.json"
+    --process-config-name "${CONFIG_NAME}"
     --model-ckpt ${FINAL_CHECKPOINT}
-    --sae-root "/workspace/outputs/saes/mess3_x_0.05_a_0.05"
-    --cluster-summary-dir "/workspace/outputs/reports/mess3_x_0.05_a_0.05/aanet_cluster_summaries"
+    --sae-root "/workspace/outputs/saes/${CONFIG_NAME}"
+    --cluster-summary-dir "/workspace/outputs/reports/${CONFIG_NAME}/aanet_cluster_summaries"
     --cluster-summary-pattern "mess3_layer_{layer}_cluster_summary.json"
-    --output-dir "/workspace/outputs/reports/mess3_x_0.05_a_0.05/AAnet"
+    --output-dir "/workspace/outputs/reports/${CONFIG_NAME}/AAnet"
     --d-model 64
     --n-heads 4
     --n-layers 3
@@ -203,3 +213,4 @@ done
 printf '\n\n'
 
 "${PYTHON_BIN}" -u "${ROOT_DIR}/run_aanet_belief_geometry.py" "${ARGS[@]}"
+done
