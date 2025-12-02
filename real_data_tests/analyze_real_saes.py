@@ -1,5 +1,6 @@
 
 import os
+from tqdm import tqdm
 import argparse
 import json
 import torch
@@ -13,7 +14,7 @@ from aanet_pipeline.cluster_summary import AAnetDescriptor
 import jax
 from huggingface_hub import login
 
-from real_data_utils import RealDataSampler
+from real_data_utils import RealDataSampler, build_real_aanet_datasets
 from real_data_tests.real_pipeline import RealDataClusteringPipeline
 
 def main():
@@ -216,7 +217,7 @@ def main():
             learning_rate=1e-3,
         )
         
-        for desc in descriptors:
+        for desc in tqdm(descriptors, desc=f"Fitting AAnet (n_clusters={n_clusters})"):
             dataset = datasets[desc.cluster_id]
             if dataset.data.shape[0] < 32:
                 print(f"Skipping cluster {desc.cluster_id} (too few samples)")

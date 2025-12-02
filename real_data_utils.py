@@ -9,6 +9,8 @@ from aanet_pipeline.cluster_summary import AAnetDescriptor
 from aanet_pipeline.data_builder import AAnetDatasetResult, _prepare_cluster_indices
 from BatchTopK.sae import TopKSAE
 
+from tqdm import tqdm
+
 class RealDataSampler:
     """
     Sampler for real text data (e.g. OpenWebText, The Pile, Wikitext).
@@ -101,7 +103,7 @@ def collect_real_activity_stats(
 
     print(f"Collecting activity stats: {n_batches} batches of size {batch_size}")
     
-    for i in range(n_batches):
+    for i in tqdm(range(n_batches), desc="Collecting Activity Stats"):
         tokens = sampler.sample_tokens_batch(batch_size, sample_len, device)
         
         with torch.no_grad():
@@ -170,7 +172,7 @@ def build_real_aanet_datasets(
     total_counts: Dict[int, int] = {desc.cluster_id: 0 for desc in aanet_descriptors}
     kept_counts: Dict[int, int] = {desc.cluster_id: 0 for desc in aanet_descriptors}
 
-    for _ in range(num_batches):
+    for _ in tqdm(range(num_batches), desc="Building AAnet Datasets"):
         tokens = sampler.sample_tokens_batch(batch_size, seq_len, str(device))
 
         with torch.no_grad():

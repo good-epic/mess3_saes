@@ -59,6 +59,7 @@ import torch
 from scipy.linalg import qr, svd, orth, subspace_angles
 from sklearn.cluster import spectral_clustering
 from sklearn.linear_model import ElasticNet
+from tqdm import tqdm
 
 from mess3_gmg_analysis_utils import (
     fit_residual_to_belief_map,
@@ -608,7 +609,7 @@ def k_subspaces_clustering(
     prev_labels = None
     rank_details: Dict[int, RankEstimationDetails] = {}
 
-    for iter_idx in range(max_iters):
+    for iter_idx in tqdm(range(max_iters), desc="K-Subspaces EM"):
         # Assignment step
         labels, reconstruction_errors = assign_to_subspaces(vectors, subspace_bases)
 
@@ -700,7 +701,7 @@ def elastic_net_subspace_clustering(
     C = np.zeros((n_vectors, n_vectors))
 
     # Solve elastic net for each point
-    for i in range(n_vectors):
+    for i in tqdm(range(n_vectors), desc="ENSC Elastic Net"):
         # Build dictionary excluding current point
         X_minus_i = np.delete(vectors, i, axis=0)
         y_i = vectors[i]
@@ -952,7 +953,7 @@ def grid_search_k_subspaces(
     best_result = None
     best_bic = float('inf')
 
-    for K in k_values:
+    for K in tqdm(k_values, desc="Grid Search K"):
         for r in r_values:
             if r > d_features or K > n_vectors:
                 continue
