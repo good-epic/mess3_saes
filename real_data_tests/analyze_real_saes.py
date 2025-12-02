@@ -8,7 +8,7 @@ import numpy as np
 from transformer_lens import HookedTransformer
 from sae_lens import SAE
 from clustering import ClusteringConfig
-from clustering.config import GeometryFittingConfig
+from clustering.config import GeometryFittingConfig, SubspaceParams, SamplingConfig
 from aanet_pipeline import build_aanet_datasets, compute_diffusion_extrema, train_aanet_model, TrainingConfig, ExtremaConfig
 from aanet_pipeline.cluster_summary import AAnetDescriptor
 import jax
@@ -161,16 +161,17 @@ def main():
         clustering_config = ClusteringConfig(
             site=site,
             method="k_subspaces",
-            subspace_params={
-                "n_clusters": n_clusters,
-            },
-            sampling_config={
-                "sample_sequences": 1024,
-                "activation_batches": 1024,
-                "max_activations": args.total_samples,
-                "sample_seq_len": 128,
-                "latent_activity_threshold": args.latent_activity_threshold,
-            },
+            selected_k=0,
+            subspace_params=SubspaceParams(
+                n_clusters=n_clusters,
+            ),
+            sampling_config=SamplingConfig(
+                sample_sequences=1024,
+                activation_batches=1024,
+                max_activations=args.total_samples,
+                sample_seq_len=128,
+                latent_activity_threshold=args.latent_activity_threshold,
+            ),
             geometry_fitting_config=GeometryFittingConfig(
                 enabled=True,
                 simplex_k_range=(2, 8),
