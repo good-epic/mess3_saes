@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from BatchTopK.sae import TopKSAE, VanillaSAE
+from sae_variants.banded_cov_sae import BandedCovarianceSAE
 from multipartite_utils import collect_latent_activity_data
 from mess3_gmg_analysis_utils import sae_encode_features
 from subspace_clustering_utils import normalize_and_deduplicate
@@ -41,6 +42,7 @@ class SiteClusteringPipeline:
         component_metadata: Optional[Dict[str, Dict[str, Any]]] = None,
         site_idx: int = 0,
         device: str = "cpu",
+        sae_instance: Optional[Any] = None,
     ) -> ClusteringResult:
         """Run complete clustering pipeline for a site.
 
@@ -55,32 +57,40 @@ class SiteClusteringPipeline:
             component_metadata: Component metadata (for EPDFs)
             site_idx: Site index (for random seeding)
             device: Device for computation
-
-        Returns:
-            ClusteringResult with all outputs
+            sae_instance: Optional pre-loaded SAE instance
         """
         site = config.site
         selected_k = config.selected_k
 
         # Load SAE (supports both TopK and Vanilla)
-        if config.sae_type == "top_k":
-            sae_filename = f"{site}_top_k_k{int(config.sae_param)}.pt"
-            sae_class = TopKSAE
-        else:  # vanilla
-            sae_filename = f"{site}_vanilla_lambda_{config.sae_param}.pt"
-            sae_class = VanillaSAE
+        if sae_instance is not None:
+            sae = sae_instance
+            sae.eval()
+        else:
+            if config.sae_type == "top_k":
+                sae_filename = f"{site}_top_k_k{int(config.sae_param)}.pt"
+                sae_class = TopKSAE
+            elif config.sae_type == "banded":
+                ls, la = config.sae_param
+                ls_str = str(ls).replace(".", "p")
+                la_str = str(la).replace(".", "p")
+                sae_filename = f"{site}_banded_ls_{ls_str}__la_{la_str}.pt"
+                sae_class = BandedCovarianceSAE
+            else:  # vanilla
+                sae_filename = f"{site}_vanilla_lambda_{config.sae_param}.pt"
+                sae_class = VanillaSAE
 
-        sae_path = os.path.join(self.sae_folder, sae_filename)
-        if not os.path.exists(sae_path):
-            raise FileNotFoundError(f"SAE checkpoint not found at {sae_path}")
+            sae_path = os.path.join(self.sae_folder, sae_filename)
+            if not os.path.exists(sae_path):
+                raise FileNotFoundError(f"SAE checkpoint not found at {sae_path}")
 
-        ckpt = torch.load(sae_path, map_location=device, weights_only=False)
-        ckpt["cfg"]["device"] = "cuda" if device.startswith("cuda") else "cpu"
-        sae_cfg = dict(ckpt["cfg"])
-        sae_cfg["device"] = ckpt["cfg"]["device"]
-        sae = sae_class(sae_cfg).to(device)
-        sae.load_state_dict(ckpt["state_dict"])
-        sae.eval()
+            ckpt = torch.load(sae_path, map_location=device, weights_only=False)
+            ckpt["cfg"]["device"] = "cuda" if device.startswith("cuda") else "cpu"
+            sae_cfg = dict(ckpt["cfg"])
+            sae_cfg["device"] = ckpt["cfg"]["device"]
+            sae = sae_class(sae_cfg).to(device)
+            sae.load_state_dict(ckpt["state_dict"])
+            sae.eval()
 
         decoder_dirs = sae.W_dec.detach().cpu().numpy()
 

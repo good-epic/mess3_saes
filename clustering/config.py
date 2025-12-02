@@ -140,8 +140,8 @@ class ClusteringConfig:
     seed: int = 0
 
     # SAE configuration
-    sae_type: Literal["top_k", "vanilla"] = "top_k"
-    sae_param: float = 0.0  # k for top_k, lambda for vanilla
+    sae_type: Literal["top_k", "vanilla", "banded"] = "top_k"
+    sae_param: float | Tuple[float, float] = 0.0  # k for top_k, lambda for vanilla, (ls, la) for banded
 
     # Method-specific params
     spectral_params: SpectralParams = field(default_factory=SpectralParams)
@@ -156,7 +156,7 @@ class ClusteringConfig:
     geometry_fitting_config: GeometryFittingConfig = field(default_factory=GeometryFittingConfig)
 
     @classmethod
-    def from_args(cls, args, site: str, selected_k: int) -> 'ClusteringConfig':
+    def from_args(cls, args, site: str, selected_k: int | float | Tuple[float, float]) -> 'ClusteringConfig':
         """Create config from command-line arguments."""
         spectral_params = SpectralParams(
             sim_metric=args.sim_metric,
@@ -249,6 +249,8 @@ class ClusteringConfig:
         sae_type = getattr(args, 'sae_type', 'top_k')
         if sae_type == 'top_k':
             sae_param = float(selected_k)
+        elif sae_type == 'banded':
+            sae_param = selected_k  # Tuple
         else:  # vanilla
             sae_param = float(selected_k)  # Will be lambda value passed as selected_k
 

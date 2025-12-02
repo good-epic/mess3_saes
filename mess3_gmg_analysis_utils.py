@@ -112,6 +112,59 @@ def extract_vanilla_l2(metrics_summary: Mapping[str, Mapping], site_filter: Iter
     return l2_by_site
 
 
+def extract_banded_l2(metrics_summary: Mapping[str, Mapping], site_filter: Iterable[str] | None = None) -> Dict[str, Dict[Tuple[float, float], float]]:
+    """Extract L2 metrics for banded covariance SAEs.
+
+    Args:
+        metrics_summary: Metrics dict from metrics_summary.json
+        site_filter: Optional list of site names to include
+
+    Returns:
+        Dict mapping site -> (lambda_sparse, lambda_ar) -> L2 loss
+    """
+    allowed = set(site_filter) if site_filter is not None else None
+    l2_by_site: Dict[str, Dict[Tuple[float, float], float]] = {}
+    for site, site_data in metrics_summary.items():
+        if allowed is not None and site not in allowed:
+            continue
+        banded_data = (
+            site_data.get("sequence", {}).get("banded", {})
+            if isinstance(site_data, Mapping)
+            else {}
+        )
+        site_dict: Dict[Tuple[float, float], float] = {}
+        for key, entry in banded_data.items():
+            # Parse "ls_0p005__la_0p005" -> (0.005, 0.005)
+            try:
+                parts = str(key).split("__")
+                if len(parts) != 2:
+                    continue
+                ls_str = parts[0].replace("ls_", "").replace("p", ".")
+                la_str = parts[1].replace("la_", "").replace("p", ".")
+                ls_val = float(ls_str)
+                la_val = float(la_str)
+                param_tuple = (ls_val, la_val)
+            except ValueError:
+                continue
+
+            l2 = (
+                entry.get("avg_last_quarter", {}).get("l2")
+                if isinstance(entry, Mapping)
+                else None
+            )
+            if l2 is None:
+                l2_vec = entry.get("last50_loss", None)
+                if l2_vec is None:
+                    continue
+                else:
+                    l2 = np.mean(l2_vec)
+            site_dict[param_tuple] = float(l2)
+        if site_dict:
+            l2_by_site[site] = site_dict
+    return l2_by_site
+
+
+
 def compute_average_l2(l2_by_site: Mapping[str, Mapping[int | float, float]]) -> Dict[int | float, float]:
     """Compute average L2 across sites for each parameter value.
 
@@ -652,15 +705,30 @@ def plot_activity_histograms_site_clusters(
 def write_cluster_metadata(
     output_path: str,
     cluster_stats: Mapping[int, Mapping],
-    selected_k: int,
-    average_l2: Mapping[int, float],
+    selected_k: int | float | Tuple[float, float],
+    average_l2: Mapping[int | float | Tuple[float, float], float],
     cluster_labels: Sequence[int] | None = None,
     extra_fields: Mapping[str, object] | None = None,
 ) -> None:
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    # Handle selected_k
+    if isinstance(selected_k, tuple):
+        sel_k_val = list(selected_k)
+    else:
+        sel_k_val = float(selected_k)
+
+    # Handle average_l2 keys
+    avg_l2_dict = {}
+    for k, v in average_l2.items():
+        if isinstance(k, tuple):
+            avg_l2_dict[str(k)] = float(v)
+        else:
+            avg_l2_dict[float(k)] = float(v)
+
     payload = {
-        "selected_k": int(selected_k),
-        "average_l2": {int(k): float(v) for k, v in average_l2.items()},
+        "selected_k": sel_k_val,
+        "average_l2": avg_l2_dict,
         "clusters": {
             int(cid): {
                 key: (value if not isinstance(value, list) else [int(v) if isinstance(v, (int, np.integer)) else float(v) for v in value])

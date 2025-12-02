@@ -969,7 +969,8 @@ REGRESSION_FEATURES = sorted(
     {metric_key for group in PLOT_GROUPS for metric_key, _ in group["metrics"] \
         if metric_key not in ['coherence_within_mean', 'coherence_between_mean', 'mean_min_principal_angle', 'within_projection_energy_mean']}
 )
-REGRESSION_FEATURES = ["coherence_diff", "principal_angle_kth_mean", "overall_min_principal_angle_deg", "energy_contrast_ratio"]
+#REGRESSION_FEATURES = ["coherence_diff", "principal_angle_kth_mean", "overall_min_principal_angle_deg", "energy_contrast_ratio"]
+REGRESSION_FEATURES = ["coherence_diff", "principal_angle_kth_mean", "overall_min_principal_angle_deg"]
 REGRESSION_MIN_FEATURE_COVERAGE = 0.3
 REGRESSION_MIN_ROWS = 5
 # Collect ground-truth R² stats for plotting/analysis
@@ -1074,8 +1075,12 @@ def _run_layer_regression(layer_name, layer_df):
     plt.grid(True, alpha=0.25, linestyle="--", linewidth=0.7)
     plt.tight_layout()
     plt.show()
+    
+    return model, y_pred
 
 
+reg_models = []
+y_preds = []
 if LinearRegression is None:
     print("scikit-learn is not available; skipping regression plots.")
 else:
@@ -1086,7 +1091,38 @@ else:
         print(f"Cannot run regressions; missing target column '{REGRESSION_TARGET_COL}'.")
     else:
         for layer_name in sorted(plot_df["layer"].dropna().unique()):
-            _run_layer_regression(layer_name, plot_df[plot_df["layer"] == layer_name])
+            reg_model, y_pred = _run_layer_regression(layer_name, plot_df[plot_df["layer"] == layer_name])
+            reg_models.append(reg_model)
+            y_preds.append(y_pred)
+
+
+#%%
+# Create a percentile version of plot_df where all columns are converted to percentiles
+def df_to_percentiles(df):
+    percentile_df = df.copy()
+    for col in percentile_df.columns:
+        if np.issubdtype(percentile_df[col].dtype, np.number):
+            col_values = percentile_df[col].values
+            # Handle nan by ignoring them in the ranking
+            non_nan = ~np.isnan(col_values)
+            ranks = np.full_like(col_values, np.nan, dtype=np.float64)
+            if non_nan.sum() > 0:
+                # Compute ranks for non-nan values
+                non_nan_vals = col_values[non_nan]
+                order = np.argsort(non_nan_vals)
+                ranks_raw = order.argsort()
+                # Percentile is rank / (N-1)
+                n = len(non_nan_vals)
+                if n == 1:
+                    percentiles = np.zeros(1)
+                else:
+                    percentiles = ranks_raw / (n - 1)
+                ranks[non_nan] = percentiles
+            percentile_df[col] = ranks
+    return percentile_df
+
+plot_df_percentiles = df_to_percentiles(plot_df)
+
 
 #%%
 ############### Older code below ###############################

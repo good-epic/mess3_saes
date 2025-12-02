@@ -42,6 +42,12 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from sklearn.linear_model import LinearRegression
+
+## Speeds up computation on RTX 30 and 40 seris
+torch.backends.cuda.matmul.allow_tf32 = True  # Allow TF32 on CuBLAS
+torch.backends.cudnn.allow_tf32 = True        # Allow TF32 on CuDNN
+
+
 #
 #%%
 # CLI arguments
@@ -72,6 +78,28 @@ parser.add_argument("--top_k_aux", type=int, default=None)
 parser.add_argument("--aux_penalty", type=float, default=1.0/32.0)
 parser.add_argument("--bandwidth", type=float, default=0.001)
 
+# bSAE / AR hyperparameters
+parser.add_argument("--ar_lambda_sparse", type=float, nargs="+", default=None,
+                    help="Sparse penalty weights for banded covariance SAEs")
+parser.add_argument("--ar_lambda_ar", type=float, nargs="+", default=None,
+                    help="AR penalty weights for banded covariance SAEs")
+parser.add_argument("--ar_cartesian_lambdas", action="store_true",
+                    help="If set, take the Cartesian product of lambda_sparse and lambda_ar lists")
+parser.add_argument("--ar_p", type=int, default=1, help="Window size p for banded covariance loss")
+parser.add_argument("--ar_beta_slope", type=float, default=1.0, help="beta_slope in AR penalty")
+parser.add_argument("--ar_delta", type=float, default=1.0, help="delta parameter for smooth L0 sparsity")
+parser.add_argument("--ar_epsilon", type=float, default=1e-4, help="epsilon parameter for smooth L0 sparsity")
+parser.add_argument("--ar_sparsity_mode", type=str, default="l0", choices=["l0", "l1"],
+                    help="Sparsity penalty type for banded covariance SAEs")
+parser.add_argument("--ar_use_beta", dest="ar_use_beta", action="store_true", default=True,
+                    help="Enable learnable beta coefficients (default)")
+parser.add_argument("--ar_no_beta", dest="ar_use_beta", action="store_false",
+                    help="Disable learnable beta coefficients")
+parser.add_argument("--ar_use_alpha", dest="ar_use_alpha", action="store_true", default=True,
+                    help="Enable learnable alpha parameters (default)")
+parser.add_argument("--ar_no_alpha", dest="ar_use_alpha", action="store_false",
+                    help="Disable learnable alpha parameters")
+
 # SAE training loop controls
 parser.add_argument("--sae_steps", type=int, default=5000)
 parser.add_argument("--sae_batch_size", type=int, default=1024)
@@ -99,6 +127,9 @@ parser.add_argument("--process_config_name", type=str, default=None, help="Key w
 
 # Parse known to be notebook-friendly
 args, _ = parser.parse_known_args()
+
+if (args.ar_lambda_sparse is None) != (args.ar_lambda_ar is None):
+    raise ValueError("Both --ar_lambda_sparse and --ar_lambda_ar must be provided together, or both omitted.")
 
 _process_cfg_raw, components, data_source = _load_process_stack(args, {})
 
@@ -253,6 +284,16 @@ sequence_saes, true_coords_saes, metrics_summary = train_saes_for_sites(
     sae_early_stopping_beta=args.sae_early_stopping_beta,
     sae_early_stopping_min_steps=args.sae_early_stopping_min_steps,
     sae_log_interval=args.sae_log_interval,
+    ar_lambda_sparse=args.ar_lambda_sparse,
+    ar_lambda_ar=args.ar_lambda_ar,
+    ar_cartesian_lambdas=args.ar_cartesian_lambdas,
+    ar_p=args.ar_p,
+    ar_beta_slope=args.ar_beta_slope,
+    ar_delta=args.ar_delta,
+    ar_epsilon=args.ar_epsilon,
+    ar_sparsity_mode=args.ar_sparsity_mode,
+    ar_use_beta=args.ar_use_beta,
+    ar_use_alpha=args.ar_use_alpha,
 )
 
 #%%

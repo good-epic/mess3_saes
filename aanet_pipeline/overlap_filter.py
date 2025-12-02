@@ -6,7 +6,7 @@ from typing import Dict, Iterable, List, Sequence, Tuple
 import numpy as np
 import torch
 
-from .cluster_summary import ClusterDescriptor
+from .cluster_summary import AAnetDescriptor
 
 
 def _orthonormalize(vectors: np.ndarray) -> np.ndarray:
@@ -29,7 +29,7 @@ def _projection_error(vec: np.ndarray, basis: np.ndarray) -> float:
 
 def _build_cluster_bases(
     decoder_vectors: np.ndarray,
-    descriptors: Sequence[ClusterDescriptor],
+    descriptors: Sequence[AAnetDescriptor],
 ) -> Dict[int, np.ndarray]:
     bases: Dict[int, np.ndarray] = {}
     for desc in descriptors:
@@ -43,7 +43,7 @@ def _build_cluster_bases(
 
 def _compute_second_errors(
     decoder_vectors: np.ndarray,
-    descriptors: Sequence[ClusterDescriptor],
+    descriptors: Sequence[AAnetDescriptor],
     cluster_bases: Dict[int, np.ndarray],
 ) -> Dict[int, float]:
     cluster_ids = sorted(cluster_bases.keys())
@@ -67,17 +67,14 @@ def _compute_second_errors(
 
 
 def drop_overlapping_latents(
-    decoder: torch.Tensor,
-    descriptors: Sequence[ClusterDescriptor],
-    *,
-    threshold: float,
-) -> Tuple[List[ClusterDescriptor], Dict[str, object]]:
-    decoder_np = decoder.detach().cpu().numpy()
+    descriptors: Sequence[AAnetDescriptor],
+    sae: TopKSAE,
+    threshold: float = 0.5,
+) -> Sequence[AAnetDescriptor]:
+    decoder_np = sae.decoder.detach().cpu().numpy()
     cluster_bases = _build_cluster_bases(decoder_np, descriptors)
     second_errors = _compute_second_errors(decoder_np, descriptors, cluster_bases)
 
-    updated: List[ClusterDescriptor] = []
-    per_cluster_drops: Dict[int, List[int]] = {}
     per_cluster_kept: Dict[int, List[int]] = {}
 
     for desc in descriptors:

@@ -44,6 +44,7 @@ from sklearn.metrics import r2_score
 
 from simplexity.generative_processes.torch_generator import generate_data_batch
 from BatchTopK.sae import VanillaSAE, TopKSAE
+from sae_variants import BandedCovarianceSAE
 from multipartite_utils import MultipartiteSampler, build_components_from_config
 
 
@@ -105,6 +106,44 @@ def _build_sae_cfg(
         "aux_penalty": aux_penalty,
         # JumpReLU bandwidth exists in repo; unused here
         "bandwidth": bandwidth,
+    }
+
+
+def _format_float_token(value: float) -> str:
+    token = f"{value:.6g}"
+    token = token.replace("-", "m").replace(".", "p")
+    return token
+
+
+def _extract_banded_correlation_info(
+    sae: BandedCovarianceSAE,
+    tol: float = 1e-8,
+) -> Dict[str, Any]:
+    alpha_vec = None
+    beta_vec = None
+    if hasattr(sae, "alpha") and sae.alpha is not None:
+        alpha_vec = sae.alpha.detach().cpu().tolist()
+    if hasattr(sae, "beta") and sae.beta is not None:
+        beta_vec = sae.beta.detach().cpu().tolist()
+    if sae.beta_slope == 0:
+        slope = 1.0
+    else:
+        slope = sae.beta_slope
+    alpha_tensor = torch.tanh(sae.alpha / slope)
+    bands = []
+    dict_size = sae.cfg["dict_size"]
+    for k in range(1, sae.p + 1):
+        coeff = torch.pow(alpha_tensor, k)
+        coeff = coeff * sae.beta[k - 1]
+        coeff_np = coeff.detach().cpu().numpy()
+        for idx in range(k, dict_size):
+            val = float(coeff_np[idx])
+            if abs(val) > tol:
+                bands.append({"i": int(idx), "j": int(idx - k), "k": k, "value": val})
+    return {
+        "alpha": alpha_vec,
+        "beta": beta_vec,
+        "bands": bands,
     }
 
 
@@ -174,6 +213,16 @@ def train_saes_for_sites(
     sae_early_stopping_beta: float = 0.95,
     sae_early_stopping_min_steps: int = 0,
     sae_log_interval: int = 100,
+    ar_lambda_sparse: list[float] | None = None,
+    ar_lambda_ar: list[float] | None = None,
+    ar_cartesian_lambdas: bool = False,
+    ar_p: int = 1,
+    ar_beta_slope: float = 1.0,
+    ar_delta: float = 1.0,
+    ar_epsilon: float = 1e-4,
+    ar_sparsity_mode: str = "l0",
+    ar_use_beta: bool = True,
+    ar_use_alpha: bool = True,
 ):
     if seq_len is None:
         seq_len = cfg.n_ctx - 1
@@ -182,15 +231,30 @@ def train_saes_for_sites(
     seq_lams = list(lambda_values_seq) if lambda_values_seq is not None else []
     beliefs_lams = list(lambda_values_beliefs) if lambda_values_beliefs is not None else []
     topk_values = list(k_values) if k_values is not None else []
+    ar_lambda_sparse_list = list(ar_lambda_sparse) if ar_lambda_sparse is not None else []
+    ar_lambda_ar_list = list(ar_lambda_ar) if ar_lambda_ar is not None else []
 
     has_topk = len(topk_values) > 0
     has_seq_vanilla = len(seq_lams) > 0
     has_beliefs = len(beliefs_lams) > 0
+    has_banded = len(ar_lambda_sparse_list) > 0 or len(ar_lambda_ar_list) > 0
 
-    if not (has_topk or has_seq_vanilla or has_beliefs):
+    if has_banded:
+        if not ar_lambda_sparse_list or not ar_lambda_ar_list:
+            raise ValueError("Both ar_lambda_sparse and ar_lambda_ar must be provided when training bSAEs.")
+        if ar_cartesian_lambdas:
+            ar_pairs = [(ls, la) for ls in ar_lambda_sparse_list for la in ar_lambda_ar_list]
+        else:
+            if len(ar_lambda_sparse_list) != len(ar_lambda_ar_list):
+                raise ValueError("ar_lambda_sparse and ar_lambda_ar must have the same length when --ar_cartesian_lambdas is not set.")
+            ar_pairs = list(zip(ar_lambda_sparse_list, ar_lambda_ar_list))
+    else:
+        ar_pairs = []
+
+    if not (has_topk or has_seq_vanilla or has_beliefs or has_banded):
         raise ValueError(
-            "train_saes_for_sites requires at least one of k_values, lambda_values_seq, or "
-            "lambda_values_beliefs to be provided."
+            "train_saes_for_sites requires at least one of k_values, lambda_values_seq, "
+            "lambda_values_beliefs, or AR lambda pairs to be provided."
         )
 
     if has_beliefs:
@@ -207,13 +271,16 @@ def train_saes_for_sites(
     # Build SAEs and optimizers per site
     seq_topk_all: Dict[str, Dict[str, TopKSAE]] = {site: {} for site in site_to_hook}
     seq_vanilla_all: Dict[str, Dict[str, VanillaSAE]] = {site: {} for site in site_to_hook}
+    seq_banded_all: Dict[str, Dict[str, BandedCovarianceSAE]] = {site: {} for site in site_to_hook}
     true_coord_saes_all: Dict[str, Dict[str, VanillaSAE]] = {site: {} for site in site_to_hook}
 
     opt_seq_topk_all: Dict[str, Dict[str, torch.optim.Optimizer]] = {site: {} for site in site_to_hook}
     opt_seq_vanilla_all: Dict[str, Dict[str, torch.optim.Optimizer]] = {site: {} for site in site_to_hook}
+    opt_seq_banded_all: Dict[str, Dict[str, torch.optim.Optimizer]] = {site: {} for site in site_to_hook}
     opt_true_all: Dict[str, Dict[str, torch.optim.Optimizer]] = {site: {} for site in site_to_hook}
     sched_seq_topk_all: Dict[str, Dict[str, Any]] = {site: {} for site in site_to_hook}
     sched_seq_vanilla_all: Dict[str, Dict[str, Any]] = {site: {} for site in site_to_hook}
+    sched_seq_banded_all: Dict[str, Dict[str, Any]] = {site: {} for site in site_to_hook}
     sched_true_all: Dict[str, Dict[str, Any]] = {site: {} for site in site_to_hook}
 
     def _build_scheduler_for_sae(optimizer: torch.optim.Optimizer):
@@ -326,6 +393,45 @@ def train_saes_for_sites(
                 opt_seq_vanilla_all[site_name][name] = opt
                 sched_seq_vanilla_all[site_name][name] = _build_scheduler_for_sae(opt)
 
+        if ar_pairs:
+            for lam_sparse, lam_ar in ar_pairs:
+                cfg_band = _build_sae_cfg(
+                    act_size=act_size,
+                    dict_mul=dict_mul,
+                    k=1,
+                    l1_coeff=0.0,
+                    device=device,
+                    input_unit_norm=input_unit_norm,
+                    n_batches_to_dead=n_batches_to_dead,
+                    top_k_aux=top_k_aux,
+                    aux_penalty=aux_penalty,
+                    bandwidth=bandwidth,
+                )
+                cfg_band.update(
+                    {
+                        "lambda_sparse": float(lam_sparse),
+                        "lambda_ar": float(lam_ar),
+                        "sparsity_mode": ar_sparsity_mode,
+                        "delta": ar_delta,
+                        "epsilon": ar_epsilon,
+                        "p": ar_p,
+                        "beta_slope": ar_beta_slope,
+                        "use_beta": ar_use_beta,
+                        "use_alpha": ar_use_alpha,
+                    }
+                )
+                sae = BandedCovarianceSAE(cfg_band)
+                name = f"ls_{_format_float_token(lam_sparse)}__la_{_format_float_token(lam_ar)}"
+                seq_banded_all[site_name][name] = sae
+                opt = torch.optim.Adam(
+                    sae.parameters(),
+                    lr=sae_learning_rate,
+                    betas=(sae_beta1, sae_beta2),
+                    weight_decay=sae_weight_decay,
+                )
+                opt_seq_banded_all[site_name][name] = opt
+                sched_seq_banded_all[site_name][name] = _build_scheduler_for_sae(opt)
+
         if has_beliefs:
             for lam in beliefs_lams:
                 cfg_v = _build_sae_cfg(
@@ -360,6 +466,7 @@ def train_saes_for_sites(
             "sequence": {
                 "top_k": {name: {"loss": [], "l2_loss": [], "l1_loss": [], "l0_norm": [], "l1_norm": [], "aux_loss": [], "num_dead_features": [], "active_latents": [], "active_counts": [], "active_sums": [], "iteration": []} for name in seq_topk_all[site_name].keys()},
                 "vanilla": {name: {"loss": [], "l2_loss": [], "l1_loss": [], "l0_norm": [], "l1_norm": [], "active_latents": [], "active_counts": [], "active_sums": [], "iteration": []} for name in seq_vanilla_all[site_name].keys()},
+                "banded": {name: {"loss": [], "l2_loss": [], "l1_loss": [], "l0_norm": [], "l1_norm": [], "aux_loss": [], "num_dead_features": [], "active_latents": [], "active_counts": [], "active_sums": [], "iteration": [], "raw_ar_loss": [], "raw_sparsity_loss": []} for name in seq_banded_all[site_name].keys()},
             },
             "beliefs": {name: {"loss": [], "l2_loss": [], "l1_loss": [], "l0_norm": [], "l1_norm": [], "active_latents": [], "active_counts": [], "active_sums": [], "iteration": []} for name in true_coord_saes_all[site_name].keys()},
         }
@@ -485,6 +592,46 @@ def train_saes_for_sites(
                             mr["active_sums"].append(sums)
                             mr["iteration"].append(ii + 1)
 
+            # Sequence Banded (bSAE)
+            for name, sae in seq_banded_all[site_name].items():
+                sae.train()
+                out = sae(acts_seq)
+                loss = out["loss"]
+                opt = opt_seq_banded_all[site_name][name]
+                opt.zero_grad()
+                loss.backward()
+                loss_value = float(loss.detach().item())
+                if grad_clip_threshold is not None:
+                    torch.nn.utils.clip_grad_norm_(sae.parameters(), grad_clip_threshold)
+                sae.make_decoder_weights_and_grad_unit_norm()
+                opt.step()
+                sched = sched_seq_banded_all[site_name].get(name)
+                if sched is not None:
+                    sched.step()
+                step_loss_values.append(loss_value)
+                if current_lr_snapshot is None:
+                    current_lr_snapshot = opt.param_groups[0]["lr"]
+                mr = metrics_raw_all[site_name]["sequence"]["banded"][name]
+                mr["loss"].append(loss_value)
+                for key in ("l2_loss", "l1_loss", "l0_norm", "l1_norm", "aux_loss", "raw_ar_loss", "raw_sparsity_loss"):
+                    if key in out:
+                        mr[key].append(float(out[key].detach().item()))
+                if "num_dead_features" in out:
+                    v = out["num_dead_features"]
+                    v = v.item() if hasattr(v, "item") else int(v)
+                    mr["num_dead_features"].append(int(v))
+                if (ii + 1) % 100 == 0:
+                    with torch.no_grad():
+                        acts_f = out.get("feature_acts")
+                        if acts_f is not None:
+                            mask = (acts_f > 0).any(dim=0).detach().cpu().numpy().astype(bool)
+                            counts = (acts_f > 0).sum(dim=0).detach().cpu().numpy()
+                            sums = acts_f.clamp(min=0).sum(dim=0).detach().cpu().numpy()
+                            mr["active_latents"].append(mask)
+                            mr["active_counts"].append(counts)
+                            mr["active_sums"].append(sums)
+                            mr["iteration"].append(ii + 1)
+
             # Beliefs SAEs (per site)
             if has_beliefs:
                 for name, sae in true_coord_saes_all[site_name].items():
@@ -577,6 +724,7 @@ def train_saes_for_sites(
             "sequence": {
                 "top_k": {name: {"sum": 0.0, "count": 0} for name in seq_topk_all[site_name]},
                 "vanilla": {name: {"sum": 0.0, "count": 0} for name in seq_vanilla_all[site_name]},
+                "banded": {name: {"sum": 0.0, "count": 0} for name in seq_banded_all[site_name]},
             },
             "beliefs": {name: {"sum": 0.0, "count": 0} for name in true_coord_saes_all[site_name]},
         }
@@ -663,6 +811,16 @@ def train_saes_for_sites(
                     acc = reconstruction_error_accumulators[site_name]["sequence"]["vanilla"][name]
                     acc["sum"] += recon_error * sample_element_count
                     acc["count"] += sample_element_count
+                for name, sae in seq_banded_all[site_name].items():
+                    sae.eval()
+                    out = sae(acts_eval)
+                    l2_loss = out.get("l2_loss") or out.get("loss")
+                    if l2_loss is None or sample_element_count == 0:
+                        continue
+                    recon_error = float(l2_loss.detach().item())
+                    acc = reconstruction_error_accumulators[site_name]["sequence"]["banded"][name]
+                    acc["sum"] += recon_error * sample_element_count
+                    acc["count"] += sample_element_count
 
                 if has_beliefs and beliefs_eval_tensor is not None and belief_element_count > 0:
                     if belief_baseline_mse is not None:
@@ -681,11 +839,11 @@ def train_saes_for_sites(
                         acc["count"] += belief_element_count
 
     reconstruction_errors_all: Dict[str, Dict] = {
-        site_name: {"sequence": {"top_k": {}, "vanilla": {}}, "beliefs": {}}
+        site_name: {"sequence": {"top_k": {}, "vanilla": {}, "banded": {}}, "beliefs": {}}
         for site_name in site_to_hook.keys()
     }
     percent_variance_explained_all: Dict[str, Dict] = {
-        site_name: {"sequence": {"top_k": {}, "vanilla": {}}, "beliefs": {}}
+        site_name: {"sequence": {"top_k": {}, "vanilla": {}, "banded": {}}, "beliefs": {}}
         for site_name in site_to_hook.keys()
     }
     baseline_mse_all: Dict[str, Dict[str, float | None]] = {
@@ -725,6 +883,17 @@ def train_saes_for_sites(
             else:
                 reconstruction_errors_all[site_name]["sequence"]["vanilla"][name] = None
                 percent_variance_explained_all[site_name]["sequence"]["vanilla"][name] = None
+        for name, stats in site_acc["sequence"]["banded"].items():
+            if stats["count"] > 0:
+                recon_error = float(stats["sum"] / stats["count"])
+                reconstruction_errors_all[site_name]["sequence"]["banded"][name] = recon_error
+                if seq_baseline_val is not None and seq_baseline_val > 0:
+                    percent_variance_explained_all[site_name]["sequence"]["banded"][name] = float(1.0 - recon_error / seq_baseline_val)
+                else:
+                    percent_variance_explained_all[site_name]["sequence"]["banded"][name] = None
+            else:
+                reconstruction_errors_all[site_name]["sequence"]["banded"][name] = None
+                percent_variance_explained_all[site_name]["sequence"]["banded"][name] = None
 
         beliefs_baseline_val = baseline_mse_all[site_name]["beliefs"]
         for name, stats in site_acc["beliefs"].items():
@@ -782,7 +951,7 @@ def train_saes_for_sites(
     os.makedirs(sae_output_dir, exist_ok=True)
     for site_name in site_to_hook.keys():
         metrics_raw = metrics_raw_all[site_name]
-        metrics_summary: Dict[str, Dict] = {"sequence": {"top_k": {}, "vanilla": {}}, "beliefs": {}}
+        metrics_summary: Dict[str, Dict] = {"sequence": {"top_k": {}, "vanilla": {}, "banded": {}}, "beliefs": {}}
         summary_proportion = 0.05
         for name, series_dict in metrics_raw["sequence"]["top_k"].items():
             avg_l2, _ = summarize_series(series_dict.get("l2_loss", []), summary_proportion)
@@ -813,6 +982,29 @@ def train_saes_for_sites(
                 "final_loss": final_loss,
                 "active_latents_last_quarter": active_dict,
             }
+        for name, series_dict in metrics_raw["sequence"]["banded"].items():
+            avg_l2, _ = summarize_series(series_dict.get("l2_loss", []), summary_proportion)
+            avg_l1, _ = summarize_series(series_dict.get("l1_loss", []), summary_proportion)
+            avg_aux, _ = summarize_series(series_dict.get("aux_loss", []), summary_proportion)
+            avg_l0, _ = summarize_series(series_dict.get("l0_norm", []), summary_proportion)
+            avg_ar, _ = summarize_series(series_dict.get("raw_ar_loss", []), summary_proportion)
+            avg_sparse_raw, _ = summarize_series(series_dict.get("raw_sparsity_loss", []), summary_proportion)
+            _, last50 = summarize_series(series_dict.get("loss", []), summary_proportion)
+            final_loss = series_dict.get("loss", [None])[-1] if series_dict.get("loss") else None
+            active_dict = summarize_active_stats(series_dict.get("active_counts", []), series_dict.get("active_sums", []), summary_proportion)
+            metrics_summary["sequence"]["banded"][name] = {
+                "avg_last_quarter": {
+                    "l2": avg_l2,
+                    "l1": avg_l1,
+                    "aux": avg_aux,
+                    "l0": avg_l0,
+                    "raw_ar": avg_ar,
+                    "raw_sparse": avg_sparse_raw,
+                },
+                "last50_loss": last50,
+                "final_loss": final_loss,
+                "active_latents_last_quarter": active_dict,
+            }
 
         for name, series_dict in metrics_raw["beliefs"].items():
             avg_l2, _ = summarize_series(series_dict.get("l2_loss", []), summary_proportion)
@@ -828,11 +1020,22 @@ def train_saes_for_sites(
                 "active_latents_last_quarter": active_dict,
             }
 
+        for name, sae in seq_banded_all[site_name].items():
+            info = _extract_banded_correlation_info(sae)
+            if name in metrics_summary["sequence"]["banded"]:
+                metrics_summary["sequence"]["banded"][name]["alpha"] = info["alpha"]
+                metrics_summary["sequence"]["banded"][name]["beta"] = info["beta"]
+                metrics_summary["sequence"]["banded"][name]["bands"] = info["bands"]
+            else:
+                metrics_summary["sequence"]["banded"][name] = info
+
         # Save SAEs for this site
         for name, sae in seq_topk_all[site_name].items():
             torch.save({"state_dict": sae.state_dict(), "cfg": sae.cfg}, os.path.join(sae_output_dir, f"{site_name}_top_k_{name}.pt"))
         for name, sae in seq_vanilla_all[site_name].items():
             torch.save({"state_dict": sae.state_dict(), "cfg": sae.cfg}, os.path.join(sae_output_dir, f"{site_name}_vanilla_{name}.pt"))
+        for name, sae in seq_banded_all[site_name].items():
+            torch.save({"state_dict": sae.state_dict(), "cfg": sae.cfg}, os.path.join(sae_output_dir, f"{site_name}_banded_{name}.pt"))
         for name, sae in true_coord_saes_all[site_name].items():
             torch.save({"state_dict": sae.state_dict(), "cfg": sae.cfg}, os.path.join(sae_output_dir, f"{site_name}_beliefs_{name}.pt"))
 
@@ -856,7 +1059,7 @@ def train_saes_for_sites(
         "early_stopped": bool(early_stop_triggered),
     }
 
-    sequence_saes_all = {site: {"top_k": seq_topk_all[site], "vanilla": seq_vanilla_all[site]} for site in site_to_hook.keys()}
+    sequence_saes_all = {site: {"top_k": seq_topk_all[site], "vanilla": seq_vanilla_all[site], "banded": seq_banded_all[site]} for site in site_to_hook.keys()}
     return sequence_saes_all, true_coord_saes_all, metrics_summary_all
 
 

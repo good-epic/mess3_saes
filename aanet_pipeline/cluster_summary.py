@@ -7,7 +7,7 @@ from typing import Dict, Iterable, List, Mapping, Sequence
 
 
 @dataclass(frozen=True)
-class ClusterDescriptor:
+class AAnetDescriptor:
     cluster_id: int
     label: str
     latent_indices: List[int]
@@ -15,63 +15,57 @@ class ClusterDescriptor:
     component_names: Sequence[str]
 
 
-def load_cluster_summary(path: Path) -> Mapping[str, object]:
-    with path.open("r", encoding="utf-8") as handle:
-        return json.load(handle)
+def load_aanet_summary(path: str) -> List[AAnetDescriptor]:
+    """Load AAnet descriptors from a JSON summary file."""
+    with open(path, "r") as f:
+        data = json.load(f)
+    return parse_aanet_descriptors(data)
 
 
-def parse_cluster_descriptors(
-    summary: Mapping[str, object],
-    *,
-    include_noise: bool = True,
-) -> List[ClusterDescriptor]:
-    clusters_raw: Mapping[str, Mapping[str, object]] = summary.get("clusters", {})  # type: ignore[assignment]
-    component_block: Mapping[str, object] = summary.get("component_assignment_hard", {})  # type: ignore[assignment]
-    component_to_cluster: Mapping[str, int] = component_block.get("assignments", {})  # type: ignore[assignment]
-    noise_clusters: Iterable[int] = component_block.get("noise_clusters", [])  # type: ignore[assignment]
-
-    cluster_to_components: Dict[int, List[str]] = {}
-    for component_name, cluster_value in component_to_cluster.items():
-        cluster_id = int(cluster_value)
-        cluster_to_components.setdefault(cluster_id, []).append(str(component_name))
-
-    descriptors: List[ClusterDescriptor] = []
-    for cluster_key, entry in clusters_raw.items():
-        cluster_id = int(cluster_key)
-        latent_indices = [int(idx) for idx in entry.get("latent_indices", [])]  # type: ignore[arg-type]
-        is_noise = cluster_id in set(int(val) for val in noise_clusters)
-        if is_noise and not include_noise:
-            continue
-        component_names = cluster_to_components.get(cluster_id, [])
-        if component_names:
-            label = "_".join(component_names)
-        elif is_noise:
-            label = f"noise_{cluster_id}"
-        else:
-            label = f"cluster_{cluster_id}"
-        descriptors.append(
-            ClusterDescriptor(
-                cluster_id=cluster_id,
-                label=label,
-                latent_indices=latent_indices,
-                is_noise=is_noise,
-                component_names=component_names,
-            )
-        )
-    descriptors.sort(key=lambda desc: desc.cluster_id)
-    return descriptors
+def parse_aanet_descriptors(data: Dict) -> List[AAnetDescriptor]:
+    """Parse dictionary data into AAnetDescriptor objects."""
+    descriptors = []
+    # Handle different formats if needed, but assuming standard format for now
+    # Format: {"cluster_0": {"label": "...", "latent_indices": [...]}, ...}
+    # Or list format
+    
+    if isinstance(data, list):
+        # List of dicts
+        for item in data:
+            descriptors.append(AAnetDescriptor(
+                cluster_id=item.get("cluster_id", -1),
+                label=item.get("label", str(item.get("cluster_id", -1))),
+                latent_indices=item.get("latent_indices", []),
+                component_names=item.get("component_names", []),
+                is_noise=item.get("is_noise", False)
+            ))
+    elif isinstance(data, dict):
+        # Dict mapping ID/label to content
+        for key, val in data.items():
+            # Try to infer ID from key if not in val
+            cid = val.get("cluster_id")
+            if cid is None and key.startswith("cluster_"):
+                try:
+                    cid = int(key.split("_")[1])
+                except:
+                    cid = -1
+            
+            descriptors.append(AAnetDescriptor(
+                cluster_id=cid if cid is not None else -1,
+                label=val.get("label", key),
+                latent_indices=val.get("latent_indices", []),
+                component_names=val.get("component_names", []),
+                is_noise=val.get("is_noise", False)
+            ))
+            
+    return sorted(descriptors, key=lambda x: x.cluster_id)
 
 
-def build_latent_assignment_list(
-    summary: Mapping[str, object],
-    *,
-    dict_size: int,
-    default_cluster: int = -1,
-) -> List[int]:
-    assignments = [int(default_cluster) for _ in range(dict_size)]
-    latent_map: Mapping[str, int] = summary.get("latent_cluster_assignments", {})  # type: ignore[assignment]
-    for key, cluster_value in latent_map.items():
-        idx = int(key)
-        if 0 <= idx < dict_size:
-            assignments[idx] = int(cluster_value)
-    return assignments
+def build_latent_assignment_list(descriptors: List[AAnetDescriptor], total_latents: int) -> List[int]:
+    """Build a list mapping each latent index to its AAnet group ID."""
+    assignment = [-1] * total_latents
+    for desc in descriptors:
+        for idx in desc.latent_indices:
+            if 0 <= idx < total_latents:
+                assignment[idx] = desc.cluster_id
+    return assignment

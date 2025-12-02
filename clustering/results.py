@@ -21,7 +21,7 @@ class ClusteringResult:
     """
     config: ClusteringConfig
     site: str
-    selected_k: int
+    selected_k: int | float | Tuple[float, float]
 
     # Clustering outputs
     cluster_labels: np.ndarray  # Full array including inactive latents
@@ -73,17 +73,29 @@ class ClusteringResult:
 
     def to_metadata_dict(self, process_info: Dict[str, Any]) -> Dict[str, Any]:
         """Convert to metadata dictionary for saving."""
+        # Handle selected_k conversion
+        if isinstance(self.selected_k, tuple):
+            sel_k_val = list(self.selected_k)
+        else:
+            sel_k_val = float(self.selected_k)
+
+        # Handle sae_param conversion
+        if isinstance(self.config.sae_param, tuple):
+            sae_param_val = list(self.config.sae_param)
+        else:
+            sae_param_val = float(self.config.sae_param)
+
         metadata = {
             "site": self.site,
             "spectral_clusters": int(self.n_clusters),
-            "selected_k": int(self.selected_k),
+            "selected_k": sel_k_val,
             "clustering_method": self.config.method,
             "n_activations_used": len(self.active_indices),
             "total_activity_samples": int(self.total_activity_samples),
 
             # SAE info
             "sae_type": self.config.sae_type,
-            "sae_param": float(self.config.sae_param),
+            "sae_param": sae_param_val,
 
             # Activity stats
             "latent_activity_rates": {int(i): float(v) for i, v in enumerate(self.activity_rates)},

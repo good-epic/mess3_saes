@@ -12,12 +12,12 @@ from BatchTopK.sae import TopKSAE
 from mess3_gmg_analysis_utils import sae_decode_features, sae_encode_features
 from training_and_analysis_utils import _generate_sequences, _tokens_from_observations
 
-from .cluster_summary import ClusterDescriptor
+from .cluster_summary import AAnetDescriptor
 
 
 @dataclass
-class ClusterDatasetResult:
-    descriptor: ClusterDescriptor
+class AAnetDatasetResult:
+    descriptor: AAnetDescriptor
     data: torch.Tensor
     kept_samples: int
     total_samples: int
@@ -25,7 +25,7 @@ class ClusterDatasetResult:
 
 
 def _prepare_cluster_indices(
-    descriptors: Sequence[ClusterDescriptor],
+    descriptors: Sequence[AAnetDescriptor],
     device: torch.device,
 ) -> Dict[int, torch.Tensor]:
     index_map: Dict[int, torch.Tensor] = {}
@@ -37,13 +37,13 @@ def _prepare_cluster_indices(
     return index_map
 
 
-def build_cluster_datasets(
+def build_aanet_datasets(
     *,
     model,
     sampler,
     layer_hook: str,
     sae: TopKSAE,
-    cluster_descriptors: Sequence[ClusterDescriptor],
+    aanet_descriptors: Sequence[AAnetDescriptor],
     batch_size: int,
     seq_len: int,
     num_batches: int,
@@ -53,15 +53,15 @@ def build_cluster_datasets(
     min_cluster_samples: int = 0,
     seed: int = 0,
     token_positions: Sequence[int] | None = None,
-) -> Tuple[Dict[int, ClusterDatasetResult], jax.Array]:
+) -> Tuple[Dict[int, AAnetDatasetResult], jax.Array]:
     sae.eval()
     model.eval()
 
     rng_key = jax.random.PRNGKey(seed)
-    cluster_indices = _prepare_cluster_indices(cluster_descriptors, device)
-    storage: Dict[int, list[torch.Tensor]] = {desc.cluster_id: [] for desc in cluster_descriptors}
-    total_counts: Dict[int, int] = {desc.cluster_id: 0 for desc in cluster_descriptors}
-    kept_counts: Dict[int, int] = {desc.cluster_id: 0 for desc in cluster_descriptors}
+    cluster_indices = _prepare_cluster_indices(aanet_descriptors, device)
+    storage: Dict[int, list[torch.Tensor]] = {desc.cluster_id: [] for desc in aanet_descriptors}
+    total_counts: Dict[int, int] = {desc.cluster_id: 0 for desc in aanet_descriptors}
+    kept_counts: Dict[int, int] = {desc.cluster_id: 0 for desc in aanet_descriptors}
 
     for _ in range(num_batches):
         rng_key, states, observations = _generate_sequences(
@@ -85,7 +85,7 @@ def build_cluster_datasets(
         feature_acts = feature_acts.detach()
         zero_template = torch.zeros_like(feature_acts, device=device)
 
-        for desc in cluster_descriptors:
+        for desc in aanet_descriptors:
             indices = cluster_indices[desc.cluster_id]
             if indices.numel() == 0:
                 continue
@@ -105,8 +105,8 @@ def build_cluster_datasets(
             selected = recon[active_mask].detach().cpu()
             storage[desc.cluster_id].append(selected)
 
-    results: Dict[int, ClusterDatasetResult] = {}
-    for desc in cluster_descriptors:
+    results: Dict[int, AAnetDatasetResult] = {}
+    for desc in aanet_descriptors:
         tensors = storage[desc.cluster_id]
         if tensors:
             data = torch.cat(tensors, dim=0)
@@ -118,7 +118,7 @@ def build_cluster_datasets(
         kept = kept_counts[desc.cluster_id]
         total = total_counts[desc.cluster_id]
         ignored_fraction = 1.0 - (kept / total) if total > 0 else 1.0
-        results[desc.cluster_id] = ClusterDatasetResult(
+        results[desc.cluster_id] = AAnetDatasetResult(
             descriptor=desc,
             data=data,
             kept_samples=kept,
@@ -126,7 +126,7 @@ def build_cluster_datasets(
             ignored_fraction=ignored_fraction,
         )
 
-    for desc in cluster_descriptors:
+    for desc in aanet_descriptors:
         if results[desc.cluster_id].data.shape[0] < min_cluster_samples and min_cluster_samples > 0:
             # record class but keep data as-is; caller can decide how to handle
             pass

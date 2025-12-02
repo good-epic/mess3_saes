@@ -12,7 +12,10 @@ from typing import Any, Dict, List
 import torch
 import jax
 import jax.numpy as jnp
+import jax.numpy as jnp
 import numpy as np
+
+from sae_variants.banded_cov_sae import BandedCovarianceSAE
 
 from clustering import (
     ClusteringConfig,
@@ -29,6 +32,8 @@ from multipartite_utils import (
 from mess3_gmg_analysis_utils import (
     extract_topk_l2,
     extract_vanilla_l2,
+    extract_banded_l2,
+    compute_average_l2,
     compute_average_l2,
     find_elbow_k,
     load_metrics_summary,
@@ -121,9 +126,10 @@ def _parse_args() -> argparse.Namespace:
 
     # SAE and clustering controls
     parser.add_argument("--sites", type=str, nargs="+", default=None, help="Subset of site names to include (e.g. embeddings layer_0)")
-    parser.add_argument("--sae_type", type=str, default="top_k", choices=["top_k", "vanilla"], help="SAE architecture type")
+    parser.add_argument("--sae_type", type=str, default="top_k", choices=["top_k", "vanilla", "banded"], help="SAE architecture type")
     parser.add_argument("--force_k", type=int, default=None, help="Override elbow selection with manual k (for top_k SAEs)")
     parser.add_argument("--force_lambda", type=float, default=None, help="Override elbow selection with manual lambda (for vanilla SAEs)")
+    parser.add_argument("--force_banded_params", type=str, default=None, help="Override selection with manual params for banded SAEs (e.g. 'ls_0p005__la_0p005')")
     parser.add_argument("--clustering_method", type=str, default="k_subspaces", choices=["spectral", "k_subspaces", "ensc"], help="Clustering method for decoder directions")
     parser.add_argument("--sim_metric", type=str, default="cosine", choices=["cosine", "euclidean", "phi"], help="Similarity metric for decoder clustering (spectral method only)")
     parser.add_argument("--max_clusters", type=int, default=12, help="Upper bound for eigengap clustering (spectral method only)")
@@ -382,85 +388,149 @@ if args.sae_type == "top_k":
     if not l2_by_site:
         raise ValueError("No top-k SAE metrics found for the selected sites")
     param_label = "k"
-else:  # vanilla
+elif args.sae_type == "vanilla":
     l2_by_site = extract_vanilla_l2(metrics_summary, site_filter=sites)
     if not l2_by_site:
         raise ValueError("No vanilla SAE metrics found for the selected sites")
     param_label = "lambda"
+elif args.sae_type == "banded":
+    l2_by_site = extract_banded_l2(metrics_summary, site_filter=sites)
+    if not l2_by_site:
+        raise ValueError("No banded SAE metrics found for the selected sites")
+    param_label = "params"
+else:
+    raise ValueError(f"Unknown SAE type: {args.sae_type}")
 
 average_l2 = compute_average_l2(l2_by_site)
 if not average_l2:
     raise ValueError(f"Unable to compute average L2 across {param_label} values")
 
-# Select parameter value (k or lambda) per site
-selected_k_by_site: dict[str, int | float] = {}
+# Select parameter value (k, lambda, or params) per site
+selected_k_by_site: dict[str, Any] = {}
 if args.sae_type == "top_k" and args.force_k is not None:
     print(f"Using forced k={args.force_k} for all sites")
     selected_k_by_site = {site: int(args.force_k) for site in sites}
 elif args.sae_type == "vanilla" and args.force_lambda is not None:
     print(f"Using forced lambda={args.force_lambda} for all sites")
     selected_k_by_site = {site: float(args.force_lambda) for site in sites}
+elif args.sae_type == "banded" and args.force_banded_params is not None:
+    print(f"Using forced params={args.force_banded_params} for all sites")
+    # Parse force string "ls_0p005__la_0p005" -> (0.005, 0.005)
+    try:
+        parts = args.force_banded_params.split("__")
+        ls_val = float(parts[0].replace("ls_", "").replace("p", "."))
+        la_val = float(parts[1].replace("la_", "").replace("p", "."))
+        forced_tuple = (ls_val, la_val)
+        selected_k_by_site = {site: forced_tuple for site in sites}
+    except Exception as e:
+        raise ValueError(f"Failed to parse force_banded_params '{args.force_banded_params}': {e}")
 else:
     for site in sites:
         site_metrics = l2_by_site.get(site, {})
         if not site_metrics:
             raise ValueError(f"No {args.sae_type} metrics available for site '{site}'")
-        sorted_params = sorted(site_metrics.keys())
-        losses = [site_metrics[p] for p in sorted_params]
-        # Convert to int for elbow_k (works with both int and float)
-        int_params = [int(p) if isinstance(p, int) else p for p in sorted_params]
-        selected_param = find_elbow_k(int_params, losses, prefer_high_k=True)
-        if args.sae_type == "top_k":
-            selected_k_by_site[site] = int(selected_param)
+        
+        if args.sae_type == "banded":
+            # Simple heuristic: choose params with minimum L2
+            # (Elbow method is harder to define for 2D param space without a clear ordering)
+            best_param = min(site_metrics.items(), key=lambda x: x[1])[0]
+            selected_k_by_site[site] = best_param
+            print(f"{site}: selected {param_label}={best_param} (min L2)")
         else:
-            selected_k_by_site[site] = float(sorted_params[int_params.index(selected_param)])
-        print(f"{site}: selected {param_label}={selected_k_by_site[site]} via elbow heuristic")
+            sorted_params = sorted(site_metrics.keys())
+            losses = [site_metrics[p] for p in sorted_params]
+            # Convert to int for elbow_k (works with both int and float)
+            int_params = [int(p) if isinstance(p, int) else p for p in sorted_params]
+            selected_param = find_elbow_k(int_params, losses, prefer_high_k=True)
+            if args.sae_type == "top_k":
+                selected_k_by_site[site] = int(selected_param)
+            else:
+                selected_k_by_site[site] = float(sorted_params[int_params.index(selected_param)])
+            print(f"{site}: selected {param_label}={selected_k_by_site[site]} via elbow heuristic")
 
-unique_param_values = set(selected_k_by_site.values())
-if len(unique_param_values) == 1:
-    param_val = next(iter(unique_param_values))
-    if args.sae_type == "top_k":
-        run_dir_label = f"k{int(param_val)}"
+# Determine run label
+if args.sae_type == "banded":
+    # Just use "banded" prefix, maybe with params if unique
+    unique_vals = list(set(selected_k_by_site.values()))
+    if len(unique_vals) == 1:
+        p = unique_vals[0]
+        # Format back to string "ls_0p005__la_0p005"
+        p_str = f"ls_{str(p[0]).replace('.', 'p')}__la_{str(p[1]).replace('.', 'p')}"
+        run_dir_label = f"banded_{p_str}"
     else:
-        run_dir_label = f"lambda{param_val}"
+        run_dir_label = "banded_mixed"
 else:
-    run_dir_label = f"{param_label}var"
+    unique_param_values = set(selected_k_by_site.values())
+    if len(unique_param_values) == 1:
+        param_val = next(iter(unique_param_values))
+        if args.sae_type == "top_k":
+            run_dir_label = f"k{int(param_val)}"
+        else:
+            run_dir_label = f"lambda{param_val}"
+    else:
+        run_dir_label = f"{param_label}var"
 
 timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
 run_dir = os.path.join(args.output_dir, f"{run_dir_label}_{timestamp}")
 os.makedirs(run_dir, exist_ok=True)
 
-l2_plot_path = os.path.join(run_dir, "l2_summary.png")
-plot_l2_bar_chart(l2_by_site, l2_plot_path)
+# Plotting L2 bar chart might be tricky for banded (2D), but we can try flattening keys
+# For now, skip L2 plot for banded or adapt it? 
+# The existing plot_l2_bar_chart expects int keys (or maybe float).
+# Let's skip it for banded for now to avoid breaking.
+if args.sae_type != "banded":
+    l2_plot_path = os.path.join(run_dir, "l2_summary.png")
+    # Ensure keys are compatible
+    # plot_l2_bar_chart expects Mapping[str, Mapping[int, float]] but actually handles generic keys if we check the code?
+    # The code casts keys to string for labels, so it might work if we pass it.
+    # But let's be safe.
+    try:
+        plot_l2_bar_chart(l2_by_site, l2_plot_path, title=f"L2 Loss ({args.sae_type})")
+    except Exception as e:
+        print(f"Skipping L2 plot: {e}")
+
 with open(os.path.join(run_dir, "l2_summary.json"), "w", encoding="utf-8") as f:
     # Convert params to compatible format for JSON
     per_site_dict = {}
     for site, metrics in l2_by_site.items():
         if args.sae_type == "top_k":
             per_site_dict[site] = {int(k): float(v) for k, v in metrics.items()}
-        else:
+        elif args.sae_type == "vanilla":
             per_site_dict[site] = {float(k): float(v) for k, v in metrics.items()}
+        else:
+            # Banded: keys are tuples
+            per_site_dict[site] = {str(k): float(v) for k, v in metrics.items()}
 
     average_dict = {}
     for param, val in average_l2.items():
         if args.sae_type == "top_k":
             average_dict[int(param)] = float(val)
-        else:
+        elif args.sae_type == "vanilla":
             average_dict[float(param)] = float(val)
+        else:
+            average_dict[str(param)] = float(val)
+
+    # Handle selected_param_by_site values
+    sel_param_dict = {}
+    for site, p in selected_k_by_site.items():
+        if isinstance(p, tuple):
+            sel_param_dict[site] = list(p)
+        else:
+            sel_param_dict[site] = float(p)
 
     json.dump(
         {
             "sae_type": args.sae_type,
             "per_site": per_site_dict,
             "average": average_dict,
-            "selected_param": next(iter(unique_param_values)) if len(unique_param_values) == 1 else None,
-            "selected_param_by_site": {site: float(p) for site, p in selected_k_by_site.items()},
+            "selected_param_by_site": sel_param_dict,
             "process_kind": process_kind,
             "components": component_summary,
         },
         f,
         indent=2,
     )
+
 
 
 #%%
@@ -583,10 +653,19 @@ for site_idx, site in enumerate(sites):
 
     # Evaluate metrics (GMG, R²)
     # Construct SAE path based on type
+    # Construct SAE path based on type
     if args.sae_type == "top_k":
         sae_filename = f"{site}_top_k_k{int(site_selected_k)}.pt"
-    else:  # vanilla
+    elif args.sae_type == "vanilla":
         sae_filename = f"{site}_vanilla_lambda_{site_selected_k}.pt"
+    elif args.sae_type == "banded":
+        # site_selected_k is a tuple (ls, la)
+        ls, la = site_selected_k
+        ls_str = str(ls).replace(".", "p")
+        la_str = str(la).replace(".", "p")
+        sae_filename = f"{site}_banded_ls_{ls_str}__la_{la_str}.pt"
+    else:
+        raise ValueError(f"Unknown SAE type: {args.sae_type}")
     sae_path = os.path.join(args.sae_folder, sae_filename)
 
     decoder_dirs = None
@@ -652,12 +731,19 @@ for site_idx, site in enumerate(sites):
                                 topk_cfg["device"] = "cuda" if device.startswith("cuda") else "cpu"
                                 ckpt["cfg"]["device"] = topk_cfg["device"]
                                 sae = TopKSAE(topk_cfg).to(device)
-                            else:
+                            elif args.sae_type == "vanilla":
                                 from BatchTopK.sae import VanillaSAE
                                 vanilla_cfg = dict(ckpt["cfg"])
                                 vanilla_cfg["device"] = "cuda" if device.startswith("cuda") else "cpu"
                                 ckpt["cfg"]["device"] = vanilla_cfg["device"]
                                 sae = VanillaSAE(vanilla_cfg).to(device)
+                            elif args.sae_type == "banded":
+                                banded_cfg = dict(ckpt["cfg"])
+                                banded_cfg["device"] = "cuda" if device.startswith("cuda") else "cpu"
+                                ckpt["cfg"]["device"] = banded_cfg["device"]
+                                sae = BandedCovarianceSAE(banded_cfg).to(device)
+                            else:
+                                raise ValueError(f"Unknown SAE type: {args.sae_type}")
                             sae.load_state_dict(ckpt["state_dict"])
                             sae.eval()
 
