@@ -166,8 +166,8 @@ def main():
                 n_clusters=n_clusters,
             ),
             sampling_config=SamplingConfig(
-                sample_sequences=1024,
-                activation_batches=1024,
+                sample_sequences=64,
+                activation_batches=16384,
                 max_activations=args.total_samples,
                 sample_seq_len=128,
                 latent_activity_threshold=args.latent_activity_threshold,
