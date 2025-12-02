@@ -85,16 +85,23 @@ def collect_real_activity_stats(
     Collect latent activity statistics for real data.
     Adapted from multipartite_utils.collect_latent_activity_data but for RealDataSampler.
     """
-    dict_size = sae.cfg.dict_size # sae_lens SAE has cfg object
-    # Or check if it's a dict or object. sae_lens SAE is usually an object with cfg.
-    # But let's be safe and check attributes.
-    if hasattr(sae, "cfg") and hasattr(sae.cfg, "dict_size"):
-        dict_size = sae.cfg.dict_size
-    elif hasattr(sae, "dict_size"):
-        dict_size = sae.dict_size
-    else:
-        # Fallback for some SAE implementations
-        dict_size = sae.W_dec.shape[0]
+    # Determine dict_size
+    dict_size = None
+    if hasattr(sae, "cfg"):
+        if hasattr(sae.cfg, "dict_size"):
+            dict_size = sae.cfg.dict_size
+        elif hasattr(sae.cfg, "d_sae"):
+            dict_size = sae.cfg.d_sae
+            
+    if dict_size is None:
+        if hasattr(sae, "dict_size"):
+            dict_size = sae.dict_size
+        elif hasattr(sae, "d_sae"):
+            dict_size = sae.d_sae
+        elif hasattr(sae, "W_dec"):
+             dict_size = sae.W_dec.shape[0]
+        else:
+            raise ValueError("Could not determine dict_size from SAE object")
 
     active_counts = torch.zeros(dict_size, dtype=torch.float64)
     mean_abs_sum = torch.zeros(dict_size, dtype=torch.float64)
