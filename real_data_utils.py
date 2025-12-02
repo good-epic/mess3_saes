@@ -127,7 +127,7 @@ def collect_real_activity_stats(
 
     print(f"Collecting activity stats: {n_batches} batches of size {batch_size}")
     
-    for i in tqdm(range(n_batches), desc="Collecting Activity Stats"):
+    for i in tqdm(range(n_batches), desc="Collecting Activity Stats", miniters=max(1, n_batches // 30)):
         tokens = sampler.sample_tokens_batch(batch_size, sample_len, device)
         
         with torch.no_grad():

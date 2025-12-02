@@ -609,7 +609,7 @@ def k_subspaces_clustering(
     prev_labels = None
     rank_details: Dict[int, RankEstimationDetails] = {}
 
-    for iter_idx in tqdm(range(max_iters), desc="K-Subspaces EM"):
+    for iter_idx in tqdm(range(max_iters), desc="K-Subspaces EM", miniters=max(1, max_iters // 30)):
         # Assignment step
         labels, reconstruction_errors = assign_to_subspaces(vectors, subspace_bases)
 
