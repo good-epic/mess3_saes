@@ -27,19 +27,21 @@ class RealDataClusteringPipeline:
         self,
         sae: Any,
         config: ClusteringConfig,
+        hook_name_override: Optional[str] = None,
     ):
         self.sae = sae
         self.config = config
         self.sae.eval()
         
-        # Derive hook_name from SAE config
-        if hasattr(self.sae.cfg, "hook_name"):
+        # Derive hook_name from SAE config or override
+        if hook_name_override:
+            self.hook_name = hook_name_override
+        elif hasattr(self.sae.cfg, "hook_name"):
             self.hook_name = self.sae.cfg.hook_name
+        elif hasattr(self.sae.cfg, "metadata") and "hook_name" in self.sae.cfg.metadata:
+            self.hook_name = self.sae.cfg.metadata["hook_name"]
         else:
-            # Fallback: try to guess or error. 
-            # For now, let's assume it's there or allow manual override if we added an arg.
-            # But to keep it simple as requested:
-            raise ValueError("SAE config must have 'hook_name' attribute.")
+            raise ValueError("SAE config must have 'hook_name' attribute or it must be provided via hook_name_override.")
 
     def run(
         self,
