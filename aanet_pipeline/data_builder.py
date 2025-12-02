@@ -12,16 +12,7 @@ from BatchTopK.sae import TopKSAE
 from mess3_gmg_analysis_utils import sae_decode_features, sae_encode_features
 from training_and_analysis_utils import _generate_sequences, _tokens_from_observations
 
-from .cluster_summary import AAnetDescriptor
-
-
-@dataclass
-class AAnetDatasetResult:
-    descriptor: AAnetDescriptor
-    data: torch.Tensor
-    kept_samples: int
-    total_samples: int
-    ignored_fraction: float
+from .cluster_summary import AAnetDescriptor, AAnetDatasetResult
 
 
 def _prepare_cluster_indices(

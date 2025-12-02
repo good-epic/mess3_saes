@@ -7,9 +7,10 @@ import torch
 import numpy as np
 from transformer_lens import HookedTransformer
 from sae_lens import SAE
-from clustering import ClusteringConfig
+from clustering.config import ClusteringConfig
 from clustering.config import GeometryFittingConfig, SubspaceParams, SamplingConfig
-from aanet_pipeline import build_aanet_datasets, compute_diffusion_extrema, train_aanet_model, TrainingConfig, ExtremaConfig
+from aanet_pipeline.extrema import compute_diffusion_extrema, ExtremaConfig
+from aanet_pipeline.training import train_aanet_model, TrainingConfig
 from aanet_pipeline.cluster_summary import AAnetDescriptor
 import jax
 from huggingface_hub import login

@@ -12,7 +12,10 @@ and analyzing the resulting clusters. It supports:
 from .config import ClusteringConfig, SpectralParams, SubspaceParams, ENSCParams, GeometryFittingConfig
 from .results import ClusteringResult
 from .strategies import ClusteringStrategy, SpectralClusteringStrategy, KSubspacesClusteringStrategy, ENSCClusteringStrategy
-from .pipeline import SiteClusteringPipeline
+try:
+    from .pipeline import SiteClusteringPipeline
+except ImportError:
+    pass
 from .metrics import MetricEvaluator, GMGMetricEvaluator, BeliefR2Evaluator, evaluate_clustering_metrics
 from .geometries import BeliefGeometry, SimplexGeometry, CircleGeometry, HypersphereGeometry, create_geometry_catalog
 from .geometry_fitting import GeometryFitter, GeometryRefinementPipeline, GeometryFitResult, RefinedClusteringResult

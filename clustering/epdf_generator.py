@@ -6,10 +6,10 @@ import numpy as np
 import torch
 from sklearn.metrics.pairwise import cosine_similarity
 
-from epdf_utils import (
-    build_epdfs_from_sae_and_beliefs,
-    plot_epdfs_to_directory,
-)
+# from epdf_utils import (
+#     build_epdfs_from_sae_and_beliefs,
+#     plot_epdfs_to_directory,
+# )
 
 from .config import EPDFConfig
 
@@ -102,6 +102,12 @@ class EPDFGenerator:
                     sae_id = ("top_k", f"k{int(sae_param)}")
                 else:  # vanilla
                     sae_id = ("vanilla", f"lambda_{sae_param}")
+
+                try:
+                    from epdf_utils import build_epdfs_from_sae_and_beliefs, plot_epdfs_to_directory
+                except ImportError:
+                    print(f"{site}: skipping EPDFs (epdf_utils/simplexity not available)")
+                    return {}
 
                 epdfs = build_epdfs_from_sae_and_beliefs(
                     site_name=site,

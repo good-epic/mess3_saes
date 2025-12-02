@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Sequence
+import torch
 
 
 @dataclass(frozen=True)
@@ -13,6 +14,15 @@ class AAnetDescriptor:
     latent_indices: List[int]
     is_noise: bool
     component_names: Sequence[str]
+
+
+@dataclass
+class AAnetDatasetResult:
+    descriptor: AAnetDescriptor
+    data: torch.Tensor
+    kept_samples: int
+    total_samples: int
+    ignored_fraction: float
 
 
 def load_aanet_summary(path: str) -> List[AAnetDescriptor]:

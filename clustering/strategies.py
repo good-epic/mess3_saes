@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 
-from training_and_analysis_utils import build_similarity_matrix, spectral_clustering_with_eigengap
+# from training_and_analysis_utils import build_similarity_matrix, spectral_clustering_with_eigengap
 from subspace_clustering_utils import (
     normalize_and_deduplicate,
     k_subspaces_clustering,
@@ -114,6 +114,7 @@ class SpectralClusteringStrategy(ClusteringStrategy):
         if params.plot_eigengap:
             eig_plot = os.path.join(site_dir, "eigengap.png")
 
+        from training_and_analysis_utils import build_similarity_matrix, spectral_clustering_with_eigengap
         cluster_labels, n_clusters = spectral_clustering_with_eigengap(
             sim_matrix,
             max_clusters=min(params.max_clusters, decoder_active.shape[0]),

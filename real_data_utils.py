@@ -6,11 +6,27 @@ from transformer_lens import HookedTransformer
 from mess3_gmg_analysis_utils import sae_encode_features, sae_decode_features
 from typing import Dict, Sequence, Tuple
 from aanet_pipeline.cluster_summary import AAnetDescriptor
-from aanet_pipeline.data_builder import AAnetDatasetResult, _prepare_cluster_indices
+from aanet_pipeline.cluster_summary import AAnetDescriptor, AAnetDatasetResult
 from BatchTopK.sae import TopKSAE
 
 from tqdm import tqdm
 import gc
+
+from tqdm import tqdm
+import gc
+
+def _prepare_cluster_indices(
+    descriptors: Sequence[AAnetDescriptor],
+    device: torch.device,
+) -> Dict[int, torch.Tensor]:
+    index_map: Dict[int, torch.Tensor] = {}
+    for desc in descriptors:
+        if desc.latent_indices:
+            index_map[desc.cluster_id] = torch.tensor(desc.latent_indices, device=device, dtype=torch.long)
+        else:
+            index_map[desc.cluster_id] = torch.empty((0,), device=device, dtype=torch.long)
+    return index_map
+
 
 class RealDataSampler:
     """
