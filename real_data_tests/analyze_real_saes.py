@@ -99,7 +99,7 @@ def main():
         model_kwargs["cache_dir"] = args.cache_dir
         print(f"Using cache directory: {args.cache_dir}")
         
-    model = HookedTransformer.from_pretrained(args.model_name, device=args.device, center_unembed=False, center_writing_weights=False, dtype="bfloat16", **model_kwargs)
+    model = HookedTransformer.from_pretrained_no_processing(args.model_name, device=args.device, center_unembed=False, center_writing_weights=False, dtype="bfloat16", **model_kwargs)
     
     print(f"Loading SAE: {args.sae_release} - {args.sae_id}")
     sae, cfg_dict, sparsity = SAE.from_pretrained_with_cfg_and_sparsity(args.sae_release, args.sae_id, device=args.device)

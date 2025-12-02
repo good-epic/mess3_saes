@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+import gc
 import torch
 import torch.utils.data as torch_data
 
@@ -123,6 +124,10 @@ def _train_one_epoch(
         total_arche += float(arche_loss.detach().item())
         total_extrema += float(extrema_loss.detach().item()) if model.diffusion_extrema is not None else 0.0
         num_batches += 1
+        
+        del features, recon, original, embedding, recon_loss, arche_loss, extrema_loss, loss
+        gc.collect()
+        torch.cuda.empty_cache()
 
     num_batches = max(num_batches, 1)
     return {
@@ -166,6 +171,10 @@ def _evaluate_epoch(
             total_recon += float(recon_loss.detach().item())
             total_arche += float(arche_loss.detach().item())
             count += 1
+            
+            del features, recon, original, embedding, recon_loss, arche_loss, loss
+            gc.collect()
+            torch.cuda.empty_cache()
     model.noise = noise_backup
     count = max(count, 1)
     return {

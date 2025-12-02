@@ -10,6 +10,7 @@ from aanet_pipeline.data_builder import AAnetDatasetResult, _prepare_cluster_ind
 from BatchTopK.sae import TopKSAE
 
 from tqdm import tqdm
+import gc
 
 class RealDataSampler:
     """
@@ -136,6 +137,10 @@ def collect_real_activity_stats(
         if collect_matrix:
             binary_batches.append(mask.cpu())
             
+        del tokens, cache, acts, acts_flat, feature_acts, mask
+        gc.collect()
+        torch.cuda.empty_cache()
+            
     activity_rates = (active_counts / max(total_samples, 1)).numpy()
     mean_abs_activation = (mean_abs_sum / max(total_samples, 1)).numpy()
     latent_matrix = None
@@ -215,6 +220,10 @@ def build_real_aanet_datasets(
             recon = sae_decode_features(sae, cluster_latents, x_mean, x_std)
             selected = recon[active_mask].detach().cpu()
             storage[desc.cluster_id].append(selected)
+
+        del tokens, cache, acts, acts_flat, feature_acts, x_mean, x_std, zero_template, subset, active_mask, cluster_latents, recon, selected
+        gc.collect()
+        torch.cuda.empty_cache()
 
     results: Dict[int, AAnetDatasetResult] = {}
     for desc in aanet_descriptors:
