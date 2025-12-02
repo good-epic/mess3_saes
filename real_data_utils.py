@@ -127,7 +127,10 @@ def collect_real_activity_stats(
 
     print(f"Collecting activity stats: {n_batches} batches of size {batch_size}")
     
-    for i in tqdm(range(n_batches), desc="Collecting Activity Stats", miniters=max(1, n_batches // 30)):
+    print_interval = max(1, n_batches // 30)
+    for i in range(n_batches):
+        if i % print_interval == 0 or i == n_batches - 1:
+            print(f"Collecting Activity Stats: {i}/{n_batches} ({(i/n_batches)*100:.1f}%)")
         tokens = sampler.sample_tokens_batch(batch_size, sample_len, device)
         
         with torch.no_grad():

@@ -230,7 +230,10 @@ def main():
             learning_rate=1e-3,
         )
         
-        for desc in tqdm(descriptors, desc=f"Fitting AAnet (n_clusters={n_clusters})", miniters=max(1, len(descriptors) // 30)):
+        print_interval = max(1, len(descriptors) // 30)
+        for i, desc in enumerate(descriptors):
+            if i % print_interval == 0 or i == len(descriptors) - 1:
+                print(f"Fitting AAnet (n_clusters={n_clusters}): {i}/{len(descriptors)}")
             dataset = datasets[desc.cluster_id]
             if dataset.data.shape[0] < 32:
                 print(f"Skipping cluster {desc.cluster_id} (too few samples)")
