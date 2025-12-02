@@ -391,27 +391,41 @@ def _elasticnet_stability_select(
 
 
 def sae_encode_features(sae, acts: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
-    x, x_mean, x_std = sae.preprocess_input(acts)
-    x_center = x - sae.b_dec
-    if isinstance(sae, TopKSAE):
-        k = int(sae.cfg["top_k"])
-        hidden = F.relu(x_center @ sae.W_enc)
-        if k >= hidden.shape[-1]:
-            acts_topk = hidden
+    if hasattr(sae, "preprocess_input"):
+        x, x_mean, x_std = sae.preprocess_input(acts)
+        x_center = x - sae.b_dec
+        if isinstance(sae, TopKSAE):
+            k = int(sae.cfg["top_k"])
+            hidden = F.relu(x_center @ sae.W_enc)
+            if k >= hidden.shape[-1]:
+                acts_topk = hidden
+            else:
+                topk = torch.topk(hidden, k, dim=-1)
+                acts_topk = torch.zeros_like(hidden).scatter(-1, topk.indices, topk.values)
+            return acts_topk, x_mean, x_std
+        if isinstance(sae, VanillaSAE):
+            hidden = F.relu(x_center @ sae.W_enc + sae.b_enc)
         else:
-            topk = torch.topk(hidden, k, dim=-1)
-            acts_topk = torch.zeros_like(hidden).scatter(-1, topk.indices, topk.values)
-        return acts_topk, x_mean, x_std
-    if isinstance(sae, VanillaSAE):
-        hidden = F.relu(x_center @ sae.W_enc + sae.b_enc)
-    else:
-        hidden = F.relu(x_center @ sae.W_enc)
-    return hidden, x_mean, x_std
+            hidden = F.relu(x_center @ sae.W_enc)
+        return hidden, x_mean, x_std
+    
+    # Fallback for sae_lens SAEs (e.g. JumpReLUSAE)
+    if hasattr(sae, "encode"):
+        return sae.encode(acts), None, None
+        
+    raise AttributeError("SAE object has neither 'preprocess_input' nor 'encode' method")
 
 
 def sae_decode_features(sae, feature_acts: torch.Tensor, x_mean: torch.Tensor | None, x_std: torch.Tensor | None) -> torch.Tensor:
-    recon = feature_acts @ sae.W_dec + sae.b_dec
-    return sae.postprocess_output(recon, x_mean, x_std)
+    if hasattr(sae, "postprocess_output"):
+        recon = feature_acts @ sae.W_dec + sae.b_dec
+        return sae.postprocess_output(recon, x_mean, x_std)
+    
+    # Fallback for sae_lens SAEs
+    if hasattr(sae, "decode"):
+        return sae.decode(feature_acts)
+        
+    raise AttributeError("SAE object has neither 'postprocess_output' nor 'decode' method")
 
 
 def collect_cluster_reconstructions(
