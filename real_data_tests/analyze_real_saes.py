@@ -79,7 +79,7 @@ def main():
     parser.add_argument("--latent_activity_threshold", type=float, default=1e-5, help="Minimum activation rate for latents")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=42)
-
+    parser.add_argument("--cache_dir", type=str, default=None, help="Directory for Hugging Face cache")
 
     args = parser.parse_args()
 
@@ -93,7 +93,12 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     print(f"Loading Model: {args.model_name}")
-    model = HookedTransformer.from_pretrained(args.model_name, device=args.device)
+    model_kwargs = {}
+    if args.cache_dir:
+        model_kwargs["cache_dir"] = args.cache_dir
+        print(f"Using cache directory: {args.cache_dir}")
+        
+    model = HookedTransformer.from_pretrained(args.model_name, device=args.device, **model_kwargs)
     
     print(f"Loading SAE: {args.sae_release} - {args.sae_id}")
     sae, cfg_dict, sparsity = SAE.from_pretrained(args.sae_release, args.sae_id, device=args.device)
