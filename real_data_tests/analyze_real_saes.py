@@ -102,18 +102,27 @@ def main():
     model = HookedTransformer.from_pretrained(args.model_name, device=args.device, **model_kwargs)
     
     print(f"Loading SAE: {args.sae_release} - {args.sae_id}")
-    sae, cfg_dict, sparsity = SAE.from_pretrained(args.sae_release, args.sae_id, device=args.device)
+    sae, cfg_dict, sparsity = SAE.from_pretrained_with_cfg_and_sparsity(args.sae_release, args.sae_id, device=args.device)
     print(f"SAE Config: {cfg_dict}")
     print(f"SAE Sparsity: {sparsity}")
-    print(f"SAE Hook Name: {sae.cfg.hook_name}")
+    
+    # Handle hook_name access
+    hook_name = None
+    if hasattr(sae.cfg, "hook_name"):
+        hook_name = sae.cfg.hook_name
+    elif hasattr(sae.cfg, "metadata") and "hook_name" in sae.cfg.metadata:
+        hook_name = sae.cfg.metadata["hook_name"]
+    elif cfg_dict and "hook_name" in cfg_dict:
+        hook_name = cfg_dict["hook_name"]
+        
+    print(f"SAE Hook Name: {hook_name}")
 
     print("Initializing RealDataSampler...")
     sampler = RealDataSampler(model, seed=args.seed)
     
 
     # Determine site and hook_name from SAE config
-    if hasattr(sae.cfg, "hook_name"):
-        hook_name = sae.cfg.hook_name
+    if hook_name:
         print(f"Using hook_name from SAE config: {hook_name}")
         
         # Derive site name for file paths (e.g. layer_20)
@@ -127,7 +136,7 @@ def main():
             site = hook_name.replace(".", "_")
     else:
         # Fallback to parsing sae_id if config doesn't have hook_name (unlikely for sae_lens)
-        print("Warning: sae.cfg.hook_name not found. Attempting to parse from sae_id.")
+        print("Warning: hook_name not found in SAE config. Attempting to parse from sae_id.")
         if "layer_" in args.sae_id:
             try:
                 layer_str = args.sae_id.split("layer_")[1].split("/")[0]
@@ -142,7 +151,9 @@ def main():
     
     # Ensure SAE config has hook_name (if we derived it manually)
     if not hasattr(sae.cfg, "hook_name"):
-        sae.cfg.hook_name = hook_name
+        # We can't easily set attributes on frozen dataclasses or Pydantic models sometimes,
+        # but let's try or just rely on our local 'hook_name' variable.
+        pass
 
     for n_clusters in args.n_clusters_list:
         print(f"\n--- Running Analysis for n_clusters={n_clusters} ---")
