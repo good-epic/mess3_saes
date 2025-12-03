@@ -76,42 +76,40 @@ class RealDataClusteringPipeline:
         decoder_dirs = sae.W_dec.detach().cpu().numpy()
 
         # Collect activity statistics
-        activity_stats = collect_real_activity_stats(
-            model,
-            sae,
-            data_source,
-            self.hook_name,
-            batch_size=config.sampling_config.sample_sequences,
-            sample_len=config.sampling_config.sample_seq_len or model.cfg.n_ctx,
-            n_batches=config.sampling_config.activation_batches,
-            device=device,
-            activation_eps=config.sampling_config.latent_activation_eps,
-            collect_matrix=(config.method == "spectral" and config.spectral_params.sim_metric == "phi"),
-        )
-        
-        hook_name = self.hook_name # for cache access later
-
-        activity_rates = activity_stats["activity_rates"]
-        mean_abs_activation = activity_stats["mean_abs_activation"]
-        latent_activity_matrix = activity_stats["latent_matrix"]
-        total_activity_samples = int(activity_stats["total_samples"])
+        # If threshold is 0 or None, we skip sampling and assume all latents are active
+        if not config.sampling_config.latent_activity_threshold:
+            print(f"{site}: Skipping activity stats collection (threshold is 0/None). Using all latents.")
+            activity_rates = np.ones(decoder_dirs.shape[0])
+            mean_abs_activation = np.zeros(decoder_dirs.shape[0]) # Dummy values
+            latent_activity_matrix = None
+            total_activity_samples = 0
+        else:
+            activity_stats = collect_real_activity_stats(
+                model,
+                sae,
+                data_source,
+                self.hook_name,
+                batch_size=config.sampling_config.sample_sequences,
+                sample_len=config.sampling_config.sample_seq_len or model.cfg.n_ctx,
+                n_batches=config.sampling_config.activation_batches,
+                device=device,
+                activation_eps=config.sampling_config.latent_activation_eps,
+                collect_matrix=(config.method == "spectral" and config.spectral_params.sim_metric == "phi"),
+            )
+            
+            activity_rates = activity_stats["activity_rates"]
+            mean_abs_activation = activity_stats["mean_abs_activation"]
+            latent_activity_matrix = activity_stats["latent_matrix"]
+            total_activity_samples = int(activity_stats["total_samples"])
 
         # Prepare activations
-        acts = cache[hook_name].detach()
-        acts_flat = acts.reshape(-1, acts.shape[-1]).to(device)
-        subsample_idx = None
-
-        if config.sampling_config.max_activations and acts_flat.shape[0] > config.sampling_config.max_activations:
-            idx = torch.randperm(acts_flat.shape[0], device=acts_flat.device)[:config.sampling_config.max_activations]
-            acts_flat = acts_flat[idx].contiguous()
-            subsample_idx = idx.cpu().numpy()
-        else:
-            acts_flat = acts_flat.contiguous()
-
-        # Encode features
-        with torch.no_grad():
-            feature_acts, x_mean, x_std = sae_encode_features(sae, acts_flat)
-        feature_acts = feature_acts.detach()
+        # Activations are not required for core clustering on real data
+        # We skip sampling to save time/memory as requested
+        acts = None
+        acts_flat = None
+        feature_acts = None
+        x_mean = None
+        x_std = None
 
         # Filter active latents
         active_mask = activity_rates >= config.sampling_config.latent_activity_threshold
@@ -160,7 +158,7 @@ class RealDataClusteringPipeline:
         belief_seeder = BeliefSeeder(config.belief_seeding)
         belief_seed_result: Optional[BeliefSeedingResult] = None
 
-        if component_beliefs_flat and component_order:
+        if component_beliefs_flat and component_order and acts_flat is not None:
             # Subsample beliefs if needed
             component_beliefs_for_seeding = {}
             for comp_name in component_order:
@@ -220,18 +218,22 @@ class RealDataClusteringPipeline:
 
         # Cluster analysis
         analyzer = ClusterAnalyzer(config.analysis_config)
-        encoded_cache = (feature_acts, x_mean, x_std)
+        cluster_recons = {}
+        cluster_stats = {}
+        if acts_flat is not None:
+            encoded_cache = (feature_acts, x_mean, x_std)
+            cluster_recons, cluster_stats = analyzer.collect_reconstructions(
+                acts_flat,
+                sae,
+                cluster_labels_full,
+                config.sampling_config.cluster_activation_threshold,
+                encoded_cache=encoded_cache,
+            )
 
-        cluster_recons, cluster_stats = analyzer.collect_reconstructions(
-            acts_flat,
-            sae,
-            cluster_labels_full,
-            config.sampling_config.cluster_activation_threshold,
-            encoded_cache=encoded_cache,
-        )
-
-        feature_np_for_r2 = feature_acts.detach().cpu().numpy()
-        del feature_acts, encoded_cache, x_mean, x_std
+        feature_np_for_r2 = None
+        if feature_acts is not None:
+            feature_np_for_r2 = feature_acts.detach().cpu().numpy()
+            del feature_acts, encoded_cache, x_mean, x_std
 
         # Add activity rates to stats
         per_site_cluster_rates = analyzer.add_activity_rates_to_stats(

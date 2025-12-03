@@ -85,6 +85,9 @@ def main():
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--cache_dir", type=str, default=None, help="Directory for Hugging Face cache")
+    parser.add_argument("--activity_batch_size", type=int, default=16, help="Batch size for activity stats")
+    parser.add_argument("--activity_batches", type=int, default=1024, help="Number of batches for activity stats")
+    parser.add_argument("--activity_seq_len", type=int, default=128, help="Sequence length for activity stats")
 
     args = parser.parse_args()
 
@@ -170,11 +173,11 @@ def main():
                 n_clusters=n_clusters,
             ),
             sampling_config=SamplingConfig(
-                sample_sequences=64,
-                activation_batches=16384,
-                max_activations=args.total_samples,
-                sample_seq_len=128,
                 latent_activity_threshold=args.latent_activity_threshold,
+                activation_batches=args.activity_batches,
+                sample_sequences=args.activity_batch_size,
+                sample_seq_len=args.activity_seq_len,
+                max_activations=args.total_samples, # Retained as it was not explicitly removed by the instruction
             ),
             geometry_fitting_config=GeometryFittingConfig(
                 enabled=True,
