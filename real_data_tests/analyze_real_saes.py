@@ -15,6 +15,9 @@ from aanet_pipeline.cluster_summary import AAnetDescriptor
 import jax
 from huggingface_hub import login
 
+import sys
+sys.stdout.reconfigure(line_buffering=True)
+
 from real_data_utils import RealDataSampler, build_real_aanet_datasets
 from real_data_tests.real_pipeline import RealDataClusteringPipeline
 
