@@ -14,7 +14,10 @@ python -u real_data_tests/analyze_real_saes.py \
     --output_dir "/workspace/outputs/real_data_analysis" \
     --n_clusters_list 128 256 512 645 \
     --total_samples 25000 \
-    --latent_activity_threshold 1e-5 \
+    --latent_activity_threshold 0 \
+    --activity_batch_size 32 \
+    --activity_batches 4096 \
+    --activity_seq_len 128 \
     --device "cuda" \
     --seed 42 \
     --cache_dir "/workspace/hf_cache" \
