@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
+import torch
 
 # from training_and_analysis_utils import build_similarity_matrix, spectral_clustering_with_eigengap
 from subspace_clustering_utils import (
