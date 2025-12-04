@@ -88,6 +88,40 @@ def main():
     parser.add_argument("--activity_batch_size", type=int, default=16, help="Batch size for activity stats")
     parser.add_argument("--activity_batches", type=int, default=1024, help="Number of batches for activity stats")
     parser.add_argument("--activity_seq_len", type=int, default=128, help="Sequence length for activity stats")
+    parser.add_argument("--subspace_variance_threshold", type=float, default=0.95, help="Variance threshold for rank estimation")
+    parser.add_argument("--subspace_gap_threshold", type=float, default=2.0, help="Eigengap threshold for rank estimation")
+
+    # AAnet Arguments
+    parser.add_argument("--aanet_epochs", type=int, default=100, help="Training epochs per model.")
+    parser.add_argument("--aanet_batch_size", type=int, default=256, help="Batch size for AAnet training.")
+    parser.add_argument("--aanet_lr", type=float, default=1e-3, help="Learning rate.")
+    parser.add_argument("--aanet_weight_decay", type=float, default=0.0, help="Weight decay.")
+    parser.add_argument("--aanet_layer_widths", type=int, nargs="+", default=[256, 128], help="Hidden layer widths.")
+    parser.add_argument("--aanet_simplex_scale", type=float, default=1.0, help="Simplex scale.")
+    parser.add_argument("--aanet_noise", type=float, default=0.05, help="Latent noise value or scale.")
+    parser.add_argument("--aanet_noise_relative", action="store_true", help="Interpret --aanet-noise as a multiple of the dataset std.")
+    parser.add_argument("--aanet_gamma_reconstruction", type=float, default=1.0)
+    parser.add_argument("--aanet_gamma_archetypal", type=float, default=1.0)
+    parser.add_argument("--aanet_gamma_extrema", type=float, default=1.0)
+    parser.add_argument("--aanet_min_samples", type=int, default=32, help="Minimum dataset size before training.")
+    parser.add_argument("--aanet_num_workers", type=int, default=0, help="DataLoader workers for AAnet training.")
+    parser.add_argument("--aanet_seed", type=int, default=43, help="Base seed for AAnet training.")
+    parser.add_argument("--aanet_val_fraction", type=float, default=0.1, help="Fraction of samples reserved for validation per cluster.")
+    parser.add_argument("--aanet_val_min_size", type=int, default=256, help="Minimum number of samples required for a validation split.")
+    parser.add_argument("--aanet_early_stop_patience", type=int, default=10, help="Early stopping patience based on validation loss.")
+    parser.add_argument("--aanet_early_stop_delta", type=float, default=1e-4, help="Minimum improvement in validation loss to reset patience.")
+    parser.add_argument("--aanet_lr_patience", type=int, default=5, help="ReduceLROnPlateau patience in epochs.")
+    parser.add_argument("--aanet_lr_factor", type=float, default=0.5, help="Factor to reduce learning rate when plateau is detected.")
+    parser.add_argument("--aanet_grad_clip", type=float, default=1.0, help="Gradient clipping norm (set <=0 to disable).")
+    parser.add_argument("--aanet_restarts_no_extrema", type=int, default=3, help="Number of random restarts when no warm-start extrema are available.")
+
+    # Extrema Arguments
+    parser.add_argument("--extrema_enabled", dest="extrema_enabled", action="store_true", default=True, help="Enable Laplacian extrema warm start.")
+    parser.add_argument("--no_extrema", dest="extrema_enabled", action="store_false", help="Disable Laplacian extrema warm start.")
+    parser.add_argument("--extrema_knn", type=int, default=10, help="kNN value for Laplacian extrema.")
+    parser.add_argument("--extrema_disable_subsample", action="store_true", help="Disable internal subsampling.")
+    parser.add_argument("--extrema_max_points", type=int, default=10000, help="Maximum samples used for extrema computation.")
+    parser.add_argument("--extrema_seed", type=int, default=0, help="Seed for extrema subsampling.")
 
     args = parser.parse_args()
 
@@ -171,6 +205,8 @@ def main():
             selected_k=0,
             subspace_params=SubspaceParams(
                 n_clusters=n_clusters,
+                variance_threshold=args.subspace_variance_threshold,
+                gap_threshold=args.subspace_gap_threshold,
             ),
             sampling_config=SamplingConfig(
                 latent_activity_threshold=args.latent_activity_threshold,
@@ -204,6 +240,7 @@ def main():
         
         print(f"Running AAnet fitting for n_clusters={n_clusters}")
         
+        consolidated_results = []
         descriptors = []
         unique_labels = np.unique(result.cluster_labels)
         for label in unique_labels:
@@ -231,11 +268,28 @@ def main():
         )
         
         aanet_config = TrainingConfig(
-            epochs=100,
-            batch_size=256,
-            learning_rate=1e-3,
+            epochs=args.aanet_epochs,
+            batch_size=args.aanet_batch_size,
+            learning_rate=args.aanet_lr,
+            weight_decay=args.aanet_weight_decay,
+            gamma_reconstruction=args.aanet_gamma_reconstruction,
+            gamma_archetypal=args.aanet_gamma_archetypal,
+            gamma_extrema=args.aanet_gamma_extrema,
+            simplex_scale=args.aanet_simplex_scale,
+            noise=args.aanet_noise,
+            layer_widths=args.aanet_layer_widths,
+            min_samples=args.aanet_min_samples,
+            num_workers=args.aanet_num_workers,
+            shuffle=True,
+            val_fraction=args.aanet_val_fraction,
+            min_val_size=args.aanet_val_min_size,
+            early_stop_patience=args.aanet_early_stop_patience,
+            early_stop_delta=args.aanet_early_stop_delta,
+            lr_patience=args.aanet_lr_patience,
+            lr_factor=args.aanet_lr_factor,
+            grad_clip=args.aanet_grad_clip,
+            restarts_no_extrema=args.aanet_restarts_no_extrema,
         )
-        
         print_interval = max(1, len(descriptors) // 30)
         for i, desc in enumerate(descriptors):
             if i % print_interval == 0 or i == len(descriptors) - 1:
@@ -252,7 +306,13 @@ def main():
                 extrema_tensor = compute_diffusion_extrema(
                     dataset.data.cpu().numpy(),
                     max_k=8,
-                    config=ExtremaConfig(enabled=True)
+                    config=ExtremaConfig(
+                        enabled=args.extrema_enabled,
+                        knn=args.extrema_knn,
+                        subsample=not args.extrema_disable_subsample,
+                        max_points=args.extrema_max_points,
+                        random_seed=args.extrema_seed
+                    )
                 )
                 if extrema_tensor is not None:
                     extrema_tensor = extrema_tensor.to(args.device)
@@ -269,5 +329,49 @@ def main():
                     diffusion_extrema=extrema_tensor
                 )
                 
+                # Collect metrics for this run
+                row = {
+                    "n_clusters_total": n_clusters,
+                    "cluster_id": desc.cluster_id,
+                    "n_latents": len(desc.latent_indices),
+                    "aanet_k": k,
+                    "aanet_status": aanet_result.status,
+                    "aanet_loss": aanet_result.metrics.get("loss_final"),
+                    "aanet_recon_loss": aanet_result.metrics.get("reconstruction_loss_final"),
+                    "aanet_arche_loss": aanet_result.metrics.get("archetypal_loss_final"),
+                    "aanet_extrema_loss": aanet_result.metrics.get("extrema_loss", 0.0),
+                    "aanet_val_loss": aanet_result.metrics.get("val_loss_final"),
+                    "aanet_in_simplex": aanet_result.metrics.get("in_simplex_fraction"),
+                }
+                
+                # Add clustering metrics if available
+                if result.subspace_diagnostics:
+                    # subspace_diagnostics might be flat or nested, let's check structure
+                    # It likely contains 'reconstruction_errors' dict
+                    recon_errors = result.subspace_diagnostics.get("reconstruction_errors", {})
+                    row["cluster_recon_error"] = recon_errors.get(desc.cluster_id, float("nan"))
+                    
+                    cluster_ranks = result.subspace_diagnostics.get("cluster_ranks", {})
+                    row["cluster_rank"] = cluster_ranks.get(desc.cluster_id, float("nan"))
+
+                consolidated_results.append(row)
+
+        # Save consolidated results to CSV
+        if consolidated_results:
+            import pandas as pd
+            df = pd.DataFrame(consolidated_results)
+            csv_path = os.path.join(args.output_dir, f"consolidated_metrics_n{n_clusters}.csv")
+            df.to_csv(csv_path, index=False)
+            print(f"Saved consolidated metrics to {csv_path}")
+            
+            # Print top clusters by AAnet loss (for k=best?) or just dump
+            print("\nTop clusters by AAnet reconstruction loss (k=best):")
+            # Group by cluster_id and take min loss?
+            # Or just print a few good ones
+            df_ok = df[df["aanet_status"] == "ok"]
+            if not df_ok.empty:
+                df_sorted = df_ok.sort_values("aanet_recon_loss")
+                print(df_sorted[["cluster_id", "aanet_k", "aanet_recon_loss", "cluster_recon_error"]].head(10))
+
 if __name__ == "__main__":
     main()

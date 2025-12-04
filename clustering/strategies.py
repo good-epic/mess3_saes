@@ -267,11 +267,33 @@ class KSubspacesClusteringStrategy(ClusteringStrategy):
                 print(f"{site}: auto-detected k_subspaces cluster count to {effective_n_clusters} ({override_reason})")
 
         # Run k-subspaces
+        import torch
+        
+        # Convert to tensor for GPU processing
+        device = config.sampling_config.device if hasattr(config.sampling_config, 'device') else "cuda" if torch.cuda.is_available() else "cpu"
+        # config.sampling_config might not have device, check where device is usually set.
+        # It seems passed in pipeline.run but not stored in config explicitly except maybe in sae config?
+        # Let's default to cuda if available.
+        
+        decoder_tensor = torch.from_numpy(decoder_normalized).float()
+        if torch.cuda.is_available():
+            decoder_tensor = decoder_tensor.cuda()
+
         if params.use_grid_search:
             if initial_clusters_normalized:
                 raise ValueError("Belief-aligned seeding is not compatible with --use_grid_search")
+            # grid_search_k_subspaces also needs porting if used, but let's focus on k_subspaces_clustering first
+            # For now, we might need to cast back to numpy if grid search isn't ported, 
+            # OR port grid search too. The user is using k_subspaces_clustering directly in the script.
+            # Let's assume grid search is less critical or will handle numpy->tensor conversion internally if we update it.
+            # Actually, let's just pass numpy to grid search for now if it expects it, or update it later.
+            # But wait, we updated k_subspaces_clustering to expect tensor or convert it.
+            # So passing numpy is fine, it will convert.
+            # But for speed we want to pass tensor.
+            
+            # Let's stick to the main path which is k_subspaces_clustering.
             subspace_result, grid_results = grid_search_k_subspaces(
-                decoder_normalized,
+                decoder_normalized, # Pass numpy, let it handle conversion if needed
                 k_values=params.k_values,
                 r_values=params.r_values,
                 random_state=config.seed,
@@ -283,8 +305,9 @@ class KSubspacesClusteringStrategy(ClusteringStrategy):
                 f"(total error={subspace_result.total_reconstruction_error:.4f})"
             )
         else:
+            # Pass tensor to k_subspaces_clustering
             subspace_result = k_subspaces_clustering(
-                decoder_normalized,
+                decoder_tensor,
                 n_clusters=effective_n_clusters,
                 subspace_rank=params.subspace_rank,
                 max_iters=20,

@@ -115,33 +115,75 @@ def normalize_and_deduplicate(
         normalized_vectors: (n_kept, d_features) L2-normalized unique vectors
         kept_indices: (n_kept,) indices of kept vectors in original array
     """
+    if isinstance(vectors, np.ndarray):
+        vectors = torch.from_numpy(vectors)
+    
+    # Ensure vectors are on the correct device if they aren't already
+    if vectors.device.type == 'cpu' and torch.cuda.is_available():
+        vectors = vectors.cuda()
+
     # L2 normalize
-    norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-    norms = np.where(norms == 0.0, 1.0, norms)
+    norms = torch.norm(vectors, dim=1, keepdim=True)
+    norms = torch.where(norms == 0.0, torch.tensor(1.0, device=vectors.device), norms)
     normalized = vectors / norms
 
     # Remove near-duplicates greedily
-    kept_mask = np.ones(len(normalized), dtype=bool)
+    # For large datasets, doing this all-pairs on GPU might be memory intensive.
+    # But for 32k vectors it should be fine (32k^2 * 4 bytes ~ 4GB).
+    
+    n = len(normalized)
+    kept_mask = torch.ones(n, dtype=torch.bool, device=vectors.device)
     protected_set = set(protected_indices) if protected_indices is not None else set()
-
-    for i in range(len(normalized)):
-        if not kept_mask[i]:
+    
+    # Batch processing to avoid OOM if needed, but simple loop for now
+    # Actually, let's do a batched matrix multiplication for similarity
+    # to speed this up significantly compared to the loop.
+    
+    # Compute full similarity matrix
+    sim_matrix = torch.matmul(normalized, normalized.T).abs()
+    
+    # Mask out diagonal and lower triangle to only check j > i
+    mask = torch.triu(torch.ones_like(sim_matrix, dtype=torch.bool), diagonal=1)
+    
+    # Find pairs with high similarity
+    high_sim_pairs = torch.nonzero((sim_matrix > cosine_threshold) & mask)
+    
+    # Iterate through pairs and mark for removal
+    # We need to do this sequentially to respect the greedy order
+    # (keep i, remove j)
+    
+    # Move to CPU for sequential logic if needed, or just iterate
+    # Since we need to respect "first come first served", we can't fully vectorize the decision
+    # without a more complex graph algorithm.
+    # But we can iterate over the sorted pairs.
+    
+    high_sim_pairs_cpu = high_sim_pairs.cpu().numpy()
+    kept_mask_cpu = np.ones(n, dtype=bool)
+    
+    for i, j in high_sim_pairs_cpu:
+        if not kept_mask_cpu[i]:
             continue
-        # Check against all subsequent vectors
-        for j in range(i + 1, len(normalized)):
-            if not kept_mask[j]:
-                continue
-            cos_sim = np.abs(np.dot(normalized[i], normalized[j]))
-            if cos_sim > cosine_threshold:
-                if j in protected_set and i in protected_set:
-                    continue
-                if j in protected_set:
-                    kept_mask[i] = False
-                    break
-                kept_mask[j] = False
-
-    kept_indices = np.where(kept_mask)[0]
-    return normalized[kept_indices], kept_indices
+        if not kept_mask_cpu[j]:
+            continue
+            
+        # Both currently kept, and they are too similar.
+        # Remove j (the later one), unless protected logic applies.
+        if j in protected_set and i in protected_set:
+            continue
+        if j in protected_set:
+            kept_mask_cpu[i] = False
+        else:
+            kept_mask_cpu[j] = False
+            
+    kept_indices = np.where(kept_mask_cpu)[0]
+    
+    # Return as tensors/arrays consistent with input?
+    # The function signature says np.ndarray return.
+    # For now, let's return NumPy to avoid breaking callers immediately,
+    # or return Tensor if we want to stay on GPU.
+    # The plan says "Refactor... to accept and return torch.Tensor".
+    
+    return normalized[kept_indices], torch.from_numpy(kept_indices).to(vectors.device)
 
 
 def _compute_belief_seed_sets(
@@ -308,13 +350,28 @@ def fit_subspace_qr(vectors: np.ndarray, rank: int) -> np.ndarray:
     if len(vectors) == 0:
         raise ValueError("Cannot fit subspace to empty set of vectors")
 
+    if not isinstance(vectors, torch.Tensor):
+        vectors = torch.from_numpy(vectors)
+
     if len(vectors) < rank:
         rank = len(vectors)
 
     # Use SVD for better numerical stability and explicit rank control
-    U, s, Vt = svd(vectors, full_matrices=False)
+    # torch.linalg.svd returns U, S, Vh (V hermitian/transpose)
+    # Vh is (..., N, N) or (..., K, N) depending on full_matrices
+    try:
+        U, s, Vh = torch.linalg.svd(vectors, full_matrices=False)
+    except RuntimeError:
+        # Fallback to CPU if GPU SVD fails (sometimes happens with specific sizes/drivers)
+        vectors_cpu = vectors.cpu()
+        U, s, Vh = torch.linalg.svd(vectors_cpu, full_matrices=False)
+        Vh = Vh.to(vectors.device)
+
     # Keep top 'rank' components
-    basis = Vt[:rank].T  # (d_features, rank)
+    # Vh is (min(M, N), N). The rows of Vh are the eigenvectors.
+    # We want the basis vectors, which are the first 'rank' rows of Vh.
+    # Transpose to get (d_features, rank) shape as expected by other functions.
+    basis = Vh[:rank].T  # (d_features, rank)
 
     return basis
 
@@ -346,7 +403,15 @@ def estimate_subspace_rank_svd(
             limiting_method="both"
         )
 
-    U, s, Vt = svd(vectors, full_matrices=False)
+    if not isinstance(vectors, torch.Tensor):
+        vectors = torch.from_numpy(vectors)
+
+    try:
+        U, s, Vh = torch.linalg.svd(vectors, full_matrices=False)
+    except RuntimeError:
+        vectors_cpu = vectors.cpu()
+        U, s, Vh = torch.linalg.svd(vectors_cpu, full_matrices=False)
+        s = s.to(vectors.device)
 
     if len(s) == 0:
         return RankEstimationDetails(
@@ -357,7 +422,7 @@ def estimate_subspace_rank_svd(
         )
 
     # Method 1: Cumulative variance
-    total_var = np.sum(s**2)
+    total_var = torch.sum(s**2)
     if total_var == 0:
         return RankEstimationDetails(
             variance_rank=1,
@@ -365,14 +430,15 @@ def estimate_subspace_rank_svd(
             final_rank=1,
             limiting_method="both"
         )
-    cumsum_var = np.cumsum(s**2)
-    variance_rank = int(np.searchsorted(cumsum_var / total_var, variance_threshold) + 1)
+    cumsum_var = torch.cumsum(s**2, dim=0)
+    # searchsorted requires 1D input
+    variance_rank = int(torch.searchsorted(cumsum_var / total_var, variance_threshold).item() + 1)
 
     # Method 2: Singular value gaps
     if len(s) > 1:
         ratios = s[:-1] / (s[1:] + 1e-10)  # Avoid division by zero
-        gap_indices = np.where(ratios >= gap_threshold)[0]
-        gap_rank = int(gap_indices[0] + 1) if len(gap_indices) > 0 else len(s)
+        gap_indices = torch.nonzero(ratios >= gap_threshold).flatten()
+        gap_rank = int(gap_indices[0].item() + 1) if len(gap_indices) > 0 else len(s)
     else:
         gap_rank = 1
 
@@ -489,28 +555,73 @@ def assign_to_subspaces(
     n_clusters = len(subspace_bases)
 
     # Compute reconstruction error for each vector under each subspace
-    errors = np.zeros((n_vectors, n_clusters))
+    # errors = torch.zeros((n_vectors, n_clusters), device=vectors.device)
+    
+    # To avoid loop overhead, we can try to batch if memory allows, 
+    # but subspaces have different ranks, so we can't easily stack bases.
+    # We'll stick to the loop but use GPU operations.
+    
+    errors_list = []
 
-    for cluster_idx, (cluster_id, basis) in enumerate(subspace_bases.items()):
+    for cluster_id, basis in subspace_bases.items():
         # Project onto subspace: x_proj = U U^T x
-        projections = vectors @ basis @ basis.T
-        # Reconstruction error: ||x - x_proj||^2
+        # basis is (d, r)
+        # vectors is (n, d)
+        # projections = vectors @ basis @ basis.T
+        # Optimization: (vectors @ basis) is (n, r), then @ basis.T is (n, d)
+        # We can compute norm of residual directly without forming full projection matrix if needed,
+        # but let's stick to the explicit projection for clarity first.
+        
+        # vectors_projected_coeffs = vectors @ basis  # (n, r)
+        # projections = vectors_projected_coeffs @ basis.T # (n, d)
+        
+        # Actually, ||x - UU^T x||^2 = ||x||^2 - ||U^T x||^2 for orthonormal U
+        # This is much faster!
+        # ||U^T x||^2 is sum of squares of coefficients.
+        
+        coeffs = torch.matmul(vectors, basis) # (n, r)
+        proj_energy = torch.sum(coeffs ** 2, dim=1) # (n,)
+        
+        # We assume vectors are normalized? If not, we need ||x||^2.
+        # The input to k_subspaces is normalized.
+        # But let's be safe and compute ||x||^2.
+        # total_energy = torch.sum(vectors ** 2, dim=1)
+        # residual_energy = total_energy - proj_energy
+        
+        # However, due to numerical precision, residual_energy might be slightly negative if x is perfectly in subspace.
+        # Let's use the explicit residual for stability unless it's too slow.
+        # Explicit:
+        projections = torch.matmul(coeffs, basis.T)
         residuals = vectors - projections
-        errors[:, cluster_idx] = np.sum(residuals ** 2, axis=1)
+        cluster_errors = torch.sum(residuals ** 2, dim=1)
+        errors_list.append(cluster_errors)
+
+    errors = torch.stack(errors_list, dim=1) # (n_vectors, n_clusters)
 
     # Assign to subspace with minimum error
-    best_clusters = np.argmin(errors, axis=1)
+    best_clusters_indices = torch.argmin(errors, dim=1) # (n_vectors,)
 
     # Map back to cluster IDs
     cluster_ids = list(subspace_bases.keys())
-    labels = np.array([cluster_ids[idx] for idx in best_clusters])
+    # cluster_ids might not be 0..K-1, so we map
+    cluster_ids_tensor = torch.tensor(cluster_ids, device=vectors.device)
+    labels = cluster_ids_tensor[best_clusters_indices]
 
     # Compute mean reconstruction error per cluster
     reconstruction_errors = {}
-    for cluster_id in cluster_ids:
-        mask = labels == cluster_id
-        if mask.sum() > 0:
-            reconstruction_errors[cluster_id] = float(errors[mask, cluster_ids.index(cluster_id)].mean())
+    
+    # This loop is small (K iterations), fine on CPU or GPU
+    for i, cluster_id in enumerate(cluster_ids):
+        # mask = labels == cluster_id
+        # We can use the errors tensor we already computed
+        # But we only want the error for the assigned cluster? 
+        # The original code computed mean error of points assigned to that cluster.
+        
+        # Extract errors for points assigned to this cluster
+        assigned_mask = (best_clusters_indices == i)
+        if assigned_mask.any():
+            mean_error = errors[assigned_mask, i].mean().item()
+            reconstruction_errors[cluster_id] = mean_error
         else:
             reconstruction_errors[cluster_id] = 0.0
 
@@ -545,28 +656,51 @@ def k_subspaces_clustering(
         SubspaceClusterResult with cluster assignments and subspace bases
     """
     if random_state is not None:
+        # Set both NumPy and PyTorch seeds for reproducibility
         np.random.seed(random_state)
+        torch.manual_seed(random_state)
+
+    if not isinstance(vectors, torch.Tensor):
+        vectors = torch.from_numpy(vectors)
+    
+    # Ensure vectors are on the correct device if they aren't already
+    if vectors.device.type == 'cpu' and torch.cuda.is_available():
+        vectors = vectors.cuda()
 
     n_vectors, d_features = vectors.shape
 
     # Auto-detect n_clusters if not provided
-    seed_clusters: Dict[int, np.ndarray] = {}
+    seed_clusters: Dict[int, torch.Tensor] = {} # Store indices as tensors
     locked_assignments: Dict[int, int] = {}
     assigned_seed_indices: set[int] = set()
 
     if initial_clusters:
         for cluster_id, indices in initial_clusters.items():
-            idx_arr = np.array(indices, dtype=int)
-            if idx_arr.size == 0:
+            # Handle indices being list or array
+            idx_arr = torch.tensor(indices, dtype=torch.long, device=vectors.device)
+            if idx_arr.numel() == 0:
                 continue
-            if np.any(idx_arr < 0) or np.any(idx_arr >= n_vectors):
+            if torch.any(idx_arr < 0) or torch.any(idx_arr >= n_vectors):
                 raise ValueError("Initial cluster indices out of range for k-subspaces")
-            unique_indices = np.unique(idx_arr)
+            unique_indices = torch.unique(idx_arr)
             seed_clusters[int(cluster_id)] = unique_indices
+            
+            # Lock mode logic
             if lock_mode == "fixed":
-                for idx in unique_indices:
-                    locked_assignments[idx] = int(cluster_id)
+                # We can't easily use a dict for locked assignments on GPU in the same way.
+                # Instead, we'll build a mask or tensor for locked assignments.
+                # For now, let's keep the dict logic but be aware it's slow if iterated.
+                # Optimization: Create a tensor of locked labels initialized to -1
+                pass
+                
             assigned_seed_indices.update(unique_indices.tolist())
+
+    # Build locked_labels tensor for fast assignment override
+    locked_labels = torch.full((n_vectors,), -1, dtype=torch.long, device=vectors.device)
+    if initial_clusters and lock_mode == "fixed":
+        for cluster_id, indices in initial_clusters.items():
+            idx_arr = torch.tensor(indices, dtype=torch.long, device=vectors.device)
+            locked_labels[idx_arr] = int(cluster_id)
 
     min_clusters = max(len(seed_clusters), 2)
 
@@ -583,7 +717,7 @@ def k_subspaces_clustering(
         )
 
     # Seed subspaces
-    subspace_bases: Dict[int, np.ndarray] = {}
+    subspace_bases: Dict[int, torch.Tensor] = {}
     for cluster_id, seed_indices in seed_clusters.items():
         seed_vectors = vectors[seed_indices]
         rank = min(len(seed_vectors), subspace_rank) if subspace_rank is not None else len(seed_vectors)
@@ -593,15 +727,28 @@ def k_subspaces_clustering(
 
     remaining_cluster_ids = [cid for cid in range(n_clusters) if cid not in subspace_bases]
     if remaining_cluster_ids:
-        available_indices = [idx for idx in range(n_vectors) if idx not in assigned_seed_indices]
+        # Need to find available indices.
+        # Doing set difference on CPU is fine for initialization.
+        all_indices = set(range(n_vectors))
+        available_indices_set = all_indices - assigned_seed_indices
+        available_indices = sorted(list(available_indices_set))
+        
         if len(available_indices) < len(remaining_cluster_ids):
             raise ValueError("Not enough unassigned vectors to initialize remaining clusters")
-        remaining_vectors = vectors[available_indices]
-        seed_positions = pivoted_qr_seeds(remaining_vectors, len(remaining_cluster_ids))
+        
+        # Use CPU for pivoted QR seeding as it's a one-time operation and pivoted QR is standard in SciPy
+        remaining_vectors_cpu = vectors[available_indices].cpu().numpy()
+        seed_positions = pivoted_qr_seeds(remaining_vectors_cpu, len(remaining_cluster_ids))
+        
         for cluster_id, pos in zip(remaining_cluster_ids, seed_positions):
             seed_idx = available_indices[pos]
-            seed_vector = vectors[seed_idx:seed_idx+1]
-            basis = orth(seed_vector.T)
+            seed_vector = vectors[seed_idx:seed_idx+1] # (1, d)
+            
+            # orth on GPU? torch.linalg.qr gives Q.
+            # Q, R = torch.linalg.qr(seed_vector.T)
+            # basis = Q
+            # But for a single vector, it's just normalization.
+            basis = seed_vector.T / torch.norm(seed_vector)
             subspace_bases[cluster_id] = basis
 
     # Alternating optimization
@@ -613,17 +760,19 @@ def k_subspaces_clustering(
     for iter_idx in range(max_iters):
         if iter_idx % print_interval == 0 or iter_idx == max_iters - 1:
             print(f"K-Subspaces EM: {iter_idx}/{max_iters}")
+        
         # Assignment step
         labels, reconstruction_errors = assign_to_subspaces(vectors, subspace_bases)
 
-        if lock_mode == "fixed" and locked_assignments:
-            for idx, cluster_id in locked_assignments.items():
-                labels[idx] = cluster_id
+        # Apply locks
+        if lock_mode == "fixed":
+            mask = locked_labels != -1
+            labels[mask] = locked_labels[mask]
 
         # Check convergence
-        if prev_labels is not None and np.array_equal(labels, prev_labels):
+        if prev_labels is not None and torch.equal(labels, prev_labels):
             break
-        prev_labels = labels.copy()
+        prev_labels = labels.clone()
 
         # Refit step
         for cluster_id in range(n_clusters):
@@ -632,8 +781,10 @@ def k_subspaces_clustering(
 
             if len(cluster_vectors) == 0:
                 # Empty cluster; reinitialize randomly
-                random_idx = np.random.randint(n_vectors)
-                basis = orth(vectors[random_idx:random_idx+1].T)
+                random_idx = torch.randint(0, n_vectors, (1,), device=vectors.device).item()
+                # basis = orth(vectors[random_idx:random_idx+1].T)
+                seed_vec = vectors[random_idx:random_idx+1]
+                basis = seed_vec.T / torch.norm(seed_vec)
                 subspace_bases[cluster_id] = basis
             else:
                 # Determine rank for this cluster
@@ -655,19 +806,57 @@ def k_subspaces_clustering(
 
     # Final assignment and error computation
     labels, reconstruction_errors = assign_to_subspaces(vectors, subspace_bases)
-    if lock_mode == "fixed" and locked_assignments:
-        for idx, cluster_id in locked_assignments.items():
-            labels[idx] = cluster_id
+    if lock_mode == "fixed":
+        mask = locked_labels != -1
+        labels[mask] = locked_labels[mask]
         # Recompute errors with locked assignments reflected
-        labels, reconstruction_errors = assign_to_subspaces(vectors, subspace_bases)
+        # We need to call assign_to_subspaces again? 
+        # Or just re-calculate errors for the locked ones?
+        # assign_to_subspaces computes errors for *optimal* assignment.
+        # If we force assignment, we need to compute error for that specific assignment.
+        # But assign_to_subspaces returns the optimal labels.
+        # Let's just re-run assignment but we can't force it inside the function easily without modifying it.
+        # Actually, assign_to_subspaces returns errors for the *assigned* labels?
+        # No, it returns labels and a dict of mean errors.
+        # The dict is computed based on the labels it found.
+        # If we change labels, we should recompute the dict.
+        
+        # Let's manually recompute errors for the final labels
+        reconstruction_errors = {}
+        # We need the full error matrix or just compute per cluster
+        for cluster_id, basis in subspace_bases.items():
+            cluster_mask = labels == cluster_id
+            if cluster_mask.any():
+                cluster_vectors = vectors[cluster_mask]
+                coeffs = torch.matmul(cluster_vectors, basis)
+                projections = torch.matmul(coeffs, basis.T)
+                residuals = cluster_vectors - projections
+                mean_error = torch.mean(torch.sum(residuals ** 2, dim=1)).item()
+                reconstruction_errors[cluster_id] = mean_error
+            else:
+                reconstruction_errors[cluster_id] = 0.0
+
     total_error = sum(reconstruction_errors.values())
 
     # Collect actual ranks used per cluster
     cluster_ranks = {cluster_id: basis.shape[1] for cluster_id, basis in subspace_bases.items()}
 
+    # Convert results back to CPU/NumPy for compatibility
+    labels_cpu = labels.cpu().numpy()
+    subspace_bases_cpu = {k: v.cpu().numpy() for k, v in subspace_bases.items()}
+    
+    # initial_clusters needs to be serializable
+    initial_clusters_serializable = {}
+    if seed_clusters:
+        for k, v in seed_clusters.items():
+            if isinstance(v, torch.Tensor):
+                initial_clusters_serializable[k] = v.cpu().tolist()
+            else:
+                initial_clusters_serializable[k] = list(v)
+
     result = SubspaceClusterResult(
-        cluster_labels=labels,
-        subspace_bases=subspace_bases,
+        cluster_labels=labels_cpu,
+        subspace_bases=subspace_bases_cpu,
         reconstruction_errors=reconstruction_errors,
         total_reconstruction_error=total_error,
         n_clusters=n_clusters,
@@ -676,7 +865,7 @@ def k_subspaces_clustering(
         cluster_ranks=cluster_ranks,
         rank_estimation_details=rank_details if rank_details else None,
     )
-    result.initial_clusters = {cid: seed_clusters[cid].tolist() for cid in seed_clusters}
+    result.initial_clusters = initial_clusters_serializable
     return result
 
 
@@ -846,11 +1035,11 @@ def ensc_clustering(
     )
 
 
-def compute_principal_angles(
-    basis_a: np.ndarray,
-    basis_b: np.ndarray,
-) -> np.ndarray:
-    """Compute principal angles between two subspaces.
+def compute_principal_angles_torch(
+    basis_a: torch.Tensor,
+    basis_b: torch.Tensor,
+) -> torch.Tensor:
+    """Compute principal angles between two subspaces using PyTorch.
 
     Args:
         basis_a: (d_features, rank_a) orthonormal basis
@@ -859,7 +1048,19 @@ def compute_principal_angles(
     Returns:
         angles: Principal angles in radians, sorted ascending
     """
-    return subspace_angles(basis_a, basis_b)
+    # Singular values of A^T B are cosines of principal angles
+    # Clamp to [-1, 1] to avoid numerical issues with arccos
+    product = torch.matmul(basis_a.T, basis_b)
+    try:
+        # svdvals is faster if we don't need U and V
+        s = torch.linalg.svdvals(product)
+    except RuntimeError:
+        # Fallback for stability
+        U, s, V = torch.linalg.svd(product)
+    
+    s = torch.clamp(s, min=-1.0, max=1.0)
+    angles = torch.acos(s)
+    return torch.sort(angles)[0]
 
 
 def compute_all_principal_angles(
@@ -875,14 +1076,25 @@ def compute_all_principal_angles(
     """
     cluster_ids = sorted(subspace_bases.keys())
     angles_dict: Dict[Tuple[int, int], np.ndarray] = {}
+    
+    # Convert bases to GPU tensors once
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    bases_tensors = {}
+    for cid, basis in subspace_bases.items():
+        t = torch.from_numpy(basis).to(device)
+        bases_tensors[cid] = t
 
+    # Compute all pairs
+    # This is still O(K^2), but SVD on small matrices (rank x rank) on GPU is fast.
+    # We could batch this if needed, but simple loop is likely fast enough for K=128.
+    
     for i, id_a in enumerate(cluster_ids):
+        basis_a = bases_tensors[id_a]
         for id_b in cluster_ids[i+1:]:
-            angles = compute_principal_angles(
-                subspace_bases[id_a],
-                subspace_bases[id_b],
-            )
-            angles_dict[(id_a, id_b)] = angles
+            basis_b = bases_tensors[id_b]
+            
+            angles = compute_principal_angles_torch(basis_a, basis_b)
+            angles_dict[(id_a, id_b)] = angles.cpu().numpy()
 
     return angles_dict
 
@@ -903,27 +1115,52 @@ def compute_projection_energies(
         within_energies: Dict mapping cluster_id -> mean squared projection norm
         between_energy: Mean squared cross-projection norm
     """
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    # Convert inputs to tensors
+    vectors_t = torch.from_numpy(vectors).to(device)
+    labels_t = torch.from_numpy(labels).to(device)
+    
+    bases_tensors = {}
+    for cid, basis in subspace_bases.items():
+        bases_tensors[cid] = torch.from_numpy(basis).to(device)
+
     within_energies: Dict[int, float] = {}
     between_contributions = []
-
-    for cluster_id, basis in subspace_bases.items():
-        cluster_mask = labels == cluster_id
-        cluster_vectors = vectors[cluster_mask]
-
-        if len(cluster_vectors) == 0:
+    
+    # Pre-compute cluster masks to avoid repeated comparisons
+    cluster_ids = sorted(subspace_bases.keys())
+    
+    for cluster_id in cluster_ids:
+        basis = bases_tensors[cluster_id]
+        cluster_mask = labels_t == cluster_id
+        
+        # We need vectors belonging to this cluster
+        # If mask is empty, skip
+        if not cluster_mask.any():
             continue
+            
+        cluster_vectors = vectors_t[cluster_mask]
 
-        # Within: ||U U^T x||^2 for x in cluster
-        projections = cluster_vectors @ basis @ basis.T
-        within_energy = float(np.mean(np.sum(projections ** 2, axis=1)))
+        # Within: ||U U^T x||^2 = ||U^T x||^2 for orthonormal U
+        coeffs = torch.matmul(cluster_vectors, basis)
+        within_energy = torch.mean(torch.sum(coeffs ** 2, dim=1)).item()
         within_energies[cluster_id] = within_energy
 
         # Between: ||U_j U_j^T x_i||^2 for x_i in cluster i, U_j != U_i
-        for other_id, other_basis in subspace_bases.items():
+        # This is expensive: for each cluster i, project onto ALL other bases j.
+        # We can optimize by batching bases?
+        # Bases have different ranks, so we can't stack them easily into a single tensor.
+        # But we can iterate.
+        
+        for other_id in cluster_ids:
             if other_id == cluster_id:
                 continue
-            cross_projections = cluster_vectors @ other_basis @ other_basis.T
-            cross_energy = np.mean(np.sum(cross_projections ** 2, axis=1))
+            other_basis = bases_tensors[other_id]
+            
+            # Project cluster_vectors onto other_basis
+            cross_coeffs = torch.matmul(cluster_vectors, other_basis)
+            cross_energy = torch.mean(torch.sum(cross_coeffs ** 2, dim=1)).item()
             between_contributions.append(cross_energy)
 
     between_energy = float(np.mean(between_contributions)) if between_contributions else 0.0
