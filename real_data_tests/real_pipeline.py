@@ -73,7 +73,7 @@ class RealDataClusteringPipeline:
         selected_k = config.selected_k
         sae = self.sae
 
-        decoder_dirs = sae.W_dec.detach().cpu().numpy()
+        decoder_dirs = sae.W_dec.detach().clone()
 
         # Collect activity statistics
         # If threshold is 0 or None, we skip sampling and assume all latents are active
@@ -112,9 +112,13 @@ class RealDataClusteringPipeline:
         x_std = None
 
         # Filter active latents
+        # activity_rates is numpy (from collect_real_activity_stats)
         active_mask = activity_rates >= config.sampling_config.latent_activity_threshold
         active_indices = np.nonzero(active_mask)[0]
         inactive_indices = np.where(~active_mask)[0]
+        
+        # Convert active_indices to tensor for indexing decoder_dirs (which is tensor)
+        active_indices_tensor = torch.from_numpy(active_indices).to(decoder_dirs.device)
 
         print(
             f"{site}: {active_indices.size}/{decoder_dirs.shape[0]} latents pass activity threshold "
@@ -122,6 +126,10 @@ class RealDataClusteringPipeline:
         )
 
         cluster_labels_full = np.full(decoder_dirs.shape[0], -1, dtype=int)
+        # We'll fill this using numpy at the end, or convert to tensor if needed.
+        # Since ClusteringResult expects numpy, let's keep this as numpy for now,
+        # but use a tensor for active latents during clustering.
+        cluster_labels_active_tensor = None
 
         # Handle no active latents case
         if active_indices.size == 0:
@@ -131,7 +139,7 @@ class RealDataClusteringPipeline:
                 active_indices, inactive_indices,
             )
 
-        decoder_active = decoder_dirs[active_indices]
+        decoder_active = decoder_dirs[active_indices_tensor]
         n_active_before_dedup = len(decoder_active)
 
         # Normalize and deduplicate upfront (before any other processing)
@@ -149,7 +157,9 @@ class RealDataClusteringPipeline:
         )
 
         # Update active_indices to refer to kept (deduplicated) indices
-        active_indices = active_indices[kept_indices_in_active]
+        # kept_indices_in_active is a tensor (from normalize_and_deduplicate)
+        active_indices_tensor = active_indices_tensor[kept_indices_in_active]
+        active_indices = active_indices[kept_indices_in_active.cpu().numpy()] # Keep numpy version synced
         decoder_active = decoder_normalized  # Use deduplicated, normalized decoder
 
         print(f"{site}: after deduplication, kept {len(decoder_active)}/{n_active_before_dedup} active latents")
@@ -194,7 +204,7 @@ class RealDataClusteringPipeline:
         else:
             strategy_result = strategy.cluster(
                 decoder_active,
-                active_indices,
+                active_indices_tensor,
                 config,
                 site,
                 site_dir,
@@ -204,7 +214,12 @@ class RealDataClusteringPipeline:
             )
 
         # Map labels to full set
-        cluster_labels_full[active_indices] = strategy_result.cluster_labels
+        # strategy_result.cluster_labels is now a tensor (or numpy)
+        labels_active = strategy_result.cluster_labels
+        if isinstance(labels_active, torch.Tensor):
+            labels_active = labels_active.cpu().numpy()
+            
+        cluster_labels_full[active_indices] = labels_active
 
         # Report seed retention
         if belief_seed_result and belief_seed_result.succeeded:

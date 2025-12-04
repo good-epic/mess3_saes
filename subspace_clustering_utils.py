@@ -80,8 +80,8 @@ class RankEstimationDetails:
 class SubspaceClusterResult:
     """Result container for subspace clustering."""
 
-    cluster_labels: np.ndarray  # (n_points,) cluster assignment for each point
-    subspace_bases: Dict[int, np.ndarray]  # cluster_id -> orthonormal basis matrix
+    cluster_labels: np.ndarray | torch.Tensor  # (n_points,) cluster assignment for each point
+    subspace_bases: Dict[int, np.ndarray | torch.Tensor]  # cluster_id -> orthonormal basis matrix
     reconstruction_errors: Dict[int, float]  # cluster_id -> mean reconstruction error
     total_reconstruction_error: float
     n_clusters: int
@@ -112,8 +112,8 @@ def normalize_and_deduplicate(
         cosine_threshold: Remove vectors with |cosine_similarity| > threshold
 
     Returns:
-        normalized_vectors: (n_kept, d_features) L2-normalized unique vectors
-        kept_indices: (n_kept,) indices of kept vectors in original array
+        normalized_vectors: (n_kept, d_features) L2-normalized unique vectors (Tensor)
+        kept_indices: (n_kept,) indices of kept vectors in original array (Tensor)
     """
     if isinstance(vectors, np.ndarray):
         vectors = torch.from_numpy(vectors)
@@ -183,7 +183,7 @@ def normalize_and_deduplicate(
     # or return Tensor if we want to stay on GPU.
     # The plan says "Refactor... to accept and return torch.Tensor".
     
-    return normalized[kept_indices], torch.from_numpy(kept_indices).to(vectors.device)
+    return normalized[kept_indices], kept_indices
 
 
 def _compute_belief_seed_sets(
@@ -1064,12 +1064,12 @@ def compute_principal_angles_torch(
 
 
 def compute_all_principal_angles(
-    subspace_bases: Dict[int, np.ndarray],
+    subspace_bases: Dict[int, np.ndarray | torch.Tensor],
 ) -> Dict[Tuple[int, int], np.ndarray]:
     """Compute principal angles between all pairs of subspaces.
 
     Args:
-        subspace_bases: Dict mapping cluster_id -> basis matrix
+        subspace_bases: Dict mapping cluster_id -> basis matrix (numpy or tensor)
 
     Returns:
         Dict mapping (cluster_i, cluster_j) -> principal angles array
@@ -1078,10 +1078,17 @@ def compute_all_principal_angles(
     angles_dict: Dict[Tuple[int, int], np.ndarray] = {}
     
     # Convert bases to GPU tensors once
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     bases_tensors = {}
+    
+    # Check if first basis is tensor to determine device
+    first_basis = next(iter(subspace_bases.values()))
+    device = first_basis.device if isinstance(first_basis, torch.Tensor) else (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+
     for cid, basis in subspace_bases.items():
-        t = torch.from_numpy(basis).to(device)
+        if isinstance(basis, np.ndarray):
+            t = torch.from_numpy(basis).to(device)
+        else:
+            t = basis.to(device) # Ensure on correct device
         bases_tensors[cid] = t
 
     # Compute all pairs
@@ -1100,31 +1107,40 @@ def compute_all_principal_angles(
 
 
 def compute_projection_energies(
-    vectors: np.ndarray,
-    labels: np.ndarray,
-    subspace_bases: Dict[int, np.ndarray],
+    vectors: np.ndarray | torch.Tensor,
+    labels: np.ndarray | torch.Tensor,
+    subspace_bases: Dict[int, np.ndarray | torch.Tensor],
 ) -> Tuple[Dict[int, float], float]:
     """Compute within-cluster and between-cluster projection energies.
 
     Args:
-        vectors: (n_vectors, d_features) array
-        labels: (n_vectors,) cluster assignments
-        subspace_bases: Dict mapping cluster_id -> basis matrix
+        vectors: (n, d) normalized vectors
+        labels: (n,) cluster assignments
+        subspace_bases: Dict mapping cluster_id -> basis
 
     Returns:
-        within_energies: Dict mapping cluster_id -> mean squared projection norm
-        between_energy: Mean squared cross-projection norm
+        within_energies: Dict mapping cluster_id -> mean energy on own basis
+        between_energy: Mean energy of vectors projected on OTHER bases
     """
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    
-    # Convert inputs to tensors
-    vectors_t = torch.from_numpy(vectors).to(device)
-    labels_t = torch.from_numpy(labels).to(device)
-    
+    # Convert inputs to GPU tensors
+    if isinstance(vectors, np.ndarray):
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        vectors_t = torch.from_numpy(vectors).to(device)
+    else:
+        vectors_t = vectors
+        device = vectors.device
+
+    if isinstance(labels, np.ndarray):
+        labels_t = torch.from_numpy(labels).to(device)
+    else:
+        labels_t = labels.to(device)
+
     bases_tensors = {}
     for cid, basis in subspace_bases.items():
-        bases_tensors[cid] = torch.from_numpy(basis).to(device)
-
+        if isinstance(basis, np.ndarray):
+            bases_tensors[cid] = torch.from_numpy(basis).to(device)
+        else:
+            bases_tensors[cid] = basis.to(device)
     within_energies: Dict[int, float] = {}
     between_contributions = []
     
@@ -1225,7 +1241,7 @@ def grid_search_k_subspaces(
 
 def add_diagnostics_to_result(
     result: SubspaceClusterResult,
-    vectors: np.ndarray,
+    vectors: np.ndarray | torch.Tensor,
 ) -> SubspaceClusterResult:
     """Compute and add diagnostic information to clustering result.
 

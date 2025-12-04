@@ -218,23 +218,31 @@ class ClusteringResult:
             from .epdf_generator import EPDFGenerator
             epdf_generator = EPDFGenerator(self.config.epdf_config)
 
+            # Prepare EPDF data, converting tensors to numpy if needed
+            epdf_data = self._epdf_data
+            
+            def _to_numpy(x):
+                if hasattr(x, 'detach'):
+                    return x.detach().cpu().numpy()
+                return x
+
             self.epdf_paths = epdf_generator.generate_cluster_epdfs(
                 site=self.site,
                 site_selected_k=self.selected_k,
                 site_dir=site_dir,
-                sae=self._epdf_data['sae'],
-                acts_flat=self._epdf_data['acts_flat'],
+                sae=epdf_data['sae'],
+                acts_flat=epdf_data['acts_flat'],
                 cluster_labels=self.cluster_labels,
                 n_clusters=self.n_clusters,
-                component_beliefs_flat=self._epdf_data['component_beliefs_flat'],
-                component_metadata=self._epdf_data['component_metadata'],
-                component_order=self._epdf_data['component_order'],
+                component_beliefs_flat=epdf_data['component_beliefs_flat'],
+                component_metadata=epdf_data['component_metadata'],
+                component_order=epdf_data['component_order'],
                 clustering_method=self.config.method,
                 sae_type=self.config.sae_type,
                 sae_param=self.config.sae_param,
-                decoder_normalized=self._epdf_data['decoder_normalized'],
-                normalized_to_full_idx=self._epdf_data['normalized_to_full_idx'],
-                decoder_dirs=self._epdf_data['decoder_dirs'],
+                decoder_normalized=_to_numpy(epdf_data['decoder_normalized']),
+                normalized_to_full_idx=_to_numpy(epdf_data['normalized_to_full_idx']),
+                decoder_dirs=_to_numpy(epdf_data['decoder_dirs']),
             )
 
         # Build metadata

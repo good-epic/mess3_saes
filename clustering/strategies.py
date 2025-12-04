@@ -198,8 +198,8 @@ class KSubspacesClusteringStrategy(ClusteringStrategy):
 
     def cluster(
         self,
-        decoder_active: np.ndarray,
-        active_indices: np.ndarray,
+        decoder_active: np.ndarray | torch.Tensor,
+        active_indices: np.ndarray | torch.Tensor,
         config: ClusteringConfig,
         site: str,
         site_dir: str,
@@ -272,12 +272,14 @@ class KSubspacesClusteringStrategy(ClusteringStrategy):
         # Convert to tensor for GPU processing
         device = config.sampling_config.device if hasattr(config.sampling_config, 'device') else "cuda" if torch.cuda.is_available() else "cpu"
         # config.sampling_config might not have device, check where device is usually set.
-        # It seems passed in pipeline.run but not stored in config explicitly except maybe in sae config?
         # Let's default to cuda if available.
         
-        decoder_tensor = torch.from_numpy(decoder_normalized).float()
-        if torch.cuda.is_available():
-            decoder_tensor = decoder_tensor.cuda()
+        if isinstance(decoder_active, np.ndarray):
+            decoder_tensor = torch.from_numpy(decoder_active).float()
+            if torch.cuda.is_available():
+                decoder_tensor = decoder_tensor.cuda()
+        else:
+            decoder_tensor = decoder_active
 
         if params.use_grid_search:
             if initial_clusters_normalized:
@@ -364,7 +366,7 @@ class KSubspacesClusteringStrategy(ClusteringStrategy):
 
         # Compute soft weights from reconstruction errors
         soft_weights = self._compute_subspace_soft_weights(
-            decoder_active, decoder_normalized, kept_indices,
+            decoder_tensor, decoder_tensor, kept_indices,
             subspace_result, cluster_labels_active
         )
 
@@ -380,42 +382,41 @@ class KSubspacesClusteringStrategy(ClusteringStrategy):
 
     def _compute_subspace_soft_weights(
         self,
-        decoder_active: np.ndarray,
-        decoder_normalized: np.ndarray,
-        kept_indices: np.ndarray,
+        decoder_active: torch.Tensor,
+        decoder_normalized: torch.Tensor,
+        kept_indices: np.ndarray | torch.Tensor,
         subspace_result,
-        cluster_labels: np.ndarray
+        cluster_labels: torch.Tensor
     ) -> np.ndarray:
         """Compute soft weights from subspace reconstruction errors.
 
         Lower reconstruction error = higher affinity to that cluster.
 
         Args:
-            decoder_active: Full active decoder
-            decoder_normalized: Deduplicated decoder
+            decoder_active: Full active decoder (Tensor)
+            decoder_normalized: Deduplicated decoder (Tensor)
             kept_indices: Indices of kept points
             subspace_result: Subspace clustering result with bases
-            cluster_labels: Hard cluster assignments
+            cluster_labels: Hard cluster assignments (Tensor)
 
         Returns:
-            Soft weights (n_active, n_clusters)
+            Soft weights (n_active, n_clusters) as NumPy array (for compatibility)
         """
         n_active = len(decoder_active)
         n_clusters = subspace_result.n_clusters
 
-        soft_weights = np.zeros((n_active, n_clusters))
-
         # Get subspace bases
-        if not hasattr(subspace_result, 'bases') or subspace_result.bases is None:
+        if not hasattr(subspace_result, 'subspace_bases') or subspace_result.subspace_bases is None:
             # Fall back to hard assignment
+            soft_weights = torch.zeros((n_active, n_clusters), device=decoder_active.device)
             for i in range(n_active):
                 soft_weights[i, cluster_labels[i]] = 1.0
-            return soft_weights
+            return soft_weights.cpu().numpy()
 
-        bases = subspace_result.bases
+        bases = subspace_result.subspace_bases
 
         # Compute reconstruction error for each point in each subspace
-        reconstruction_errors = np.zeros((n_active, n_clusters))
+        reconstruction_errors = torch.zeros((n_active, n_clusters), device=decoder_active.device)
 
         for cluster_id, basis in bases.items():
             # Project all points onto this subspace
@@ -423,17 +424,28 @@ class KSubspacesClusteringStrategy(ClusteringStrategy):
                 # Empty basis, high error
                 reconstruction_errors[:, cluster_id] = 1e10
                 continue
+            
+            # Ensure basis is tensor
+            if isinstance(basis, np.ndarray):
+                basis = torch.from_numpy(basis).to(decoder_active.device)
+            else:
+                basis = basis.to(decoder_active.device)
 
-            projections = decoder_active @ basis @ basis.T
-            errors = np.linalg.norm(decoder_active - projections, axis=1)
+            # Projections: P = B B^T
+            # proj = X @ B @ B^T
+            # X is (n, d), B is (d, r)
+            coeffs = torch.matmul(decoder_active, basis) # (n, r)
+            projections = torch.matmul(coeffs, basis.T) # (n, d)
+            
+            errors = torch.norm(decoder_active - projections, dim=1)
             reconstruction_errors[:, cluster_id] = errors
 
         # Convert errors to soft weights via softmax
         # Use negative errors so lower error = higher weight
-        soft_weights = np.exp(-reconstruction_errors)
-        soft_weights = soft_weights / (soft_weights.sum(axis=1, keepdims=True) + 1e-10)
+        soft_weights = torch.exp(-reconstruction_errors)
+        soft_weights = soft_weights / (soft_weights.sum(dim=1, keepdim=True) + 1e-10)
 
-        return soft_weights
+        return soft_weights.cpu().numpy()
 
     def _build_diagnostics(self, subspace_result, params: SubspaceParams, config: ClusteringConfig) -> Dict[str, Any]:
         """Build diagnostics dictionary from subspace result."""
