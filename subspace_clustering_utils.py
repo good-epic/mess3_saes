@@ -183,7 +183,10 @@ def normalize_and_deduplicate(
     # or return Tensor if we want to stay on GPU.
     # The plan says "Refactor... to accept and return torch.Tensor".
     
-    return normalized[kept_indices], kept_indices
+    # Convert kept_indices to tensor on same device as vectors
+    kept_indices_tensor = torch.from_numpy(kept_indices).to(vectors.device)
+    
+    return normalized[kept_indices_tensor], kept_indices_tensor
 
 
 def _compute_belief_seed_sets(
