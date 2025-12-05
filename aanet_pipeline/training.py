@@ -125,7 +125,7 @@ def _train_one_epoch(
         total_extrema += float(extrema_loss.detach().item()) if model.diffusion_extrema is not None else 0.0
         num_batches += 1
         
-        del features, recon, original, embedding, recon_loss, arche_loss, extrema_loss, loss
+        del features, output, original, embedding, recon_loss, arche_loss, extrema_loss, loss
         gc.collect()
         torch.cuda.empty_cache()
 

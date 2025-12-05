@@ -59,7 +59,7 @@ def compute_diffusion_extrema(
         trimmed,
         n_extrema=max_k,
         knn=config.knn,
-        subsample=config.subsample,
+        subsample=False, # We already subsampled in _select_points
     )
     extrema_indices = np.asarray(extrema_indices, dtype=np.int64)
     selected = trimmed[extrema_indices]
