@@ -87,6 +87,8 @@ def get_laplacian_extrema(data, n_extrema, knn=10, subsample=True):
     
     if subsample and data.shape[0] > 10000:
         data = data[np.random.choice(data.shape[0], 10000, replace=False), :]
+    
+    print("Calculating kNN graph...")
     G = gt.Graph(data, use_pygsp=True, decay=None, knn=knn)
    
     # Use SciPy directly to avoid expensive NetworkX conversion
@@ -113,11 +115,11 @@ def get_laplacian_extrema(data, n_extrema, knn=10, subsample=True):
     extrema = [first_extrema]
     extrema_ordered = [first_extrema]
 
+    print(f"Finding {n_extrema} extrema...")
     init_lanczos = fiedler
     init_lanczos = np.delete(init_lanczos, first_extrema)
     
     for i in range(n_extrema - 1):
-        print(f"Finding extrema {i+1} of {n_extrema}")
         # Generate the Laplacian submatrix by removing rows/cols for previous extrema
         indices = range(data.shape[0])
         indices = np.delete(indices, extrema)
