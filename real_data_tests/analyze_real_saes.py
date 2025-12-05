@@ -121,6 +121,7 @@ def main():
     parser.add_argument("--extrema_knn", type=int, default=10, help="kNN value for Laplacian extrema.")
     parser.add_argument("--extrema_disable_subsample", action="store_true", help="Disable internal subsampling.")
     parser.add_argument("--extrema_max_points", type=int, default=10000, help="Maximum samples used for extrema computation.")
+    parser.add_argument("--extrema_pca", type=float, default=None, help="PCA components (int > 1) or variance (float < 1) for extrema graph.")
     parser.add_argument("--extrema_seed", type=int, default=0, help="Seed for extrema subsampling.")
 
     args = parser.parse_args()
@@ -311,6 +312,7 @@ def main():
                         knn=args.extrema_knn,
                         subsample=not args.extrema_disable_subsample,
                         max_points=args.extrema_max_points,
+                        pca_components=args.extrema_pca,
                         random_seed=args.extrema_seed
                     )
                 )

@@ -6,6 +6,7 @@ from typing import Optional, Sequence
 
 import numpy as np
 import torch
+from sklearn.decomposition import PCA
 
 
 def _import_utils():
@@ -32,6 +33,7 @@ class ExtremaConfig:
     knn: int = 10
     subsample: bool = True
     max_points: Optional[int] = None
+    pca_components: Optional[float | int] = None
     random_seed: int = 0
 
 
@@ -55,8 +57,27 @@ def compute_diffusion_extrema(
     trimmed, index_map = _select_points(data, config.max_points, config.random_seed)
     if trimmed.shape[0] < max_k:
         return None
+    # Apply PCA if requested
+    data_for_graph = trimmed
+    if config.pca_components is not None:
+        try:
+            # Handle float vs int for PCA
+            n_comp = config.pca_components
+            if isinstance(n_comp, float) and n_comp >= 1.0:
+                n_comp = int(n_comp)
+            
+            # Only run PCA if n_components < n_features
+            if isinstance(n_comp, (int, float)) and (isinstance(n_comp, float) or n_comp < trimmed.shape[1]):
+                print(f"Applying PCA (n={n_comp}) to {trimmed.shape[0]} points...")
+                pca = PCA(n_components=n_comp, random_state=config.random_seed)
+                data_for_graph = pca.fit_transform(trimmed)
+                print(f"PCA reduced dim from {trimmed.shape[1]} to {data_for_graph.shape[1]}")
+        except Exception as e:
+            print(f"PCA failed: {e}. Using original data.")
+            data_for_graph = trimmed
+
     extrema_indices = aanet_utils.get_laplacian_extrema(
-        trimmed,
+        data_for_graph,
         n_extrema=max_k,
         knn=config.knn,
         subsample=False, # We already subsampled in _select_points

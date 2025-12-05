@@ -49,4 +49,5 @@ python -u real_data_tests/analyze_real_saes.py \
     --extrema_enabled \
     --extrema_knn 150 \
     --extrema_max_points 30000 \
+    --extrema_pca 0.95 \
     --extrema_seed 431
