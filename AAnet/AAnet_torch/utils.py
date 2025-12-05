@@ -89,18 +89,33 @@ def get_laplacian_extrema(data, n_extrema, knn=10, subsample=True):
         data = data[np.random.choice(data.shape[0], 10000, replace=False), :]
     G = gt.Graph(data, use_pygsp=True, decay=None, knn=knn)
    
-    # We need to convert G into a NetworkX graph to use the Tracemin PCG algorithm 
-    G_nx = nx.convert_matrix.from_scipy_sparse_array(G.W)
-    fiedler = nx.linalg.algebraicconnectivity.fiedler_vector(G_nx, method='tracemin_pcg')
+    # Use SciPy directly to avoid expensive NetworkX conversion
+    W = G.W # Adjacency matrix (scipy.sparse)
+    
+    # Compute Laplacian L = D - W
+    degrees = np.array(W.sum(axis=1)).flatten()
+    D = scipy.sparse.diags(degrees)
+    L = D - W
 
-    # Combinatorial Laplacian gives better results than the normalized Laplacian
-    L = nx.laplacian_matrix(G_nx)
+    # Find Fiedler vector (eigenvector of 2nd smallest eigenvalue)
+    # L is positive semi-definite. Smallest eigenvalue is 0 (constant vector).
+    # We want the 2nd smallest.
+    try:
+        eigvals, eigvecs = scipy.sparse.linalg.eigsh(L, k=2, which='SM')
+        # eigvecs[:, 0] corresponds to smallest eigenvalue (should be ~0)
+        # eigvecs[:, 1] corresponds to 2nd smallest (Fiedler)
+        fiedler = eigvecs[:, 1]
+    except Exception as e:
+        print(f"Eigenvalue decomposition failed: {e}. Using random initialization.")
+        fiedler = np.random.randn(data.shape[0])
+
     first_extrema = np.argmax(fiedler)
     extrema = [first_extrema]
     extrema_ordered = [first_extrema]
 
     init_lanczos = fiedler
     init_lanczos = np.delete(init_lanczos, first_extrema)
+    
     for i in range(n_extrema - 1):
         print(f"Finding extrema {i+1} of {n_extrema}")
         # Generate the Laplacian submatrix by removing rows/cols for previous extrema
@@ -110,15 +125,23 @@ def get_laplacian_extrema(data, n_extrema, knn=10, subsample=True):
         L_sub = L[ixgrid] 
 
         # Find the smallest eigenvector of our Laplacian submatrix
-        eigvals, eigvecs = scipy.sparse.linalg.eigsh(L_sub, k=1, which='SM', v0=init_lanczos)
-
-        # Add it to the sorted and unsorted lists of extrema
-        new_extrema = np.argmax(np.abs(eigvecs[:,0]))
-        init_lanczos = eigvecs[:,0]
-        init_lanczos = np.delete(init_lanczos, new_extrema)
-        shift = np.searchsorted(extrema_ordered, new_extrema)
-        extrema_ordered.insert(shift, new_extrema + shift)
-        extrema.append(new_extrema + shift)
+        try:
+            eigvals, eigvecs = scipy.sparse.linalg.eigsh(L_sub, k=1, which='SM', v0=init_lanczos)
+            new_extrema_idx_in_sub = np.argmax(np.abs(eigvecs[:,0]))
+            init_lanczos = eigvecs[:,0]
+            init_lanczos = np.delete(init_lanczos, new_extrema_idx_in_sub)
+            
+            # Map back to original indices
+            # We need to find which original index corresponds to new_extrema_idx_in_sub
+            # indices array holds the mapping: indices[sub_idx] -> original_idx
+            new_extrema = indices[new_extrema_idx_in_sub]
+            
+            shift = np.searchsorted(extrema_ordered, new_extrema)
+            extrema_ordered.insert(shift, new_extrema) # Insert actual index
+            extrema.append(new_extrema)
+            
+        except Exception as e:
+            print(f"Extrema iteration {i+1} failed: {e}. Stopping early.")
+            break
 
     return extrema
-
