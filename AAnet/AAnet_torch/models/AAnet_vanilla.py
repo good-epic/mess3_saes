@@ -120,3 +120,41 @@ class AAnet_vanilla(BaseAAnet):
 
         # Decode embedding
         return self.decode(activation), input, archetypal_embedding
+
+    def set_archetypes(self, extrema):
+        """Set diffusion extrema for initialization."""
+        self.diffusion_extrema = extrema
+
+    def loss_function(
+        self,
+        input: torch.Tensor,
+        recons: torch.Tensor,
+        archetypal_embedding: torch.Tensor,
+        gamma_reconstruction: float = 1.0,
+        gamma_archetypal: float = 1.0,
+        gamma_extrema: float = 0.0,
+        **kwargs
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        """
+        Compute AAnet loss.
+        """
+        recon_loss = torch.mean((recons - input) ** 2)
+        arche_loss = self.calc_archetypal_loss(archetypal_embedding)
+        
+        extrema_loss = torch.tensor(0.0, device=self.device)
+        if self.diffusion_extrema is not None and gamma_extrema > 0:
+            extrema_loss = self.calc_diffusion_extrema_loss(archetypal_embedding)
+
+        loss = (
+            gamma_reconstruction * recon_loss
+            + gamma_archetypal * arche_loss
+            + gamma_extrema * extrema_loss
+        )
+
+        metrics = {
+            "reconstruction_loss": recon_loss.item(),
+            "archetypal_loss": arche_loss.item(),
+            "extrema_loss": extrema_loss.item()
+        }
+        
+        return loss, metrics

@@ -65,8 +65,7 @@ class StreamingAAnetTrainer:
                 self.optimizers[desc.cluster_id],
                 mode='min',
                 factor=self.config.lr_factor,
-                patience=self.config.lr_patience,
-                verbose=False
+                patience=self.config.lr_patience
             )
             
             # Indices
@@ -156,13 +155,12 @@ class StreamingAAnetTrainer:
             optimizer.zero_grad()
             
             # Forward
-            # AAnet forward returns (recon, etc.)
-            # loss_function returns (total_loss, metrics)
-            recon, _, _ = model(X_recon)
+            # AAnet forward returns (recon, input, embedding)
+            recon, _, embedding = model(X_recon)
             loss, metrics = model.loss_function(
                 X_recon, 
                 recon, 
-                model.get_archetypes(), 
+                embedding, 
                 gamma_reconstruction=self.config.gamma_reconstruction,
                 gamma_archetypal=self.config.gamma_archetypal,
                 gamma_extrema=self.config.gamma_extrema
