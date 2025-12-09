@@ -43,7 +43,7 @@ class StreamingAAnetTrainer:
         for desc in self.descriptors:
             # Create model
             model = AAnet_vanilla(
-                input_shape=(self.input_dim,),
+                input_shape=self.input_dim,
                 n_archetypes=self.config.k, # Note: k is fixed for now, or we need separate trainers for different k
                 noise=self.config.noise,
                 layer_widths=self.config.layer_widths,
