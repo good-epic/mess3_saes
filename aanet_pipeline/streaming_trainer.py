@@ -56,7 +56,7 @@ class StreamingAAnetTrainer:
             # Optimizer
             self.optimizers[desc.cluster_id] = optim.Adam(
                 model.parameters(),
-                lr=self.config.lr,
+                lr=self.config.learning_rate,
                 weight_decay=self.config.weight_decay
             )
             
