@@ -2,7 +2,7 @@ import numpy as np
 import torch
 from sklearn.decomposition import PCA, TruncatedSVD
 import networkx as nx
-import graphtools as gt
+from sklearn.neighbors import kneighbors_graph
 import scipy
 
 def train_epoch(model, data_loader, optimizer, epoch, gamma_reconstruction=1.0, gamma_archetypal=1.0, gamma_extrema=1.0):
@@ -89,10 +89,16 @@ def get_laplacian_extrema(data, n_extrema, knn=10, subsample=True):
         data = data[np.random.choice(data.shape[0], 10000, replace=False), :]
     
     print("Calculating kNN graph...")
-    G = gt.Graph(data, use_pygsp=True, decay=None, knn=knn)
-   
-    # Use SciPy directly to avoid expensive NetworkX conversion
-    W = G.W # Adjacency matrix (scipy.sparse)
+    # G = gt.Graph(data, use_pygsp=True, decay=None, knn=knn)
+    # W = G.W # Adjacency matrix (scipy.sparse)
+    
+    # Use sklearn to compute kNN graph (sparse CSR)
+    # mode='connectivity' gives 1s and 0s (adjacency)
+    # include_self=False to match typical graph construction (no self-loops in adjacency usually)
+    W = kneighbors_graph(data, n_neighbors=knn, mode='connectivity', include_self=False)
+    
+    # Symmetrize W (kNN graph is directed, Laplacian requires undirected/symmetric)
+    W = 0.5 * (W + W.T)
     
     # Compute Laplacian L = D - W
     degrees = np.array(W.sum(axis=1)).flatten()
