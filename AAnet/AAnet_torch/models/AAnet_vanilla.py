@@ -3,7 +3,7 @@ from torch import nn, optim
 import numpy as np
 import sklearn
 from torch.nn import functional as F
-from typing import Tuple
+from typing import Tuple, Dict
 from . import BaseAAnet
 
 class AAnet_vanilla(BaseAAnet):
