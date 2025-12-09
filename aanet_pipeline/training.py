@@ -50,6 +50,7 @@ class TrainingConfig:
     lr_factor: float = 0.5
     grad_clip: Optional[float] = None
     restarts_no_extrema: int = 1
+    active_threshold: float = 1e-6
 
 
 @dataclass

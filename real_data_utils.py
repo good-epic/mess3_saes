@@ -31,15 +31,16 @@ def _prepare_cluster_indices(
 class RealDataSampler:
     """
     Sampler for real text data (e.g. OpenWebText, The Pile, Wikitext).
-    Supports streaming and flexible batch sampling.
+    Supports streaming and flexible batch sampling with prefetching.
     """
-    def __init__(self, model: HookedTransformer, dataset_name: str = "wikitext", dataset_config: str = "wikitext-103-v1", split: str = "train", streaming: bool = True, seed: int = 42):
+    def __init__(self, model: HookedTransformer, dataset_name: str = "wikitext", dataset_config: str = "wikitext-103-v1", split: str = "train", streaming: bool = True, seed: int = 42, prefetch_size: int = 1024):
         self.model = model
         self.dataset_name = dataset_name
         self.dataset_config = dataset_config
         self.split = split
         self.streaming = streaming
         self.seed = seed
+        self.prefetch_size = prefetch_size
         
         print(f"Loading dataset: {dataset_name} ({dataset_config}) split={split} streaming={streaming}")
         self.dataset = load_dataset(dataset_name, dataset_config, split=split, streaming=streaming)
@@ -49,13 +50,11 @@ class RealDataSampler:
             self.dataset = self.dataset.shuffle(seed=seed)
             
         self.iterator = iter(self.dataset)
+        self.buffer = []
         
-    def sample_tokens_batch(self, batch_size: int, sample_len: int, device: str) -> torch.Tensor:
-        """
-        Sample a batch of tokens from the dataset.
-        """
-        tokens_list = []
-        while len(tokens_list) < batch_size:
+    def _fill_buffer(self, sample_len: int):
+        """Refill the token buffer from the dataset iterator."""
+        while len(self.buffer) < self.prefetch_size:
             try:
                 item = next(self.iterator)
                 text = item.get("text", "")
@@ -63,28 +62,58 @@ class RealDataSampler:
                     continue
                     
                 # Tokenize
-                # prepend_bos=True is standard for many models, check if needed for Gemma 2
-                # HookedTransformer usually handles this if configured, but let's be explicit if needed.
                 # Gemma 2 usually expects BOS.
                 tokens = self.model.to_tokens(text, prepend_bos=True).squeeze(0)
                 
-                # If sequence is long enough, take a chunk
+                # If sequence is long enough, take chunks
                 if len(tokens) >= sample_len:
-                    # We could take multiple chunks from one text if it's very long, 
-                    # but for simplicity and i.i.d assumptions, let's take one per doc for now 
-                    # or maybe a random chunk?
-                    # Taking the beginning is biased towards beginnings of docs.
-                    # Let's take a random chunk if it's much longer.
-                    if len(tokens) > sample_len + 10:
-                        start_idx = np.random.randint(0, len(tokens) - sample_len)
-                        tokens_list.append(tokens[start_idx : start_idx + sample_len])
-                    else:
-                        tokens_list.append(tokens[:sample_len])
+                    # Take as many non-overlapping chunks as possible
+                    # This is more efficient than taking just one random chunk
+                    num_chunks = len(tokens) // sample_len
+                    for i in range(num_chunks):
+                        self.buffer.append(tokens[i*sample_len : (i+1)*sample_len])
+                        
             except StopIteration:
                 # Reset iterator
                 self.iterator = iter(self.dataset)
                 
-        return torch.stack(tokens_list).to(device)
+    def sample_tokens_batch(self, batch_size: int, sample_len: int, device: str) -> torch.Tensor:
+        """
+        Sample a batch of tokens from the dataset.
+        """
+        if len(self.buffer) < batch_size:
+            self._fill_buffer(sample_len)
+            
+        # Take from buffer
+        # If buffer is still too small (e.g. end of dataset and no reset?), handle it
+        # But we reset iterator, so we should be fine unless dataset is tiny.
+        
+        # To ensure randomness if we took sequential chunks, shuffle buffer?
+        # Or just pop random indices?
+        # Popping from end is fastest.
+        # If we want i.i.d, we should shuffle the buffer after filling.
+        
+        if len(self.buffer) < batch_size:
+             # Should not happen with infinite stream unless dataset is empty
+             raise RuntimeError("Could not fill buffer with enough tokens.")
+
+        # For efficiency, just take the last batch_size items
+        # (Assuming buffer was filled somewhat randomly or we don't care about local correlations too much)
+        # Actually, since we take multiple chunks from same doc, local correlation is high.
+        # We should shuffle.
+        import random
+        # Only shuffle if we just filled it? 
+        # Let's just pop random indices.
+        
+        indices = random.sample(range(len(self.buffer)), batch_size)
+        # Sort indices in descending order to pop correctly without invalidating indices
+        indices.sort(reverse=True)
+        
+        batch_tokens = []
+        for idx in indices:
+            batch_tokens.append(self.buffer.pop(idx))
+            
+        return torch.stack(batch_tokens).to(device)
 
 def collect_real_activity_stats(
     model,
