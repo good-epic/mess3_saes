@@ -18,7 +18,7 @@ from subspace_clustering_utils import (
 from .config import ClusteringConfig, SpectralParams, SubspaceParams, ENSCParams
 
 
-@dataclass
+@dataclass(kw_only=True)
 class ClusteringStrategyResult:
     """Result from a clustering strategy."""
     cluster_labels: np.ndarray  # Labels for active latents only

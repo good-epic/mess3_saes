@@ -27,8 +27,9 @@ def _import_aanet_modules():
 models, aanet_utils = _import_aanet_modules()
 
 
-@dataclass
+@dataclass(kw_only=True)
 class TrainingConfig:
+    k: int
     epochs: int
     batch_size: int
     learning_rate: float
@@ -53,7 +54,7 @@ class TrainingConfig:
     active_threshold: float = 1e-6
 
 
-@dataclass
+@dataclass(kw_only=True)
 class TrainingResult:
     k: int
     status: str

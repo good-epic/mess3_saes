@@ -7,7 +7,7 @@ from typing import Dict, Iterable, List, Mapping, Sequence
 import torch
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class AAnetDescriptor:
     cluster_id: int
     label: str
@@ -16,7 +16,7 @@ class AAnetDescriptor:
     component_names: Sequence[str]
 
 
-@dataclass
+@dataclass(kw_only=True)
 class AAnetDatasetResult:
     descriptor: AAnetDescriptor
     data: torch.Tensor

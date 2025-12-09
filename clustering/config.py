@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional, List, Tuple
 
 
-@dataclass
+@dataclass(kw_only=True)
 class SpectralParams:
     """Parameters for spectral clustering."""
     sim_metric: Literal["cosine", "euclidean", "phi"] = "cosine"
@@ -14,7 +14,7 @@ class SpectralParams:
     center_decoder_rows: bool = False
 
 
-@dataclass
+@dataclass(kw_only=True)
 class SubspaceParams:
     """Parameters for k-subspaces clustering."""
     subspace_rank: Optional[int] = None  # None = auto
@@ -28,7 +28,7 @@ class SubspaceParams:
     gap_threshold: float = 2.0  # Singular value gap ratio for auto rank detection
 
 
-@dataclass
+@dataclass(kw_only=True)
 class ENSCParams:
     """Parameters for ENSC clustering."""
     subspace_rank: Optional[int] = None  # None = auto
@@ -40,7 +40,7 @@ class ENSCParams:
     gap_threshold: float = 2.0  # Singular value gap ratio for auto rank detection
 
 
-@dataclass
+@dataclass(kw_only=True)
 class BeliefSeedingConfig:
     """Configuration for belief-aligned seeding."""
     enabled: bool = False
@@ -54,7 +54,7 @@ class BeliefSeedingConfig:
     protect_seed_duplicates: bool = False
 
 
-@dataclass
+@dataclass(kw_only=True)
 class EPDFConfig:
     """Configuration for EPDF generation."""
     enabled: bool = False
@@ -65,7 +65,7 @@ class EPDFConfig:
     min_samples: int = 20
 
 
-@dataclass
+@dataclass(kw_only=True)
 class SamplingConfig:
     """Configuration for sampling and activation collection."""
     sample_sequences: int = 1024
@@ -78,7 +78,7 @@ class SamplingConfig:
     activation_batches: int = 8
 
 
-@dataclass
+@dataclass(kw_only=True)
 class AnalysisConfig:
     """Configuration for cluster analysis (PCA, plots)."""
     pca_components: int = 6
@@ -86,7 +86,7 @@ class AnalysisConfig:
     plot_max_points: int = 4000
 
 
-@dataclass
+@dataclass(kw_only=True)
 class GeometryFittingConfig:
     """Configuration for geometry-guided clustering refinement."""
     enabled: bool = False
@@ -124,7 +124,7 @@ class GeometryFittingConfig:
     filter_metrics: List[str] = field(default_factory=lambda: ["gw_full"])
 
 
-@dataclass
+@dataclass(kw_only=True)
 class ClusteringConfig:
     """Main configuration for clustering pipeline.
 

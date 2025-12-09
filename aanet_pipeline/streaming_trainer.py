@@ -15,6 +15,7 @@ class StreamingAAnetTrainer:
     """
     def __init__(
         self,
+        *,
         descriptors: Sequence[AAnetDescriptor],
         config: TrainingConfig,
         device: torch.device,

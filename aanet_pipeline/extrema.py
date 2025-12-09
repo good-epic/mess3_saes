@@ -27,7 +27,7 @@ def _import_utils():
 aanet_utils = _import_utils()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ExtremaConfig:
     enabled: bool = True
     knn: int = 10

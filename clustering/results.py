@@ -9,7 +9,7 @@ import numpy as np
 from .config import ClusteringConfig
 
 
-@dataclass
+@dataclass(kw_only=True)
 class ClusteringResult:
     """Self-contained clustering result.
 
