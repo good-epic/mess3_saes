@@ -12,7 +12,7 @@ python -u real_data_tests/analyze_real_saes.py \
     --sae_release "gemma-scope-9b-pt-res" \
     --sae_id "layer_20/width_32k/average_l0_57" \
     --output_dir "/workspace/outputs/real_data_analysis" \
-    --n_clusters_list 128 256 512 768 \
+    --n_clusters_list 128 \
     --total_samples 25000 \
     --latent_activity_threshold 0 \
     --activity_batch_size 32 \
@@ -28,11 +28,14 @@ python -u real_data_tests/analyze_real_saes.py \
     --subspace_variance_threshold 0.95 \
     --subspace_gap_threshold 2.0 \
     --aanet_batch_size 128 \
-    --aanet_streaming_steps 2000 \
-    --aanet_warmup_steps 100 \
-    --aanet_warmup_cluster_chunk_size 16 \
+    --aanet_streaming_steps 50 \
+    --aanet_warmup_steps 5 \
+    --aanet_warmup_max_per_cluster 100 \
+    --aanet_warmup_cluster_chunk_size 32 \
     --aanet_prefetch_size 1024 \
     --aanet_sequential_k \
+    --aanet_k_min 2 \
+    --aanet_k_max 3 \
     --aanet_lr 0.0025 \
     --aanet_weight_decay 1e-5 \
     --aanet_layer_widths 64 32 \
@@ -53,7 +56,7 @@ python -u real_data_tests/analyze_real_saes.py \
     --aanet_grad_clip 1.0 \
     --aanet_restarts_no_extrema 1 \
     --extrema_enabled \
-    --extrema_knn 150 \
-    --extrema_max_points 30000 \
+    --extrema_knn 50 \
+    --extrema_max_points 5000 \
     --extrema_pca 0.95 \
     --extrema_seed 431

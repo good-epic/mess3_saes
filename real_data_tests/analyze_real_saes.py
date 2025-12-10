@@ -362,11 +362,13 @@ def main():
             )
             
             # Note: AAnet trains on reconstructions (d_model), not sparse latents (d_sae).
+            # d_model is the output dimension of the SAE decoder (W_dec has shape [d_sae, d_model])
+            d_model = sae.W_dec.shape[1]
             trainer = StreamingAAnetTrainer(
                 descriptors=active_descriptors,
                 config=aanet_config,
                 device=args.device,
-                input_dim=sae.cfg.d_model, 
+                input_dim=d_model,
                 sae_decoder_weight=sae.W_dec
             )
             return trainer, len(active_descriptors)
