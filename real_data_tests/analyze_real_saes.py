@@ -123,6 +123,7 @@ def main():
     parser.add_argument("--aanet_k_max", type=int, default=8, help="Maximum k for AAnet.")
     parser.add_argument("--aanet_warmup_max_per_cluster", type=int, default=1000, help="Max samples per cluster for extrema finding.")
     parser.add_argument("--aanet_active_threshold", type=float, default=1e-6, help="Threshold for active samples in AAnet training.")
+    parser.add_argument("--aanet_sequential_k", action="store_true", help="Train AAnet for each k sequentially (saves VRAM) instead of concurrently.")
 
     # Extrema Arguments
     parser.add_argument("--extrema_enabled", dest="extrema_enabled", action="store_true", default=True, help="Enable Laplacian extrema warm start.")
@@ -318,48 +319,20 @@ def main():
             
         # --- Streaming Training ---
         
-        # We iterate over k values (e.g. 2 to 8)
-        # Since StreamingAAnetTrainer currently handles ONE k for all clusters (or we need separate trainers),
-        # and we want to train multiple k per cluster...
-        # We can either:
-        # 1. Train all k in parallel (768 * 7 models = 5376 models). Might be too much overhead?
-        #    Actually 5376 * 100KB = 500MB. Still tiny.
-        #    But managing 5000 optimizers might be slow in Python loop.
-        # 2. Loop over k, and for each k, train all clusters in parallel.
-        #    This re-reads data 7 times.
-        #    But data is streaming, so it's fine, just takes 7x longer.
-        #    Or we can have ONE trainer that manages a LIST of models per cluster?
-        #    Let's stick to "Loop over k" for simplicity first, as the user asked for "768 models", implying per-k loop.
-        #    Wait, re-reading data 7 times means 7x LLM compute. That's expensive.
-        #    We should train ALL k simultaneously if possible.
-        #    Let's modify StreamingAAnetTrainer to handle multiple k?
-        #    Or just instantiate multiple trainers and feed them the same activations?
-        #    Yes, instantiate trainers for k=2..8.
-        #    Feed same `feature_acts` to all of them.
-        
-        trainers = {}
-        for k in range(args.aanet_k_min, args.aanet_k_max + 1):
-            # Check if all clusters are done for this k (from resume logic)
-            # If so, skip creating trainer for this k
-            # But we need to know which clusters are NOT done.
-            # StreamingAAnetTrainer takes a list of descriptors.
-            # We can filter descriptors for this k.
-            
+        # Helper to create trainer for a specific k
+        def create_trainer(k, descriptors_list):
             active_descriptors = []
-            for desc in descriptors:
+            for desc in descriptors_list:
                 if (desc.cluster_id, k) not in completed_clusters:
                     active_descriptors.append(desc)
             
             if not active_descriptors:
-                print(f"All clusters completed for k={k}. Skipping.")
-                continue
-                
-            print(f"Initializing Trainer for k={k} with {len(active_descriptors)} clusters")
-            
+                return None, 0
+
             aanet_config = TrainingConfig(
-                k=k, # Add k to config
-                epochs=1, # Unused in streaming
-                batch_size=args.aanet_batch_size, # Unused
+                k=k,
+                epochs=1,
+                batch_size=args.aanet_batch_size,
                 learning_rate=args.aanet_lr,
                 weight_decay=args.aanet_weight_decay,
                 gamma_reconstruction=args.aanet_gamma_reconstruction,
@@ -379,28 +352,19 @@ def main():
                 descriptors=active_descriptors,
                 config=aanet_config,
                 device=args.device,
-                input_dim=sae.cfg.d_sae, # or W_dec.shape[0]
+                input_dim=sae.cfg.d_sae,
                 sae_decoder_weight=sae.W_dec
             )
-            trainers[k] = trainer
-
-        if not trainers:
-            print("No training needed (all completed).")
-            continue
+            return trainer, len(active_descriptors)
 
         # --- Warmup Phase (Extrema) ---
+        # We collect warmup data ONCE for all clusters, regardless of sequential/concurrent mode.
         print(f"Collecting warmup buffer ({args.aanet_warmup_steps} batches)...")
-        warmup_storage = {desc.cluster_id: [] for desc in descriptors} # Store for ALL clusters
-        
-        # We need to collect data for ALL clusters, even if some k are done, 
-        # because we might need it for the k that are NOT done.
-        # Actually we only need it for clusters in active_descriptors of active trainers.
-        # But simpler to collect for all.
-        
+        warmup_storage = {desc.cluster_id: [] for desc in descriptors}
         cluster_indices_map = {desc.cluster_id: torch.tensor(desc.latent_indices, device=args.device) for desc in descriptors}
 
         for _ in tqdm(range(args.aanet_warmup_steps), desc="Warmup"):
-            tokens = sampler.sample_tokens_batch(args.aanet_batch_size, args.activity_seq_len, args.device) # Mini-batch
+            tokens = sampler.sample_tokens_batch(args.aanet_batch_size, args.activity_seq_len, args.device)
             with torch.no_grad():
                 _, cache = model.run_with_cache(tokens, return_type=None, names_filter=[hook_name])
                 acts = cache[hook_name]
@@ -411,35 +375,13 @@ def main():
                 for cid, indices in cluster_indices_map.items():
                     if indices.numel() == 0: continue
                     subset = feature_acts[:, indices]
-                    # Filter active
                     active_mask = (subset.abs().sum(dim=1) > args.aanet_active_threshold)
                     if active_mask.any():
-                        # We need RECONSTRUCTIONS for extrema finding?
-                        # compute_diffusion_extrema takes DATA points.
-                        # AAnet data is RECONSTRUCTIONS.
-                        # So we must reconstruct.
-                        # recon = subset @ W_dec[indices]
-                        # But wait, we don't want to store full recon (d_model) for all points?
-                        # It's 16k dim.
-                        # If we have 50 batches * 32 * 128 = 200k points.
-                        # 200k * 16k * 4 bytes = 12 GB.
-                        # That fits in 48GB, but it's heavy.
-                        # Maybe we only store a subset?
-                        # Or maybe we compute extrema on LATENTS?
-                        # No, AAnet fits on data space (reconstructions).
-                        # We must store reconstructions.
-                        # Let's subsample if too many.
-                        
-                        # Just store indices and we can reconstruct later?
-                        # No, feature_acts are transient.
-                        # Let's store reconstructions but limit count.
-                        
-                        if len(warmup_storage[cid]) > args.aanet_warmup_max_per_cluster: # Limit warmup size
+                        if len(warmup_storage[cid]) > args.aanet_warmup_max_per_cluster:
                             continue
-                            
                         W_c = sae.W_dec[indices, :]
                         recon = subset[active_mask] @ W_c
-                        warmup_storage[cid].append(recon.cpu()) # Move to CPU to save VRAM
+                        warmup_storage[cid].append(recon.cpu())
                         
         # Consolidate warmup data
         warmup_data = {}
@@ -448,119 +390,211 @@ def main():
                 warmup_data[cid] = torch.cat(tensors, dim=0)
             else:
                 warmup_data[cid] = torch.empty((0, sae.cfg.d_model))
-                
-        # Initialize Extrema for all trainers
-        for k, trainer in trainers.items():
-            trainer.initialize_extrema(warmup_data)
-            
-        # Clear warmup storage
-        del warmup_storage, warmup_data
+        del warmup_storage
         import gc; gc.collect(); torch.cuda.empty_cache()
+
+        # --- Training Loop ---
         
-        # --- Streaming Loop ---
-        print(f"Starting Streaming Training ({args.aanet_streaming_steps} steps)...")
-        
-        # We need to track losses for logging
-        # epoch_metrics structure: {k: {cid: {"loss": [], "reconstruction_loss": [], "archetypal_loss": [], "extrema_loss": []}}}
-        training_history = {k: {cid: {"loss": [], "reconstruction_loss": [], "archetypal_loss": [], "extrema_loss": []} for cid in trainer.models.keys()} for k, trainer in trainers.items()}
-        
-        for step in tqdm(range(args.aanet_streaming_steps), desc="Streaming"):
-            tokens = sampler.sample_tokens_batch(args.aanet_batch_size, args.activity_seq_len, args.device)
-            
-            with torch.no_grad():
-                _, cache = model.run_with_cache(tokens, return_type=None, names_filter=[hook_name])
-                acts = cache[hook_name]
-                acts_flat = acts.reshape(-1, acts.shape[-1])
-                feature_acts, _, _ = sae_encode_features(sae, acts_flat)
+        if args.aanet_sequential_k:
+            print(f"Running Sequential Training (one k at a time) for k={args.aanet_k_min} to {args.aanet_k_max}...")
+            # Loop over k, re-running the stream for each k
+            for k in range(args.aanet_k_min, args.aanet_k_max + 1):
+                print(f"\n==========================================")
+                print(f"--- STARTING TRAINING FOR k={k} ---")
+                print(f"==========================================")
+                trainer, n_active = create_trainer(k, descriptors)
+                if trainer is None:
+                    print(f"All clusters completed for k={k}. Skipping.")
+                    continue
                 
-            # Train all trainers on this batch
-            for k, trainer in trainers.items():
-                step_losses = trainer.train_step(feature_acts)
-                for cid, metrics in step_losses.items():
-                    for key, value in metrics.items():
-                        training_history[k][cid][key].append(value)
+                print(f"Initializing Trainer for k={k} with {n_active} clusters")
+                trainer.initialize_extrema(warmup_data)
+                
+                # Streaming Loop for this k
+                metrics_history = {cid: {"loss": [], "reconstruction_loss": [], "archetypal_loss": [], "extrema_loss": []} for cid in trainer.models.keys()}
+                
+                print(f"Starting Streaming Training for k={k} ({args.aanet_streaming_steps} steps)...")
+                for step in tqdm(range(args.aanet_streaming_steps), desc=f"Streaming k={k}"):
+                    tokens = sampler.sample_tokens_batch(args.aanet_batch_size, args.activity_seq_len, args.device)
+                    with torch.no_grad():
+                        _, cache = model.run_with_cache(tokens, return_type=None, names_filter=[hook_name])
+                        acts = cache[hook_name]
+                        acts_flat = acts.reshape(-1, acts.shape[-1])
+                        feature_acts, _, _ = sae_encode_features(sae, acts_flat)
                     
-            # Cleanup
-            del tokens, cache, acts, acts_flat, feature_acts
-            # gc.collect() # Don't collect every step, too slow.
-            
-        # --- Save Results ---
-        print("Saving results...")
-        for k, trainer in trainers.items():
-            # Save models?
-            # Maybe just save metrics for now as per original script
-            # User didn't explicitly ask for model checkpoints, but we should probably save them?
-            # Original script didn't save models, just metrics.
-            # But with streaming, we have "final" models.
-            # Let's save metrics.
-            
-            for cid, model in trainer.models.items():
-                # Compute final metrics on a validation batch?
-                # Or just use last training loss?
-                # Using last training loss is a bit noisy.
-                # Ideally we run a validation pass.
-                # But we don't have a held-out validation set in streaming easily unless we reserved some warmup data?
-                # Let's just use the average of the last 10 steps.
-                
-                history = training_history[k][cid]
-                # Compute averages of last 10 steps
-                final_metrics = {}
-                for key, values in history.items():
-                    final_metrics[key] = np.mean(values[-10:]) if values else float("nan")
-                
-                row = {
-                    "n_clusters_total": n_clusters,
-                    "cluster_id": cid,
-                    "n_latents": len(trainer.cluster_indices[cid]),
-                    "latent_indices": str(trainer.cluster_indices[cid].tolist()), # Save indices
-                    "aanet_k": k,
-                    "aanet_status": "ok",
-                    "aanet_loss": final_metrics["loss"],
-                    "aanet_recon_loss": final_metrics["reconstruction_loss"],
-                    "aanet_archetypal_loss": final_metrics["archetypal_loss"],
-                    "aanet_extrema_loss": final_metrics["extrema_loss"],
-                    "sae_id": args.sae_id,
-                    "average_l0": sparsity,
-                }
-                
-                # Add clustering metrics
-                if result.subspace_diagnostics:
-                    recon_errors = result.subspace_diagnostics.get("reconstruction_errors", {})
-                    row["cluster_recon_error"] = recon_errors.get(cid, float("nan"))
-                    cluster_ranks = result.subspace_diagnostics.get("cluster_ranks", {})
-                    row["decoder_dir_rank"] = cluster_ranks.get(cid, float("nan"))
+                    step_losses = trainer.train_step(feature_acts)
+                    for cid, metrics in step_losses.items():
+                        for key, value in metrics.items():
+                            metrics_history[cid][key].append(value)
                     
-                # Add activation PCA rank (95% variance)
-                if result.cluster_stats and cid in result.cluster_stats:
-                    stats = result.cluster_stats[cid]
-                    if "explained_variance_ratio" in stats:
-                        var_ratios = np.array(stats["explained_variance_ratio"])
-                        cumsum = np.cumsum(var_ratios)
-                        # Find first index where cumsum >= 0.95
-                        # If never reaches 0.95 (e.g. fewer components), take all
-                        rank_95 = np.argmax(cumsum >= 0.95) + 1 if np.any(cumsum >= 0.95) else len(var_ratios)
-                        row["activation_pca_rank"] = rank_95
+                    del tokens, cache, acts, acts_flat, feature_acts
+                
+                # Save results for this k
+                print(f"Saving results for k={k}...")
+                for cid, model_inst in trainer.models.items():
+                    history = metrics_history[cid]
+                    final_metrics = {}
+                    for key, values in history.items():
+                        final_metrics[key] = np.mean(values[-10:]) if values else float("nan")
+                    
+                    row = {
+                        "n_clusters_total": n_clusters,
+                        "cluster_id": cid,
+                        "n_latents": len(trainer.cluster_indices[cid]),
+                        "latent_indices": str(trainer.cluster_indices[cid].tolist()),
+                        "aanet_k": k,
+                        "aanet_status": "ok",
+                        "aanet_loss": final_metrics["loss"],
+                        "aanet_recon_loss": final_metrics["reconstruction_loss"],
+                        "aanet_archetypal_loss": final_metrics["archetypal_loss"],
+                        "aanet_extrema_loss": final_metrics["extrema_loss"],
+                        "sae_id": args.sae_id,
+                        "average_l0": sparsity,
+                    }
+                    
+                    # Add clustering metrics
+                    if result.subspace_diagnostics:
+                        recon_errors = result.subspace_diagnostics.get("reconstruction_errors", {})
+                        row["cluster_recon_error"] = recon_errors.get(cid, float("nan"))
+                        cluster_ranks = result.subspace_diagnostics.get("cluster_ranks", {})
+                        row["decoder_dir_rank"] = cluster_ranks.get(cid, float("nan"))
+                        
+                    # Add activation PCA rank
+                    if result.cluster_stats and cid in result.cluster_stats:
+                        stats = result.cluster_stats[cid]
+                        if "explained_variance_ratio" in stats:
+                            var_ratios = np.array(stats["explained_variance_ratio"])
+                            cumsum = np.cumsum(var_ratios)
+                            rank_95 = np.argmax(cumsum >= 0.95) + 1 if np.any(cumsum >= 0.95) else len(var_ratios)
+                            row["activation_pca_rank"] = rank_95
+                        else:
+                            row["activation_pca_rank"] = float("nan")
                     else:
                         row["activation_pca_rank"] = float("nan")
-                else:
-                    row["activation_pca_rank"] = float("nan")
 
-                # Incremental save
-                import pandas as pd
-                row_df = pd.DataFrame([row])
-                write_header = not os.path.exists(csv_path)
-                row_df.to_csv(csv_path, mode='a', header=write_header, index=False)
+                    # Incremental save
+                    import pandas as pd
+                    row_df = pd.DataFrame([row])
+                    write_header = not os.path.exists(csv_path)
+                    row_df.to_csv(csv_path, mode='a', header=write_header, index=False)
+                    
+                    # Save training curves
+                    jsonl_path = os.path.join(output_dir, f"training_curves_n{n_clusters}.jsonl")
+                    curve_data = {
+                        "cluster_id": cid,
+                        "aanet_k": k,
+                        "metrics_history": history
+                    }
+                    import json
+                    with open(jsonl_path, "a") as f:
+                        f.write(json.dumps(curve_data) + "\n")
                 
-                # Save training curves
-                jsonl_path = os.path.join(output_dir, f"training_curves_n{n_clusters}.jsonl")
-                curve_data = {
-                    "cluster_id": cid,
-                    "aanet_k": k,
-                    "metrics_history": history
-                }
-                import json
-                with open(jsonl_path, "a") as f:
-                    f.write(json.dumps(curve_data) + "\n")
+                # Cleanup trainer
+                del trainer
+                gc.collect()
+                torch.cuda.empty_cache()
+
+        else:
+            print(f"Running Concurrent Training (all k at once) for k={args.aanet_k_min} to {args.aanet_k_max}...")
+            print(f"==========================================")
+            print(f"--- INITIALIZING ALL TRAINERS ---")
+            print(f"==========================================")
+            trainers = {}
+            for k in range(args.aanet_k_min, args.aanet_k_max + 1):
+                trainer, n_active = create_trainer(k, descriptors)
+                if trainer:
+                    print(f"Initializing Trainer for k={k} with {n_active} clusters")
+                    trainers[k] = trainer
+            
+            if not trainers:
+                print("No training needed (all completed).")
+                continue
+            
+            # Initialize Extrema
+            for k, trainer in trainers.items():
+                trainer.initialize_extrema(warmup_data)
+            
+            # Streaming Loop
+            print(f"Starting Streaming Training ({args.aanet_streaming_steps} steps)...")
+            training_history = {k: {cid: {"loss": [], "reconstruction_loss": [], "archetypal_loss": [], "extrema_loss": []} for cid in trainer.models.keys()} for k, trainer in trainers.items()}
+            
+            for step in tqdm(range(args.aanet_streaming_steps), desc="Streaming"):
+                tokens = sampler.sample_tokens_batch(args.aanet_batch_size, args.activity_seq_len, args.device)
+                with torch.no_grad():
+                    _, cache = model.run_with_cache(tokens, return_type=None, names_filter=[hook_name])
+                    acts = cache[hook_name]
+                    acts_flat = acts.reshape(-1, acts.shape[-1])
+                    feature_acts, _, _ = sae_encode_features(sae, acts_flat)
+                
+                # Train all trainers
+                for k, trainer in trainers.items():
+                    step_losses = trainer.train_step(feature_acts)
+                    for cid, metrics in step_losses.items():
+                        for key, value in metrics.items():
+                            training_history[k][cid][key].append(value)
+                
+                del tokens, cache, acts, acts_flat, feature_acts
+            
+            # Save Results (Concurrent)
+            print("Saving results...")
+            for k, trainer in trainers.items():
+                for cid, model_inst in trainer.models.items():
+                    history = training_history[k][cid]
+                    final_metrics = {}
+                    for key, values in history.items():
+                        final_metrics[key] = np.mean(values[-10:]) if values else float("nan")
+                    
+                    row = {
+                        "n_clusters_total": n_clusters,
+                        "cluster_id": cid,
+                        "n_latents": len(trainer.cluster_indices[cid]),
+                        "latent_indices": str(trainer.cluster_indices[cid].tolist()),
+                        "aanet_k": k,
+                        "aanet_status": "ok",
+                        "aanet_loss": final_metrics["loss"],
+                        "aanet_recon_loss": final_metrics["reconstruction_loss"],
+                        "aanet_archetypal_loss": final_metrics["archetypal_loss"],
+                        "aanet_extrema_loss": final_metrics["extrema_loss"],
+                        "sae_id": args.sae_id,
+                        "average_l0": sparsity,
+                    }
+                    
+                    # Add clustering metrics
+                    if result.subspace_diagnostics:
+                        recon_errors = result.subspace_diagnostics.get("reconstruction_errors", {})
+                        row["cluster_recon_error"] = recon_errors.get(cid, float("nan"))
+                        cluster_ranks = result.subspace_diagnostics.get("cluster_ranks", {})
+                        row["decoder_dir_rank"] = cluster_ranks.get(cid, float("nan"))
+                        
+                    # Add activation PCA rank
+                    if result.cluster_stats and cid in result.cluster_stats:
+                        stats = result.cluster_stats[cid]
+                        if "explained_variance_ratio" in stats:
+                            var_ratios = np.array(stats["explained_variance_ratio"])
+                            cumsum = np.cumsum(var_ratios)
+                            rank_95 = np.argmax(cumsum >= 0.95) + 1 if np.any(cumsum >= 0.95) else len(var_ratios)
+                            row["activation_pca_rank"] = rank_95
+                        else:
+                            row["activation_pca_rank"] = float("nan")
+                    else:
+                        row["activation_pca_rank"] = float("nan")
+
+                    # Incremental save
+                    import pandas as pd
+                    row_df = pd.DataFrame([row])
+                    write_header = not os.path.exists(csv_path)
+                    row_df.to_csv(csv_path, mode='a', header=write_header, index=False)
+                    
+                    # Save training curves
+                    jsonl_path = os.path.join(output_dir, f"training_curves_n{n_clusters}.jsonl")
+                    curve_data = {
+                        "cluster_id": cid,
+                        "aanet_k": k,
+                        "metrics_history": history
+                    }
+                    import json
+                    with open(jsonl_path, "a") as f:
+                        f.write(json.dumps(curve_data) + "\n")
 
 if __name__ == "__main__":
     main()
