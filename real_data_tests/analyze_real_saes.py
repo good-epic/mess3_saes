@@ -122,6 +122,7 @@ def main():
     parser.add_argument("--aanet_k_min", type=int, default=2, help="Minimum k for AAnet.")
     parser.add_argument("--aanet_k_max", type=int, default=8, help="Maximum k for AAnet.")
     parser.add_argument("--aanet_warmup_max_per_cluster", type=int, default=1000, help="Max samples per cluster for extrema finding.")
+    parser.add_argument("--aanet_warmup_cluster_chunk_size", type=int, default=16, help="Process clusters in chunks of this size during warmup to save memory.")
     parser.add_argument("--aanet_active_threshold", type=float, default=1e-6, help="Threshold for active samples in AAnet training.")
     parser.add_argument("--aanet_sequential_k", action="store_true", help="Train AAnet for each k sequentially (saves VRAM) instead of concurrently.")
 
@@ -348,85 +349,153 @@ def main():
                 active_threshold=args.aanet_active_threshold,
             )
             
+            # Note: AAnet trains on reconstructions (d_model), not sparse latents (d_sae).
             trainer = StreamingAAnetTrainer(
                 descriptors=active_descriptors,
                 config=aanet_config,
                 device=args.device,
-                input_dim=sae.cfg.d_sae,
+                input_dim=sae.cfg.d_model, 
                 sae_decoder_weight=sae.W_dec
             )
             return trainer, len(active_descriptors)
 
         # --- Warmup Phase (Extrema) ---
-        # We collect warmup data ONCE for all clusters, regardless of sequential/concurrent mode.
-        print(f"Collecting warmup buffer ({args.aanet_warmup_steps} batches)...")
-        warmup_storage = {desc.cluster_id: [] for desc in descriptors}
-        cluster_indices_map = {desc.cluster_id: torch.tensor(desc.latent_indices, device=args.device) for desc in descriptors}
+        # Process clusters in chunks to reduce memory usage
 
-        for _ in tqdm(range(args.aanet_warmup_steps), desc="Warmup"):
-            tokens = sampler.sample_tokens_batch(args.aanet_batch_size, args.activity_seq_len, args.device)
-            with torch.no_grad():
-                _, cache = model.run_with_cache(tokens, return_type=None, names_filter=[hook_name])
-                acts = cache[hook_name]
-                acts_flat = acts.reshape(-1, acts.shape[-1])
-                feature_acts, _, _ = sae_encode_features(sae, acts_flat)
-                
-                # Distribute to clusters
-                for cid, indices in cluster_indices_map.items():
-                    if indices.numel() == 0: continue
-                    subset = feature_acts[:, indices]
-                    active_mask = (subset.abs().sum(dim=1) > args.aanet_active_threshold)
-                    if active_mask.any():
-                        if len(warmup_storage[cid]) > args.aanet_warmup_max_per_cluster:
-                            continue
-                        W_c = sae.W_dec[indices, :]
-                        recon = subset[active_mask] @ W_c
-                        warmup_storage[cid].append(recon.cpu())
-                        
-        # Consolidate warmup data
-        warmup_data = {}
-        for cid, tensors in warmup_storage.items():
-            if tensors:
-                warmup_data[cid] = torch.cat(tensors, dim=0)
-            else:
-                warmup_data[cid] = torch.empty((0, sae.cfg.d_model))
-        del warmup_storage
-        import gc; gc.collect(); torch.cuda.empty_cache()
+        all_extrema = {}
+
+        if args.extrema_enabled:
+            # Split descriptors into chunks
+            chunk_size = args.aanet_warmup_cluster_chunk_size
+            n_chunks = (len(descriptors) + chunk_size - 1) // chunk_size
+
+            print(f"Processing {len(descriptors)} clusters in {n_chunks} chunks of size {chunk_size}")
+            print(f"Collecting up to {args.aanet_warmup_max_per_cluster} samples/cluster over {args.aanet_warmup_steps} steps")
+
+            for chunk_idx in range(n_chunks):
+                start_idx = chunk_idx * chunk_size
+                end_idx = min(start_idx + chunk_size, len(descriptors))
+                chunk_descriptors = descriptors[start_idx:end_idx]
+
+                print(f"\n--- Warmup Chunk {chunk_idx+1}/{n_chunks} (clusters {start_idx}-{end_idx-1}) ---")
+
+                # Initialize buffers for this chunk only
+                warmup_buffer = {desc.cluster_id: [] for desc in chunk_descriptors}
+                cluster_indices_map = {desc.cluster_id: torch.tensor(desc.latent_indices, device=args.device) for desc in chunk_descriptors}
+
+                # Streaming Loop for this chunk
+                for step in tqdm(range(args.aanet_warmup_steps), desc=f"Warmup Chunk {chunk_idx+1}/{n_chunks}"):
+                    # 1. Stream ONE batch
+                    tokens = sampler.sample_tokens_batch(args.aanet_batch_size, args.activity_seq_len, args.device)
+
+                    with torch.no_grad():
+                        _, cache = model.run_with_cache(tokens, return_type=None, names_filter=[hook_name])
+                        acts = cache[hook_name]
+                        acts_flat = acts.reshape(-1, acts.shape[-1])
+                        feature_acts, _, _ = sae_encode_features(sae, acts_flat)
+
+                        # 2. Distribute to clusters in this chunk
+                        for cid, indices in cluster_indices_map.items():
+                            if indices.numel() == 0: continue
+
+                            # Check if full
+                            current_count = sum(t.shape[0] for t in warmup_buffer[cid])
+                            if current_count >= args.aanet_warmup_max_per_cluster:
+                                continue
+
+                            subset = feature_acts[:, indices]
+                            active_mask = (subset.abs().sum(dim=1) > args.aanet_active_threshold)
+
+                            if active_mask.any():
+                                W_c = sae.W_dec[indices, :]
+                                recon = subset[active_mask] @ W_c
+
+                                # Truncate if adding this batch exceeds max
+                                remaining = args.aanet_warmup_max_per_cluster - current_count
+                                if recon.shape[0] > remaining:
+                                    recon = recon[:remaining]
+
+                                warmup_buffer[cid].append(recon.cpu())
+
+                    # 3. Discard batch
+                    del tokens, cache, acts, acts_flat, feature_acts
+
+                # Compute extrema for this chunk
+                print(f"Computing extrema for chunk {chunk_idx+1}/{n_chunks}...")
+                for cid, tensors in tqdm(warmup_buffer.items(), desc=f"Extrema Chunk {chunk_idx+1}"):
+                    if not tensors:
+                        continue
+                    data = torch.cat(tensors, dim=0)
+                    if data.shape[0] < args.aanet_k_max:
+                        print(f"Cluster {cid}: insufficient samples ({data.shape[0]} < {args.aanet_k_max}), skipping extrema")
+                        continue
+
+                    try:
+                        data_np = data.numpy()
+                        extrema = compute_diffusion_extrema(
+                            data_np,
+                            max_k=args.aanet_k_max,
+                            config=ExtremaConfig(knn=args.extrema_knn)
+                        )
+                        if extrema is not None:
+                            all_extrema[cid] = extrema.to(args.device)
+                    except Exception as e:
+                        print(f"Failed to compute extrema for cluster {cid}: {e}")
+
+                # Clear chunk buffers before next chunk
+                del warmup_buffer, cluster_indices_map
+                import gc; gc.collect(); torch.cuda.empty_cache()
+
+            print(f"\nCompleted warmup for all {len(descriptors)} clusters. Computed extrema for {len(all_extrema)} clusters.")
 
         # --- Training Loop ---
         
         if args.aanet_sequential_k:
             print(f"Running Sequential Training (one k at a time) for k={args.aanet_k_min} to {args.aanet_k_max}...")
-            # Loop over k, re-running the stream for each k
+            
             for k in range(args.aanet_k_min, args.aanet_k_max + 1):
                 print(f"\n==========================================")
                 print(f"--- STARTING TRAINING FOR k={k} ---")
                 print(f"==========================================")
+                
                 trainer, n_active = create_trainer(k, descriptors)
                 if trainer is None:
                     print(f"All clusters completed for k={k}. Skipping.")
                     continue
                 
                 print(f"Initializing Trainer for k={k} with {n_active} clusters")
-                trainer.initialize_extrema(warmup_data)
                 
+                # Initialize Extrema
+                if args.extrema_enabled:
+                    count = 0
+                    for cid, model_inst in trainer.models.items():
+                        if cid in all_extrema:
+                            k_extrema = all_extrema[cid][:k]
+                            model_inst.set_archetypes(k_extrema)
+                            count += 1
+                    print(f"Initialized extrema for {count} models.")
+
                 # Streaming Loop for this k
                 metrics_history = {cid: {"loss": [], "reconstruction_loss": [], "archetypal_loss": [], "extrema_loss": []} for cid in trainer.models.keys()}
                 
                 print(f"Starting Streaming Training for k={k} ({args.aanet_streaming_steps} steps)...")
                 for step in tqdm(range(args.aanet_streaming_steps), desc=f"Streaming k={k}"):
+                    # 1. Stream ONE batch
                     tokens = sampler.sample_tokens_batch(args.aanet_batch_size, args.activity_seq_len, args.device)
+                    
                     with torch.no_grad():
                         _, cache = model.run_with_cache(tokens, return_type=None, names_filter=[hook_name])
                         acts = cache[hook_name]
                         acts_flat = acts.reshape(-1, acts.shape[-1])
                         feature_acts, _, _ = sae_encode_features(sae, acts_flat)
                     
+                    # 2. Train (Distribute to all clusters in this trainer)
                     step_losses = trainer.train_step(feature_acts)
                     for cid, metrics in step_losses.items():
                         for key, value in metrics.items():
                             metrics_history[cid][key].append(value)
                     
+                    # 3. Discard batch
                     del tokens, cache, acts, acts_flat, feature_acts
                 
                 # Save results for this k
@@ -499,6 +568,7 @@ def main():
             print(f"==========================================")
             print(f"--- INITIALIZING ALL TRAINERS ---")
             print(f"==========================================")
+            
             trainers = {}
             for k in range(args.aanet_k_min, args.aanet_k_max + 1):
                 trainer, n_active = create_trainer(k, descriptors)
@@ -511,28 +581,38 @@ def main():
                 continue
             
             # Initialize Extrema
-            for k, trainer in trainers.items():
-                trainer.initialize_extrema(warmup_data)
+            if args.extrema_enabled:
+                for k, trainer in trainers.items():
+                    count = 0
+                    for cid, model_inst in trainer.models.items():
+                        if cid in all_extrema:
+                            k_extrema = all_extrema[cid][:k]
+                            model_inst.set_archetypes(k_extrema)
+                            count += 1
+                    print(f"Initialized extrema for {count} models (k={k}).")
             
             # Streaming Loop
             print(f"Starting Streaming Training ({args.aanet_streaming_steps} steps)...")
             training_history = {k: {cid: {"loss": [], "reconstruction_loss": [], "archetypal_loss": [], "extrema_loss": []} for cid in trainer.models.keys()} for k, trainer in trainers.items()}
             
             for step in tqdm(range(args.aanet_streaming_steps), desc="Streaming"):
+                # 1. Stream ONE batch
                 tokens = sampler.sample_tokens_batch(args.aanet_batch_size, args.activity_seq_len, args.device)
+                
                 with torch.no_grad():
                     _, cache = model.run_with_cache(tokens, return_type=None, names_filter=[hook_name])
                     acts = cache[hook_name]
                     acts_flat = acts.reshape(-1, acts.shape[-1])
                     feature_acts, _, _ = sae_encode_features(sae, acts_flat)
                 
-                # Train all trainers
+                # 2. Train (Distribute to ALL trainers)
                 for k, trainer in trainers.items():
                     step_losses = trainer.train_step(feature_acts)
                     for cid, metrics in step_losses.items():
                         for key, value in metrics.items():
                             training_history[k][cid][key].append(value)
                 
+                # 3. Discard batch
                 del tokens, cache, acts, acts_flat, feature_acts
             
             # Save Results (Concurrent)
