@@ -87,6 +87,9 @@ def main():
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--cache_dir", type=str, default=None, help="Directory for Hugging Face cache")
+    parser.add_argument("--dataset_name", type=str, default="wikitext", help="Dataset name for text sampling (e.g., 'wikitext', 'monology/pile-uncopyrighted')")
+    parser.add_argument("--dataset_config", type=str, default="wikitext-103-v1", help="Dataset config (use 'default' for The Pile, None will be converted to default)")
+    parser.add_argument("--dataset_split", type=str, default="train", help="Dataset split to use")
     parser.add_argument("--activity_batch_size", type=int, default=16, help="Batch size for activity stats")
     parser.add_argument("--activity_batches", type=int, default=1024, help="Number of batches for activity stats")
     parser.add_argument("--activity_seq_len", type=int, default=128, help="Sequence length for activity stats")
@@ -172,8 +175,17 @@ def main():
     print(f"SAE Hook Name: {hook_name}")
 
     print("Initializing RealDataSampler...")
-    print("Initializing RealDataSampler...")
-    sampler = RealDataSampler(model, seed=args.seed, prefetch_size=args.aanet_prefetch_size)
+    # Handle dataset config (The Pile doesn't use a config, just pass None or "default")
+    dataset_config = None if args.dataset_config.lower() in ["none", "default"] else args.dataset_config
+    print(f"Using dataset: {args.dataset_name}, config: {dataset_config}, split: {args.dataset_split}")
+    sampler = RealDataSampler(
+        model,
+        dataset_name=args.dataset_name,
+        dataset_config=dataset_config,
+        split=args.dataset_split,
+        seed=args.seed,
+        prefetch_size=args.aanet_prefetch_size
+    )
     
 
     # Determine site and hook_name from SAE config

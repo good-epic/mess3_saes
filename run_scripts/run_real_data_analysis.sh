@@ -22,6 +22,9 @@ python -u real_data_tests/analyze_real_saes.py \
     --seed 42 \
     --cache_dir "/workspace/hf_cache" \
     --hf_token ${HF_TOKEN} \
+    --dataset_name "monology/pile-uncopyrighted" \
+    --dataset_config "default" \
+    --dataset_split "train" \
     --subspace_variance_threshold 0.95 \
     --subspace_gap_threshold 2.0 \
     --aanet_batch_size 128 \

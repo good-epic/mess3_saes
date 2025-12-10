@@ -43,7 +43,10 @@ class RealDataSampler:
         self.prefetch_size = prefetch_size
         
         print(f"Loading dataset: {dataset_name} ({dataset_config}) split={split} streaming={streaming}")
-        self.dataset = load_dataset(dataset_name, dataset_config, split=split, streaming=streaming)
+        if dataset_config is None:
+            self.dataset = load_dataset(dataset_name, split=split, streaming=streaming)
+        else:
+            self.dataset = load_dataset(dataset_name, dataset_config, split=split, streaming=streaming)
         if streaming:
             self.dataset = self.dataset.shuffle(seed=seed, buffer_size=10000)
         else:
