@@ -149,16 +149,24 @@ class StreamingAAnetTrainer:
             
             # (n_active, n_latents) @ (n_latents, d_model) -> (n_active, d_model)
             X_recon = acts_c_active @ W_c
-            
+
+            # Prepend diffusion extrema if available (following aanet_pipeline/training.py:91-94)
+            if model.diffusion_extrema is not None:
+                batch_features = torch.cat(
+                    (model.diffusion_extrema.view(-1, model.input_shape), X_recon), dim=0
+                )
+            else:
+                batch_features = X_recon
+
             # 3. Train Step
             optimizer = self.optimizers[cid]
             optimizer.zero_grad()
-            
+
             # Forward
             # AAnet forward returns (recon, input, embedding)
-            recon, _, embedding = model(X_recon)
+            recon, _, embedding = model(batch_features)
             loss, metrics = model.loss_function(
-                X_recon, 
+                batch_features, 
                 recon, 
                 embedding, 
                 gamma_reconstruction=self.config.gamma_reconstruction,

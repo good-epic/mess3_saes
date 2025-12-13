@@ -482,12 +482,21 @@ def main():
                 # Initialize Extrema
                 if args.extrema_enabled:
                     count = 0
+                    skipped = 0
                     for cid, model_inst in trainer.models.items():
                         if cid in all_extrema:
                             k_extrema = all_extrema[cid][:k]
-                            model_inst.set_archetypes(k_extrema)
-                            count += 1
-                    print(f"Initialized extrema for {count} models.")
+                            # Only set extrema if we have exactly k extrema (safety check)
+                            if k_extrema.shape[0] == k:
+                                model_inst.set_archetypes(k_extrema)
+                                count += 1
+                            else:
+                                skipped += 1
+                                # Don't set extrema - model will train without extrema loss
+                    if skipped > 0:
+                        print(f"Initialized extrema for {count} models (skipped {skipped} clusters with only {k_extrema.shape[0]}/{k} extrema).")
+                    else:
+                        print(f"Initialized extrema for {count} models.")
 
                 # Streaming Loop for this k
                 metrics_history = {cid: {"loss": [], "reconstruction_loss": [], "archetypal_loss": [], "extrema_loss": []} for cid in trainer.models.keys()}
@@ -598,12 +607,21 @@ def main():
             if args.extrema_enabled:
                 for k, trainer in trainers.items():
                     count = 0
+                    skipped = 0
                     for cid, model_inst in trainer.models.items():
                         if cid in all_extrema:
                             k_extrema = all_extrema[cid][:k]
-                            model_inst.set_archetypes(k_extrema)
-                            count += 1
-                    print(f"Initialized extrema for {count} models (k={k}).")
+                            # Only set extrema if we have exactly k extrema (safety check)
+                            if k_extrema.shape[0] == k:
+                                model_inst.set_archetypes(k_extrema)
+                                count += 1
+                            else:
+                                skipped += 1
+                                # Don't set extrema - model will train without extrema loss
+                    if skipped > 0:
+                        print(f"Initialized extrema for {count} models (k={k}, skipped {skipped} clusters with insufficient extrema).")
+                    else:
+                        print(f"Initialized extrema for {count} models (k={k}).")
             
             # Streaming Loop
             print(f"Starting Streaming Training ({args.aanet_streaming_steps} steps)...")
