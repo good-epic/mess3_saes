@@ -93,7 +93,7 @@ def compute_cluster_activation_pca_ranks(
                 acts_flat = acts.reshape(-1, acts.shape[-1])  # (batch*seq, d_model)
 
                 # Encode with SAE
-                feature_acts = sae_encode_features(sae, acts_flat)  # (batch*seq, d_sae)
+                feature_acts, _, _ = sae_encode_features(sae, acts_flat)  # (batch*seq, d_sae)
 
                 # Filter to only this cluster's latents
                 cluster_acts = feature_acts[:, latent_indices]  # (batch*seq, n_cluster_latents)
