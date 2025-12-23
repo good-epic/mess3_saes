@@ -29,6 +29,7 @@ def compute_cluster_activation_pca_ranks(
     sae,
     sampler,
     clustering_result,
+    hook_name,
     n_samples=5,
     batch_size=1024,
     seq_len=128,
@@ -43,6 +44,7 @@ def compute_cluster_activation_pca_ranks(
         sae: Trained SAE
         sampler: RealDataSampler for getting diverse batches
         clustering_result: ClusteringResult with cluster_labels
+        hook_name: Hook name for model.run_with_cache
         n_samples: Number of diverse batches to sample per cluster (default 5)
         batch_size: Batch size for forward passes (default 1024 for low variance PCA)
         seq_len: Sequence length (default 128)
@@ -56,7 +58,6 @@ def compute_cluster_activation_pca_ranks(
 
     cluster_labels = clustering_result.cluster_labels
     n_clusters = clustering_result.n_clusters
-    hook_name = sae.cfg.hook_point
 
     # Group latent indices by cluster
     cluster_to_latents = {}
@@ -421,6 +422,7 @@ def main():
                 sae=sae,
                 sampler=sampler,
                 clustering_result=result,
+                hook_name=hook_name,
                 n_samples=5,
                 batch_size=1024,
                 seq_len=args.activity_seq_len,
