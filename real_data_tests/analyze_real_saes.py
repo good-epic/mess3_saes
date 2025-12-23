@@ -23,6 +23,117 @@ from real_data_tests.real_pipeline import RealDataClusteringPipeline
 from aanet_pipeline.streaming_trainer import StreamingAAnetTrainer
 from mess3_gmg_analysis_utils import sae_encode_features
 
+
+def compute_cluster_activation_pca_ranks(
+    model,
+    sae,
+    sampler,
+    clustering_result,
+    n_samples=5,
+    batch_size=1024,
+    seq_len=128,
+    variance_threshold=0.95,
+    device='cuda'
+):
+    """
+    For each cluster, sample activations across diverse batches and compute practical PCA rank.
+
+    Args:
+        model: HookedTransformer model
+        sae: Trained SAE
+        sampler: RealDataSampler for getting diverse batches
+        clustering_result: ClusteringResult with cluster_labels
+        n_samples: Number of diverse batches to sample per cluster (default 5)
+        batch_size: Batch size for forward passes (default 1024 for low variance PCA)
+        seq_len: Sequence length (default 128)
+        variance_threshold: Variance explained threshold for practical rank (default 0.95)
+        device: Device to run on
+
+    Returns:
+        dict mapping cluster_id -> {"avg_rank": float, "avg_variance": float}
+    """
+    from sklearn.decomposition import PCA
+
+    cluster_labels = clustering_result.cluster_labels
+    n_clusters = clustering_result.n_clusters
+    hook_name = sae.cfg.hook_name
+
+    # Group latent indices by cluster
+    cluster_to_latents = {}
+    for latent_idx, cluster_id in enumerate(cluster_labels):
+        if cluster_id not in cluster_to_latents:
+            cluster_to_latents[cluster_id] = []
+        cluster_to_latents[cluster_id].append(latent_idx)
+
+    pca_results = {}
+
+    for cluster_id in tqdm(range(n_clusters), desc="Computing PCA ranks"):
+        if cluster_id not in cluster_to_latents:
+            continue
+
+        latent_indices = cluster_to_latents[cluster_id]
+        if len(latent_indices) < 2:
+            # Can't do PCA on single latent
+            pca_results[cluster_id] = {"avg_rank": 1, "avg_variance": 1.0}
+            continue
+
+        # Collect activations from n_samples diverse batches
+        all_activations = []
+
+        for sample_idx in range(n_samples):
+            # Sample a batch of tokens
+            tokens = sampler.sample_tokens_batch(batch_size, seq_len, device)
+
+            with torch.no_grad():
+                # Forward pass through model
+                _, cache = model.run_with_cache(tokens, return_type=None, names_filter=[hook_name])
+                acts = cache[hook_name]  # (batch, seq, d_model)
+                acts_flat = acts.reshape(-1, acts.shape[-1])  # (batch*seq, d_model)
+
+                # Encode with SAE
+                feature_acts = sae_encode_features(sae, acts_flat)  # (batch*seq, d_sae)
+
+                # Filter to only this cluster's latents
+                cluster_acts = feature_acts[:, latent_indices]  # (batch*seq, n_cluster_latents)
+
+                # Only keep rows where at least one latent is active
+                active_mask = (cluster_acts.abs().sum(dim=1) > 1e-5)
+                if active_mask.any():
+                    cluster_acts_active = cluster_acts[active_mask].cpu().numpy()
+                    all_activations.append(cluster_acts_active)
+
+        if not all_activations:
+            # No active samples found
+            pca_results[cluster_id] = {"avg_rank": 0, "avg_variance": 0.0}
+            continue
+
+        # Concatenate all samples
+        X = np.vstack(all_activations)  # (n_total_samples, n_cluster_latents)
+
+        if X.shape[0] < 2:
+            pca_results[cluster_id] = {"avg_rank": 1, "avg_variance": 1.0}
+            continue
+
+        # Fit PCA
+        n_components = min(X.shape[0], X.shape[1])  # Can't have more components than samples or features
+        pca = PCA(n_components=n_components)
+        pca.fit(X)
+
+        # Find practical rank: number of components to explain variance_threshold of variance
+        cumsum_variance = np.cumsum(pca.explained_variance_ratio_)
+        practical_rank = np.searchsorted(cumsum_variance, variance_threshold) + 1
+        practical_rank = min(practical_rank, n_components)  # Cap at max components
+
+        variance_explained = cumsum_variance[practical_rank - 1] if practical_rank > 0 else 0.0
+
+        pca_results[cluster_id] = {
+            "avg_rank": int(practical_rank),
+            "avg_variance": float(variance_explained)
+        }
+
+    return pca_results
+
+
 def main():
     parser = argparse.ArgumentParser(description="Analyze Real SAEs with Clustering and Simplex Fitting")
     parser.add_argument("--sae_release", type=str, default="gemma-scope-9b-pt-res", help="SAE Lens release name")
@@ -283,7 +394,7 @@ def main():
         if result is None:
             result = pipeline.run(
                 model=model,
-                cache={}, 
+                cache={},
                 data_source=sampler,
                 site_dir=output_dir,
                 component_beliefs_flat=None,
@@ -293,7 +404,33 @@ def main():
             with open(clustering_pkl_path, "wb") as f:
                 pickle.dump(result, f)
             print(f"Saved clustering result to {clustering_pkl_path}")
-        
+
+        # Compute activation PCA ranks if not already present
+        if result.cluster_stats and not any("activation_pca_rank" in stats for stats in result.cluster_stats.values()):
+            print(f"\nComputing activation PCA ranks for {result.n_clusters} clusters...")
+            pca_ranks = compute_cluster_activation_pca_ranks(
+                model=model,
+                sae=sae,
+                sampler=sampler,
+                clustering_result=result,
+                n_samples=5,
+                batch_size=1024,
+                seq_len=args.activity_seq_len,
+                variance_threshold=0.95,
+                device=args.device
+            )
+
+            # Add to cluster_stats
+            for cid, rank_info in pca_ranks.items():
+                if cid in result.cluster_stats:
+                    result.cluster_stats[cid]["activation_pca_rank"] = rank_info["avg_rank"]
+                    result.cluster_stats[cid]["activation_pca_variance_explained"] = rank_info["avg_variance"]
+
+            # Re-save clustering result with PCA ranks
+            with open(clustering_pkl_path, "wb") as f:
+                pickle.dump(result, f)
+            print(f"Added PCA ranks to clustering result and saved to {clustering_pkl_path}")
+
         print(f"Running AAnet fitting for n_clusters={n_clusters}")
         
         # Load existing metrics if resuming
