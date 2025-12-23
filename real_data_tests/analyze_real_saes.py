@@ -1,5 +1,6 @@
 
 import os
+import gc
 from tqdm import tqdm
 import argparse
 import json
@@ -31,7 +32,7 @@ def compute_cluster_activation_pca_ranks(
     clustering_result,
     hook_name,
     n_samples=5,
-    batch_size=1024,
+    batch_size=512,
     seq_len=128,
     variance_threshold=0.95,
     device='cuda'
@@ -46,7 +47,7 @@ def compute_cluster_activation_pca_ranks(
         clustering_result: ClusteringResult with cluster_labels
         hook_name: Hook name for model.run_with_cache
         n_samples: Number of diverse batches to sample per cluster (default 5)
-        batch_size: Batch size for forward passes (default 1024 for low variance PCA)
+        batch_size: Batch size for forward passes (default 256, matches AAnet batch size)
         seq_len: Sequence length (default 128)
         variance_threshold: Variance explained threshold for practical rank (default 0.95)
         device: Device to run on
@@ -131,6 +132,8 @@ def compute_cluster_activation_pca_ranks(
             "avg_rank": int(practical_rank),
             "avg_variance": float(variance_explained)
         }
+        torch.cuda.empty_cache()
+        gc.collect()
 
     return pca_results
 
@@ -416,6 +419,10 @@ def main():
         has_pca = any("activation_pca_rank" in stats for stats in result.cluster_stats.values())
 
         if not has_pca:
+            # Clear memory before PCA computation
+            torch.cuda.empty_cache()
+            gc.collect()
+
             print(f"\nComputing activation PCA ranks for {result.n_clusters} clusters...")
             pca_ranks = compute_cluster_activation_pca_ranks(
                 model=model,
@@ -424,7 +431,7 @@ def main():
                 clustering_result=result,
                 hook_name=hook_name,
                 n_samples=5,
-                batch_size=1024,
+                batch_size=256,  # Reduced from 1024 to avoid OOM
                 seq_len=args.activity_seq_len,
                 variance_threshold=0.95,
                 device=args.device
@@ -606,7 +613,8 @@ def main():
 
                 # Clear chunk buffers before next chunk
                 del warmup_buffer, cluster_indices_map
-                import gc; gc.collect(); torch.cuda.empty_cache()
+                torch.cuda.empty_cache()
+                gc.collect(); 
 
             print(f"\nCompleted warmup for all {len(descriptors)} clusters. Computed extrema for {len(all_extrema)} clusters.")
 
@@ -731,8 +739,8 @@ def main():
                 
                 # Cleanup trainer
                 del trainer
-                gc.collect()
                 torch.cuda.empty_cache()
+                gc.collect()
 
         else:
             print(f"Running Concurrent Training (all k at once) for k={args.aanet_k_min} to {args.aanet_k_max}...")
