@@ -406,7 +406,22 @@ def main():
             print(f"Saved clustering result to {clustering_pkl_path}")
 
         # Compute activation PCA ranks if not already present
-        if result.cluster_stats and not any("activation_pca_rank" in stats for stats in result.cluster_stats.values()):
+        # Check if we need to compute: cluster_stats exists and no cluster has pca rank yet
+        if result.cluster_stats is None:
+            print("Note: cluster_stats is None, skipping PCA computation")
+            needs_pca = False
+        elif len(result.cluster_stats) == 0:
+            print("Note: cluster_stats is empty, skipping PCA computation")
+            needs_pca = False
+        else:
+            has_pca = any("activation_pca_rank" in stats for stats in result.cluster_stats.values())
+            if has_pca:
+                print(f"Note: PCA ranks already present in cluster_stats, skipping computation")
+                needs_pca = False
+            else:
+                needs_pca = True
+
+        if needs_pca:
             print(f"\nComputing activation PCA ranks for {result.n_clusters} clusters...")
             pca_ranks = compute_cluster_activation_pca_ranks(
                 model=model,
