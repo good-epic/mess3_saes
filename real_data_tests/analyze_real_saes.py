@@ -56,7 +56,7 @@ def compute_cluster_activation_pca_ranks(
 
     cluster_labels = clustering_result.cluster_labels
     n_clusters = clustering_result.n_clusters
-    hook_name = sae.cfg.hook_name
+    hook_name = sae.cfg.hook_point
 
     # Group latent indices by cluster
     cluster_to_latents = {}
