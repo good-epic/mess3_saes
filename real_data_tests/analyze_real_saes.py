@@ -406,22 +406,15 @@ def main():
             print(f"Saved clustering result to {clustering_pkl_path}")
 
         # Compute activation PCA ranks if not already present
-        # Check if we need to compute: cluster_stats exists and no cluster has pca rank yet
-        if result.cluster_stats is None:
-            print("Note: cluster_stats is None, skipping PCA computation")
-            needs_pca = False
-        elif len(result.cluster_stats) == 0:
-            print("Note: cluster_stats is empty, skipping PCA computation")
-            needs_pca = False
-        else:
-            has_pca = any("activation_pca_rank" in stats for stats in result.cluster_stats.values())
-            if has_pca:
-                print(f"Note: PCA ranks already present in cluster_stats, skipping computation")
-                needs_pca = False
-            else:
-                needs_pca = True
+        # Initialize cluster_stats if it's empty (happens when acts_flat=None in clustering)
+        if result.cluster_stats is None or len(result.cluster_stats) == 0:
+            print("Initializing cluster_stats for PCA computation...")
+            result.cluster_stats = {cid: {} for cid in range(result.n_clusters)}
 
-        if needs_pca:
+        # Check if we need to compute PCA
+        has_pca = any("activation_pca_rank" in stats for stats in result.cluster_stats.values())
+
+        if not has_pca:
             print(f"\nComputing activation PCA ranks for {result.n_clusters} clusters...")
             pca_ranks = compute_cluster_activation_pca_ranks(
                 model=model,
@@ -437,14 +430,15 @@ def main():
 
             # Add to cluster_stats
             for cid, rank_info in pca_ranks.items():
-                if cid in result.cluster_stats:
-                    result.cluster_stats[cid]["activation_pca_rank"] = rank_info["avg_rank"]
-                    result.cluster_stats[cid]["activation_pca_variance_explained"] = rank_info["avg_variance"]
+                result.cluster_stats[cid]["activation_pca_rank"] = rank_info["avg_rank"]
+                result.cluster_stats[cid]["activation_pca_variance_explained"] = rank_info["avg_variance"]
 
             # Re-save clustering result with PCA ranks
             with open(clustering_pkl_path, "wb") as f:
                 pickle.dump(result, f)
             print(f"Added PCA ranks to clustering result and saved to {clustering_pkl_path}")
+        else:
+            print(f"Note: PCA ranks already present in cluster_stats, skipping computation")
 
         print(f"Running AAnet fitting for n_clusters={n_clusters}")
         
