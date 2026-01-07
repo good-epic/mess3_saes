@@ -92,6 +92,8 @@ def parse_args():
     parser.add_argument("--activity_batch_size", type=int, default=32)
     parser.add_argument("--activity_seq_len", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--aanet_prefetch_size", type=int, default=1024,
+                       help="Prefetch buffer size for RealDataSampler")
 
     # AANet training
     parser.add_argument("--aanet_streaming_steps", type=int, default=3000,
@@ -821,7 +823,7 @@ def main():
     )
     model.eval()
 
-    sae, _, _ = SAE.from_pretrained(
+    sae = SAE.from_pretrained(
         release=args.sae_release,
         sae_id=args.sae_id,
         device=args.device
@@ -833,12 +835,12 @@ def main():
     print("INITIALIZING DATA SAMPLER")
     print("="*80)
     sampler = RealDataSampler(
+        model,
         dataset_name=args.dataset_name,
         dataset_config=args.dataset_config,
-        dataset_split=args.dataset_split,
-        tokenizer=model.tokenizer,
+        split=args.dataset_split,
         seed=args.seed,
-        cache_dir=args.cache_dir
+        prefetch_size=args.aanet_prefetch_size
     )
 
     # Train each cluster

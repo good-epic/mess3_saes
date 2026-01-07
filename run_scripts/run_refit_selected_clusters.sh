@@ -21,6 +21,7 @@ python -u real_data_tests/refit_selected_clusters.py \
     --activity_batch_size 32 \
     --activity_seq_len 128 \
     --seed 42 \
+    --aanet_prefetch_size 1024 \
     --aanet_streaming_steps 3000 \
     --aanet_batch_size 128 \
     --aanet_lr 0.0025 \
