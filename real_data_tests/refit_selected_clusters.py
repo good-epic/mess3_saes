@@ -426,8 +426,10 @@ def train_single_cluster(cluster_info, model, sae, sampler, args):
     # Create descriptor
     descriptor = AAnetDescriptor(
         cluster_id=cluster_id,
+        label=f"cluster_{cluster_id}",
         latent_indices=latent_indices,
-        k=k
+        component_names=[],
+        is_noise=False
     )
 
     # Create training config for StreamingAAnetTrainer
