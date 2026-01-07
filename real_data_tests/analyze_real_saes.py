@@ -683,7 +683,7 @@ def main():
                     history = metrics_history[cid]
                     final_metrics = {}
                     for key, values in history.items():
-                        final_metrics[key] = np.mean(values[-10:]) if values else float("nan")
+                        final_metrics[key] = np.median(values[-20:]) if values and len(values) >= 20 else (values[-1] if values else float("nan"))
                     
                     row = {
                         "n_clusters_total": n_clusters,
@@ -810,7 +810,7 @@ def main():
                     history = training_history[k][cid]
                     final_metrics = {}
                     for key, values in history.items():
-                        final_metrics[key] = np.mean(values[-10:]) if values else float("nan")
+                        final_metrics[key] = np.median(values[-20:]) if values and len(values) >= 20 else (values[-1] if values else float("nan"))
                     
                     row = {
                         "n_clusters_total": n_clusters,
@@ -863,6 +863,118 @@ def main():
                     import json
                     with open(jsonl_path, "a") as f:
                         f.write(json.dumps(curve_data) + "\n")
+
+            # Calculate elbow quality metrics
+            print(f"\nCalculating elbow quality metrics for n_clusters={n_clusters}...")
+            calculate_elbow_quality_metrics(csv_path, n_clusters)
+            print(f"Elbow quality metrics saved to {csv_path}")
+
+
+def calculate_elbow_quality_metrics(csv_path, n_clusters):
+    """
+    Calculate elbow quality metrics for each cluster and add them to the CSV.
+
+    Metrics calculated:
+    - recon_elbow_k, recon_elbow_strength: Elbow location and strength for reconstruction loss
+    - recon_pct_decrease: Percent decrease from max to min reconstruction loss
+    - recon_is_monotonic: Whether reconstruction loss is monotonic up to the elbow
+    - arch_elbow_k, arch_elbow_strength: Elbow location and strength for archetypal loss
+    - arch_pct_decrease: Percent decrease from max to min archetypal loss
+    - arch_is_monotonic: Whether archetypal loss is monotonic up to the elbow
+    - k_differential: Absolute difference between recon and arch elbow k values
+    """
+    import pandas as pd
+    import numpy as np
+
+    def calculate_elbow_score(x, y):
+        """Calculate elbow using perpendicular distance method."""
+        if len(x) < 3:
+            return None, 0.0
+        x_norm = (np.array(x) - x[0]) / (x[-1] - x[0]) if x[-1] != x[0] else np.zeros_like(x)
+        y_norm = (np.array(y) - y[-1]) / (y[0] - y[-1]) if y[0] != y[-1] else np.zeros_like(y)
+        distances = np.abs(x_norm + y_norm - 1) / np.sqrt(2)
+        elbow_idx = np.argmax(distances)
+        elbow_k = x[elbow_idx]
+        elbow_strength = distances[elbow_idx]
+        return elbow_k, elbow_strength
+
+    # Load the CSV
+    df = pd.read_csv(csv_path)
+
+    # Calculate elbow metrics for each cluster
+    results = []
+    for cluster_id in df['cluster_id'].unique():
+        cluster_data = df[df['cluster_id'] == cluster_id].sort_values('aanet_k')
+        if len(cluster_data) < 3:
+            continue
+
+        k_vals = cluster_data['aanet_k'].values
+
+        # Reconstruction loss metrics
+        recon_losses = cluster_data['aanet_recon_loss'].values
+        recon_elbow_k, recon_elbow_strength = calculate_elbow_score(k_vals, recon_losses)
+        recon_max = np.max(recon_losses)
+        recon_min = np.min(recon_losses)
+        recon_pct_decrease = (recon_max - recon_min) / recon_max * 100 if recon_max > 0 else 0
+
+        # Check monotonicity up to elbow for recon
+        recon_is_monotonic = False
+        if recon_elbow_k is not None:
+            elbow_idx = np.where(k_vals == recon_elbow_k)[0][0]
+            recon_is_monotonic = all(recon_losses[i] >= recon_losses[i+1] for i in range(elbow_idx))
+
+        # Archetypal loss metrics
+        arch_losses = cluster_data['aanet_archetypal_loss'].values
+        arch_elbow_k, arch_elbow_strength = calculate_elbow_score(k_vals, arch_losses)
+        arch_max = np.max(arch_losses)
+        arch_min = np.min(arch_losses)
+        arch_pct_decrease = (arch_max - arch_min) / arch_max * 100 if arch_max > 0 else 0
+
+        # Check monotonicity up to elbow for arch
+        arch_is_monotonic = False
+        if arch_elbow_k is not None:
+            elbow_idx = np.where(k_vals == arch_elbow_k)[0][0]
+            arch_is_monotonic = all(arch_losses[i] >= arch_losses[i+1] for i in range(elbow_idx))
+
+        # K differential
+        k_differential = abs(recon_elbow_k - arch_elbow_k) if (recon_elbow_k and arch_elbow_k) else np.nan
+
+        results.append({
+            'cluster_id': cluster_id,
+            'recon_elbow_k': recon_elbow_k,
+            'recon_elbow_strength': recon_elbow_strength,
+            'recon_pct_decrease': recon_pct_decrease,
+            'recon_is_monotonic': recon_is_monotonic,
+            'arch_elbow_k': arch_elbow_k,
+            'arch_elbow_strength': arch_elbow_strength,
+            'arch_pct_decrease': arch_pct_decrease,
+            'arch_is_monotonic': arch_is_monotonic,
+            'k_differential': k_differential
+        })
+
+    # Convert to DataFrame
+    elbow_df = pd.DataFrame(results)
+
+    # Merge with original data (keeping all rows from original, but each cluster gets same elbow metrics)
+    df_merged = df.merge(elbow_df, on='cluster_id', how='left')
+
+    # Save back to CSV
+    df_merged.to_csv(csv_path, index=False)
+
+    # Print summary statistics
+    print(f"\nElbow Quality Metrics Summary for n_clusters={n_clusters}:")
+    print(f"  Total clusters analyzed: {len(elbow_df)}")
+    print(f"\n  Reconstruction Loss:")
+    print(f"    Monotonic to elbow: {elbow_df['recon_is_monotonic'].sum()} / {len(elbow_df)} ({100*elbow_df['recon_is_monotonic'].sum()/len(elbow_df):.1f}%)")
+    print(f"    >=20% decrease: {(elbow_df['recon_pct_decrease'] >= 20).sum()} / {len(elbow_df)} ({100*(elbow_df['recon_pct_decrease'] >= 20).sum()/len(elbow_df):.1f}%)")
+    print(f"    Monotonic AND >=20% decrease: {(elbow_df['recon_is_monotonic'] & (elbow_df['recon_pct_decrease'] >= 20)).sum()} / {len(elbow_df)} ({100*(elbow_df['recon_is_monotonic'] & (elbow_df['recon_pct_decrease'] >= 20)).sum()/len(elbow_df):.1f}%)")
+    print(f"\n  Archetypal Loss:")
+    print(f"    Monotonic to elbow: {elbow_df['arch_is_monotonic'].sum()} / {len(elbow_df)} ({100*elbow_df['arch_is_monotonic'].sum()/len(elbow_df):.1f}%)")
+    print(f"    >=20% decrease: {(elbow_df['arch_pct_decrease'] >= 20).sum()} / {len(elbow_df)} ({100*(elbow_df['arch_pct_decrease'] >= 20).sum()/len(elbow_df):.1f}%)")
+    print(f"    Monotonic AND >=20% decrease: {(elbow_df['arch_is_monotonic'] & (elbow_df['arch_pct_decrease'] >= 20)).sum()} / {len(elbow_df)} ({100*(elbow_df['arch_is_monotonic'] & (elbow_df['arch_pct_decrease'] >= 20)).sum()/len(elbow_df):.1f}%)")
+    print(f"\n  Both recon AND arch monotonic: {(elbow_df['recon_is_monotonic'] & elbow_df['arch_is_monotonic']).sum()} / {len(elbow_df)} ({100*(elbow_df['recon_is_monotonic'] & elbow_df['arch_is_monotonic']).sum()/len(elbow_df):.1f}%)")
+    print(f"  K differential <= 1: {(elbow_df['k_differential'] <= 1).sum()} / {len(elbow_df)} ({100*(elbow_df['k_differential'] <= 1).sum()/len(elbow_df):.1f}%)")
+
 
 if __name__ == "__main__":
     main()
