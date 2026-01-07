@@ -106,11 +106,20 @@ def parse_args():
     parser.add_argument("--aanet_gamma_archetypal", type=float, default=4.0)
     parser.add_argument("--aanet_gamma_extrema", type=float, default=2.0)
     parser.add_argument("--aanet_grad_clip", type=float, default=1.0)
-    parser.add_argument("--active_threshold", type=float, default=0.0)
+    parser.add_argument("--aanet_lr_patience", type=int, default=5)
+    parser.add_argument("--aanet_lr_factor", type=float, default=0.5)
+    parser.add_argument("--aanet_seed", type=int, default=43)
+    parser.add_argument("--aanet_active_threshold", type=float, default=1e-6,
+                       help="Threshold for active samples in AAnet training")
+    parser.add_argument("--aanet_min_samples", type=int, default=32,
+                       help="Minimum dataset size before training (not used in streaming)")
 
     # Extrema initialization
     parser.add_argument("--extrema_enabled", action="store_true", default=True)
     parser.add_argument("--extrema_knn", type=int, default=150)
+    parser.add_argument("--extrema_max_points", type=int, default=30000)
+    parser.add_argument("--extrema_pca", type=float, default=0.95)
+    parser.add_argument("--extrema_seed", type=int, default=431)
     parser.add_argument("--extrema_warmup_samples", type=int, default=10000,
                        help="Number of samples to collect for extrema initialization")
 
@@ -419,22 +428,24 @@ def train_single_cluster(cluster_info, model, sae, sampler, args):
         k=k
     )
 
-    # Create training config
+    # Create training config for StreamingAAnetTrainer
     config = TrainingConfig(
         k=k,
+        epochs=1,  # Not used in streaming
+        batch_size=args.aanet_batch_size,
         learning_rate=args.aanet_lr,
         weight_decay=args.aanet_weight_decay,
-        layer_widths=args.aanet_layer_widths,
-        simplex_scale=args.aanet_simplex_scale,
-        noise=args.aanet_noise,
-        noise_relative=True,
         gamma_reconstruction=args.aanet_gamma_reconstruction,
         gamma_archetypal=args.aanet_gamma_archetypal,
         gamma_extrema=args.aanet_gamma_extrema,
+        simplex_scale=args.aanet_simplex_scale,
+        noise=args.aanet_noise,
+        layer_widths=args.aanet_layer_widths,
+        min_samples=args.aanet_min_samples,
+        lr_patience=args.aanet_lr_patience,
+        lr_factor=args.aanet_lr_factor,
         grad_clip=args.aanet_grad_clip,
-        active_threshold=args.active_threshold,
-        lr_patience=5,
-        lr_factor=0.5,
+        active_threshold=args.aanet_active_threshold,
     )
 
     # Create trainer
@@ -459,7 +470,12 @@ def train_single_cluster(cluster_info, model, sae, sampler, args):
 
         print(f"  Computing extrema from {warmup_data.shape[0]} samples...")
         extrema_np = warmup_data.cpu().numpy()
-        extrema_config = ExtremaConfig(knn=args.extrema_knn)
+        extrema_config = ExtremaConfig(
+            knn=args.extrema_knn,
+            max_points=args.extrema_max_points,
+            pca_components=args.extrema_pca,  # 0.95 = keep components explaining 95% variance
+            random_seed=args.extrema_seed
+        )
         extrema = compute_diffusion_extrema(extrema_np, max_k=k, config=extrema_config)
 
         if extrema is not None and extrema.shape[0] == k:

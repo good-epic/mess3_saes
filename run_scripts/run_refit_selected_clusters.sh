@@ -32,9 +32,16 @@ python -u real_data_tests/refit_selected_clusters.py \
     --aanet_gamma_archetypal 4.0 \
     --aanet_gamma_extrema 2.0 \
     --aanet_grad_clip 1.0 \
-    --active_threshold 0.0 \
+    --aanet_lr_patience 5 \
+    --aanet_lr_factor 0.5 \
+    --aanet_seed 43 \
+    --aanet_active_threshold 1e-6 \
+    --aanet_min_samples 32 \
     --extrema_enabled \
     --extrema_knn 150 \
+    --extrema_max_points 30000 \
+    --extrema_pca 0.95 \
+    --extrema_seed 431 \
     --extrema_warmup_samples 10000 \
     --collect_vertex_samples \
     --samples_per_vertex 1000 \
