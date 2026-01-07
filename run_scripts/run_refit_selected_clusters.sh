@@ -7,10 +7,10 @@ export PYTHONPATH=.
 
 python -u real_data_tests/refit_selected_clusters.py \
     --n_clusters_list "128,256,512,768" \
-    --corrected_csv_dir "outputs/real_data_analysis_canonical" \
+    --corrected_csv_dir "/workspace/outputs/real_data_analysis_canonical" \
     --save_dir "/workspace/outputs/selected_clusters_canonical" \
     --model_name "gemma-2-9b" \
-    --sae_release "gemma-scope-9b-pt-res-canonical" \
+    --sae_release "gemma-scope-9b-pt-res" \
     --sae_id "layer_20/width_16k/average_l0_68" \
     --device "cuda" \
     --cache_dir "/workspace/hf_cache" \
@@ -45,9 +45,9 @@ python -u real_data_tests/refit_selected_clusters.py \
     --extrema_warmup_samples 10000 \
     --collect_vertex_samples \
     --samples_per_vertex 1000 \
-    --vertex_distance_threshold 0.1 \
+    --vertex_distance_threshold 0.02 \
     --min_vertex_ratio 0.1 \
     --vertex_search_batch_size 32 \
     --concurrent_aanets 5 \
     --max_inputs_per_cluster 1000000 \
-    --vertex_save_interval 10000
+    --vertex_save_interval 5000
