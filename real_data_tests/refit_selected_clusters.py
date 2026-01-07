@@ -798,6 +798,14 @@ def main():
     selected_clusters = load_selected_clusters(args.corrected_csv_dir, n_clusters_list)
     print(f"\nTotal selected clusters: {len(selected_clusters)}")
 
+    # Check if we found any clusters
+    if len(selected_clusters) == 0:
+        print("\n" + "="*80)
+        print("ERROR: No clusters selected! Check that corrected CSV files exist.")
+        print("="*80)
+        print(f"Expected location: {args.corrected_csv_dir}/clusters_*/consolidated_metrics_n*_corrected.csv")
+        return
+
     # Load model and SAE (shared across all clusters)
     print("\n" + "="*80)
     print("LOADING MODEL AND SAE")
@@ -808,7 +816,8 @@ def main():
     model = HookedTransformer.from_pretrained(
         args.model_name,
         device=args.device,
-        cache_dir=args.cache_dir
+        cache_dir=args.cache_dir,
+        center_unembed=False  # Required for Gemma-2 models with logit softcap
     )
     model.eval()
 
