@@ -488,6 +488,12 @@ def train_single_cluster(cluster_info, model, sae, sampler, args):
         else:
             print(f"  WARNING: Failed to initialize extrema (got {extrema.shape[0] if extrema is not None else 0}/{k})")
 
+        # CRITICAL: Free warmup data before training
+        del warmup_data, extrema_np
+        if extrema is not None:
+            del extrema
+        torch.cuda.empty_cache()
+
     # Training loop
     metrics_history = {
         "loss": [],
@@ -562,6 +568,13 @@ def train_single_cluster(cluster_info, model, sae, sampler, args):
         json.dump(metadata, f, indent=2)
 
     print(f"  ✓ Cluster {cluster_id} complete!")
+
+    # CRITICAL: Free GPU memory
+    print(f"  Cleaning up GPU memory...")
+    del trainer
+    if 'warmup_data' in locals():
+        del warmup_data
+    torch.cuda.empty_cache()
 
     return metadata
 
@@ -817,11 +830,20 @@ def main():
     print(f"Model: {args.model_name}")
     print(f"SAE: {args.sae_release}/{args.sae_id}")
 
-    model = HookedTransformer.from_pretrained(
+    # Build model kwargs
+    model_kwargs = {}
+    if args.cache_dir:
+        model_kwargs['cache_dir'] = args.cache_dir
+    if args.hf_token:
+        model_kwargs['token'] = args.hf_token
+
+    model = HookedTransformer.from_pretrained_no_processing(
         args.model_name,
         device=args.device,
-        cache_dir=args.cache_dir,
-        center_unembed=False  # Required for Gemma-2 models with logit softcap
+        center_unembed=False,  # Required for Gemma-2 models with logit softcap
+        center_writing_weights=False,
+        dtype="bfloat16",  # CRITICAL: Use bfloat16 to save ~18GB memory!
+        **model_kwargs
     )
     model.eval()
 
