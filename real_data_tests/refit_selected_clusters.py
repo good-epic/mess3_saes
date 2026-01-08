@@ -830,12 +830,18 @@ def main():
     print(f"Model: {args.model_name}")
     print(f"SAE: {args.sae_release}/{args.sae_id}")
 
+    # Login to Hugging Face if token provided
+    if args.hf_token:
+        print("Logging in to Hugging Face with provided token...")
+        login(token=args.hf_token)
+    elif os.environ.get("HF_TOKEN"):
+        print("Logging in to Hugging Face with HF_TOKEN environment variable...")
+        login(token=os.environ["HF_TOKEN"])
+
     # Build model kwargs
     model_kwargs = {}
     if args.cache_dir:
         model_kwargs['cache_dir'] = args.cache_dir
-    if args.hf_token:
-        model_kwargs['token'] = args.hf_token
 
     model = HookedTransformer.from_pretrained_no_processing(
         args.model_name,
