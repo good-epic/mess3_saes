@@ -8,7 +8,7 @@ export PYTHONPATH=.
 #    --n_clusters_list "128,256,512,768" \
 python -u real_data_tests/refit_selected_clusters.py \
     --skip_training \
-    --n_clusters_list "512,768" \
+    --n_clusters_list "128,256" \
     --corrected_csv_dir "/workspace/outputs/real_data_analysis_canonical" \
     --save_dir "/workspace/outputs/selected_clusters_canonical" \
     --model_name "gemma-2-9b" \
