@@ -76,6 +76,8 @@ def parse_args():
     # Output
     parser.add_argument("--save_dir", type=str, required=True,
                        help="Base directory to save refitted models")
+    parser.add_argument("--skip_training", action="store_true",
+                       help="Skip Stage 1 (training), load existing manifest and only run Stage 2 (vertex collection)")
 
     # Model & SAE
     parser.add_argument("--model_name", type=str, default="gemma-2-9b")
@@ -627,8 +629,8 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
     vertex_samples = {i: [] for i in range(k)}
     vertex_stats = {i: {"samples": 0, "reached_target": False} for i in range(k)}
 
-    # Create one-hot vertex targets for distance calculation
-    vertices = torch.eye(k, device=args.device)
+    # Create one-hot vertex targets for distance calculation (k-dimensional barycentric)
+    vertices = torch.eye(k, device=args.device)  # Shape: (k, k)
 
     total_inputs_processed = 0
     samples_saved = 0
@@ -692,7 +694,12 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
                 X_recon = acts_c_active @ W_c
 
                 # Forward through AANet to get bottleneck coords
-                _, _, embedding = aanet(X_recon)  # embedding is bottleneck simplex coords
+                _, _, embedding = aanet(X_recon)  # embedding is (k-1)-dim bottleneck coords
+
+                # Convert to k-dimensional barycentric coordinates
+                # AANet outputs (k-1)-dim, add implicit last dimension: w_k = 1 - sum(w_0, ..., w_{k-2})
+                last_coord = 1.0 - embedding.sum(dim=1, keepdim=True)
+                embedding = torch.cat([embedding, last_coord], dim=1)  # Now shape: (batch, k)
 
                 # Calculate distances to each vertex
                 for i in range(k):
@@ -873,41 +880,61 @@ def main():
         prefetch_size=args.aanet_prefetch_size
     )
 
-    # Train each cluster
-    print("\n" + "="*80)
-    print("TRAINING CLUSTERS")
-    print("="*80)
-
-    all_metadata = []
-    for i, cluster_info in enumerate(selected_clusters):
-        print(f"\n[{i+1}/{len(selected_clusters)}]")
-        metadata = train_single_cluster(cluster_info, model, sae, sampler, args)
-        all_metadata.append(metadata)
-
-    # Save training manifest
+    # Stage 1: Train clusters (or load existing)
     manifest_path = Path(args.save_dir) / "manifest.json"
-    print(f"\n" + "="*80)
-    print(f"Saving training manifest to {manifest_path}")
-    print("="*80)
 
-    manifest = {
-        'total_clusters': len(all_metadata),
-        'n_clusters_list': n_clusters_list,
-        'model_name': args.model_name,
-        'tokenizer': str(type(model.tokenizer).__name__),
-        'sae_release': args.sae_release,
-        'sae_id': args.sae_id,
-        'clusters': all_metadata
-    }
+    if args.skip_training:
+        # Load existing manifest
+        print("\n" + "="*80)
+        print("SKIPPING STAGE 1: Loading existing manifest")
+        print("="*80)
 
-    with open(manifest_path, 'w') as f:
-        json.dump(manifest, f, indent=2)
+        if not manifest_path.exists():
+            print(f"\nERROR: Cannot skip training - manifest not found at {manifest_path}")
+            print("Run without --skip_training first to train the models.")
+            return
 
-    print(f"\n{'='*80}")
-    print("STAGE 1 COMPLETE: AANet Training")
-    print(f"{'='*80}")
-    print(f"Trained {len(all_metadata)} clusters")
-    print(f"Models saved to: {args.save_dir}")
+        with open(manifest_path, 'r') as f:
+            manifest = json.load(f)
+
+        all_metadata = manifest['clusters']
+        print(f"Loaded {len(all_metadata)} trained clusters from manifest")
+
+    else:
+        # Train each cluster
+        print("\n" + "="*80)
+        print("STAGE 1: TRAINING CLUSTERS")
+        print("="*80)
+
+        all_metadata = []
+        for i, cluster_info in enumerate(selected_clusters):
+            print(f"\n[{i+1}/{len(selected_clusters)}]")
+            metadata = train_single_cluster(cluster_info, model, sae, sampler, args)
+            all_metadata.append(metadata)
+
+        # Save training manifest
+        print(f"\n" + "="*80)
+        print(f"Saving training manifest to {manifest_path}")
+        print("="*80)
+
+        manifest = {
+            'total_clusters': len(all_metadata),
+            'n_clusters_list': n_clusters_list,
+            'model_name': args.model_name,
+            'tokenizer': str(type(model.tokenizer).__name__),
+            'sae_release': args.sae_release,
+            'sae_id': args.sae_id,
+            'clusters': all_metadata
+        }
+
+        with open(manifest_path, 'w') as f:
+            json.dump(manifest, f, indent=2)
+
+        print(f"\n{'='*80}")
+        print("STAGE 1 COMPLETE: AANet Training")
+        print(f"{'='*80}")
+        print(f"Trained {len(all_metadata)} clusters")
+        print(f"Models saved to: {args.save_dir}")
 
     # Stage 2: Collect near-vertex samples
     if args.collect_vertex_samples:

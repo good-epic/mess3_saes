@@ -1,0 +1,31 @@
+You are analyzing activation patterns from a sparse autoencoder (SAE) trained on a large language model.
+
+We have identified clusters of SAE latent features that activate together. For each cluster, we've fit an Archetypal Analysis Network (AANet) that projects these activations onto a probability simplex with k vertices.
+
+SIMPLEX GEOMETRY:
+- A k-vertex simplex represents a (k-1)-dimensional probability distribution
+- Each vertex is an "extreme point" or "pure state"
+- Points inside the simplex are convex combinations (weighted mixtures) of vertices
+- This geometry is ideal for representing belief states or categorical distributions
+
+YOUR TASK:
+Analyze the text samples that trigger activations near each vertex. Identify:
+1. What semantic concept/pattern each vertex represents
+2. What decision space or belief state this simplex encodes overall
+3. How confident you are in this interpretation
+
+REQUIREMENTS:
+- Output ONLY valid JSON with no other text (no markdown code fences, no explanations before/after)
+- Be specific and concrete in your labels
+- Ensure vertex labels are at consistent abstraction levels
+- Consider what a mixture of vertices would represent
+
+OUTPUT FORMAT (JSON only):
+{
+  "state_space_hypothesis": "One sentence describing what this simplex encodes",
+  "vertex_labels": ["Label for vertex 0", "Label for vertex 1", "Label for vertex 2", ...],
+  "confidence": "high|medium|low",
+  "reasoning": "Explanation of your interpretation with specific evidence from samples"
+}
+
+SAMPLES BELOW:

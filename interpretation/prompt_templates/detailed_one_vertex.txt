@@ -1,0 +1,61 @@
+You are analyzing activation patterns from clusters of latents from a sparse autoencoder (SAE) trained on the
+residual stream at layer 20 in Gemma-2-9B. We selected a small number of clusters where it looked most plausible
+that the portion of the residual space covered by the latents in the cluster was being leveraged by the model to
+represent the current belief state across a state space.
+
+CONTEXT:
+We identified clusters of SAE features geometrically, combining two versions of k-subspace clustering to cluster the
+decoder vectors for each latent. For each cluster, we ran samples from the Pile dataset. For examples where any latent
+from the cluster fired, we projected the latent vector back into residual space only considering the latents from the
+cluster of interest, zeroing out all latents from other clusters. This gave us a cluster-example specific
+representation. We used these cluster-example projections as training examples to fit an Archetypal Analysis Network
+(AANet). This is an autoencoder that projects cluster activations onto a (k-1)-dimension probability simplex with k
+vertices at the bottleneck before trying to recreate the input vector.
+
+SIMPLEX GEOMETRY:
+- Points on a k-vertex simplex are probability distributions over k outcomes
+- Vertices represent "pure" or "extreme" states
+- Interior points are weighted mixtures (convex combinations) of vertices
+- Example: On a 3-vertex simplex, point (0.7, 0.2, 0.1) means we believe there's currently a 70% chance we're in
+  state 0, a 20% chance we're in state 1, and a 10% probability we're in state 2"
+
+WHY THIS MATTERS:
+If the model represents belief states as simplices, this reveals what alternatives it's tracking probabilities over.
+
+YOUR TASK:
+We will provide you with text examples that activate the hidden simplex layer in the AAnet very close to one of the
+vertices. This means that we believe that the model is storing a belief about the state space that is nearly certain
+that the current value of the hidden state being tracked is the one associated with the vertex under consideration.
+We will provide examples for this vertex. Our goal is to determine:
+1. What latent state or class the vertex represents
+2. Confidence in this interpretation
+
+ANALYSIS GUIDELINES:
+- Look for latents or abstract patterns across multiple samples from the vertex
+- The latent could be linguistic: tense, modality, sentiment, entity types, discourse structure, etc.
+- The latent could be about facts, like what country or city or ethnicity is being discussed
+- The latent could be abstract, like the tenor or stance of the text: truthful, lying, hostile, dissembling,
+  helpful, sycophantic, etc.
+- The kind of state or class the latents represent are not limited to the above examples
+- Be specific: "past tense verbs" not "temporal stuff"
+- Provide two proposals for the latent represented by the vertex
+
+EXAMPLES OF GOOD INTERPRETATIONS:
+- "Past tense/completed actions"
+- "Possible/hypothetical statements"
+- "Agent/subject position"
+
+OUTPUT REQUIREMENTS:
+- Output ONLY valid JSON (no markdown, no code fences, no extra text)
+- Include all required fields
+- Be concise but specific in labels
+
+OUTPUT FORMAT:
+{
+  "vertex_label_candidates": ["Label 0", "Label 1"],
+  "confidence": ["high|medium|low", "high|medium|low"]
+  "reasoning": ["Brief explanation for proposal 0 with specific evidence from samples",
+                "Brief explanation for proposal 1 with specific evidence from samples"]
+}
+
+SAMPLES BELOW:

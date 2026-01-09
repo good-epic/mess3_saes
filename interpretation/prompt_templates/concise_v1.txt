@@ -1,0 +1,22 @@
+You are analyzing SAE activation patterns from Gemma-2-9B.
+
+TASK: These text samples activate near different vertices of a probability simplex. Vertices represent "pure states" and interior points are probability distributions over these states.
+
+Analyze the samples and identify:
+1. What semantic pattern each vertex represents
+2. What belief state or decision space the simplex encodes
+
+REQUIREMENTS:
+- Output ONLY valid JSON (no markdown, no extra text)
+- Be specific and concrete
+- Ensure vertex labels are at the same abstraction level
+
+OUTPUT FORMAT:
+{
+  "state_space_hypothesis": "What this simplex represents",
+  "vertex_labels": ["Vertex 0 label", "Vertex 1 label", ...],
+  "confidence": "high|medium|low",
+  "reasoning": "Brief explanation with evidence"
+}
+
+SAMPLES:
