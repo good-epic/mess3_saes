@@ -652,8 +652,6 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
     print(f"  Starting collection...")
     print(f"  Saving all barycentric coordinates to: {all_coords_path.name}")
 
-    pbar = tqdm(desc=f"Collecting samples")
-
     try:
         while total_inputs_processed < args.max_inputs_per_cluster:
             # Check early stopping: stop if ALL vertices have enough samples
@@ -764,7 +762,6 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
                         samples_saved += 1
 
                 total_inputs_processed += acts_flat.shape[0]
-                pbar.update(acts_flat.shape[0])
 
                 # Check if any milestone crossed (vertex samples or inputs processed)
                 vertex_milestone_crossed = False
@@ -789,7 +786,6 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
     finally:
         samples_file.close()
         all_coords_file.close()
-        pbar.close()
 
     # Print final summary
     print(f"\n  Collection complete!")
