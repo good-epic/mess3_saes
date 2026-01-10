@@ -694,12 +694,11 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
                 X_recon = acts_c_active @ W_c
 
                 # Forward through AANet to get bottleneck coords
-                _, _, embedding = aanet(X_recon)  # embedding is (k-1)-dim bottleneck coords
+                _, _, embedding = aanet(X_recon)  # embedding is (k-1)-dim Euclidean coords
 
-                # Convert to k-dimensional barycentric coordinates
-                # AANet outputs (k-1)-dim, add implicit last dimension: w_k = 1 - sum(w_0, ..., w_{k-2})
-                last_coord = 1.0 - embedding.sum(dim=1, keepdim=True)
-                embedding = torch.cat([embedding, last_coord], dim=1)  # Now shape: (batch, k)
+                # Convert from Euclidean to k-dimensional barycentric coordinates
+                # Using AANet's built-in conversion function
+                embedding = aanet.euclidean_to_barycentric(embedding)  # Now shape: (batch, k)
 
                 # Calculate distances to each vertex
                 for i in range(k):
