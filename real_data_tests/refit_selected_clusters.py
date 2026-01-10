@@ -637,6 +637,12 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
     samples_saved = 0
     coords_saved = 0
 
+    # Milestone tracking for reduced printing
+    sample_milestone = args.samples_per_vertex // 10  # Print every 10% of target
+    inputs_milestone = args.max_inputs_per_cluster // 10  # Print every 10% of max inputs
+    last_vertex_milestone = {i: 0 for i in range(k)}
+    last_inputs_milestone = 0
+
     # Open JSONL files for incremental writing
     samples_file = open(samples_path, 'w')
     all_coords_file = open(all_coords_path, 'w')
@@ -757,11 +763,21 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
                         vertex_stats[i]["samples"] += 1
                         samples_saved += 1
 
+                        # Check if vertex crossed milestone
+                        current_milestone = (vertex_stats[i]["samples"] // sample_milestone) * sample_milestone
+                        if current_milestone > last_vertex_milestone[i] and current_milestone > 0:
+                            last_vertex_milestone[i] = current_milestone
+                            print(f"    Vertex {i}: {vertex_stats[i]['samples']} samples")
+
                 total_inputs_processed += acts_flat.shape[0]
                 pbar.update(acts_flat.shape[0])
-                pbar.set_postfix({
-                    f"v{i}": vertex_stats[i]["samples"] for i in range(min(k, 5))
-                })
+
+                # Check if inputs crossed milestone
+                current_inputs_milestone = (total_inputs_processed // inputs_milestone) * inputs_milestone
+                if current_inputs_milestone > last_inputs_milestone and current_inputs_milestone > 0:
+                    last_inputs_milestone = current_inputs_milestone
+                    samples_list = [vertex_stats[i]["samples"] for i in range(k)]
+                    print(f"  Processed {total_inputs_processed:,} inputs - Samples: {samples_list}")
 
             del tokens, cache, acts, acts_flat, feature_acts
 
@@ -769,6 +785,16 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
         samples_file.close()
         all_coords_file.close()
         pbar.close()
+
+    # Print final summary
+    print(f"\n  Collection complete!")
+    print(f"  Total inputs processed: {total_inputs_processed:,}")
+    print(f"  Total near-vertex samples: {samples_saved:,}")
+    print(f"  Total barycentric coords saved: {coords_saved:,}")
+    print(f"  Samples per vertex:")
+    for i in range(k):
+        status = "✓" if vertex_stats[i]["samples"] >= args.samples_per_vertex else "✗"
+        print(f"    Vertex {i}: {vertex_stats[i]['samples']:,} {status}")
 
     # Update reached_target flags
     for i in range(k):
