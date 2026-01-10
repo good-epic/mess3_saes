@@ -602,6 +602,7 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
     model_path = save_dir / f"cluster_{cluster_id}_k{k}_category{category}.pt"
     samples_path = save_dir / f"cluster_{cluster_id}_k{k}_category{category}_vertex_samples.jsonl"
     stats_path = save_dir / f"cluster_{cluster_id}_k{k}_category{category}_vertex_stats.json"
+    all_coords_path = save_dir / f"cluster_{cluster_id}_k{k}_category{category}_all_barycentric_coords.jsonl"
 
     # Load trained AANet
     from AAnet.AAnet_torch.models.AAnet_vanilla import AAnet_vanilla
@@ -634,34 +635,27 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
 
     total_inputs_processed = 0
     samples_saved = 0
+    coords_saved = 0
 
-    # Open JSONL file for incremental writing
+    # Open JSONL files for incremental writing
     samples_file = open(samples_path, 'w')
+    all_coords_file = open(all_coords_path, 'w')
 
     print(f"  Target: {args.samples_per_vertex} samples per vertex")
     print(f"  Distance threshold: {args.vertex_distance_threshold}")
     print(f"  Starting collection...")
+    print(f"  Saving all barycentric coordinates to: {all_coords_path.name}")
 
     pbar = tqdm(desc=f"Collecting samples")
 
     try:
         while total_inputs_processed < args.max_inputs_per_cluster:
-            # Check termination conditions
-            min_samples = min(v["samples"] for v in vertex_stats.values())
-
-            if min_samples >= args.samples_per_vertex:
-                print(f"\n  ✓ All vertices reached target ({min_samples}/{args.samples_per_vertex})")
+            # Check early stopping: stop if ALL vertices have enough samples
+            all_reached = all(v["samples"] >= args.samples_per_vertex for v in vertex_stats.values())
+            if all_reached:
+                samples_list = [v["samples"] for v in vertex_stats.values()]
+                print(f"\n  ✓ All vertices reached target: {samples_list}")
                 break
-
-            # Fail-safe: check if rarest vertex is too rare
-            if total_inputs_processed > 0 and total_inputs_processed % args.vertex_save_interval == 0:
-                min_ratio = min_samples / args.samples_per_vertex if args.samples_per_vertex > 0 else 0
-                if min_ratio < args.min_vertex_ratio:
-                    max_samples = max(v["samples"] for v in vertex_stats.values())
-                    if max_samples >= args.samples_per_vertex:
-                        print(f"\n  ⚠ Fail-safe triggered: rarest vertex has {min_samples} samples ({min_ratio:.1%} of target)")
-                        print(f"     Other vertices have reached target. Stopping collection.")
-                        break
 
             # Sample batch
             tokens = sampler.sample_tokens_batch(args.vertex_search_batch_size, args.activity_seq_len, args.device)
@@ -700,6 +694,22 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
                 # Using AANet's built-in conversion function
                 embedding = aanet.euclidean_to_barycentric(embedding)  # Now shape: (batch, k)
 
+                # Save all barycentric coordinates for distribution analysis
+                for idx, coord in zip(active_indices.cpu().numpy(), embedding.cpu().numpy()):
+                    batch_idx = idx // args.activity_seq_len
+                    seq_idx = idx % args.activity_seq_len
+                    coord_record = {
+                        "barycentric_coords": coord.tolist(),
+                        "batch_idx": int(batch_idx),
+                        "seq_idx": int(seq_idx),
+                    }
+                    all_coords_file.write(json.dumps(coord_record) + '\n')
+                    coords_saved += 1
+
+                # Flush periodically
+                if coords_saved % 10000 == 0:
+                    all_coords_file.flush()
+
                 # Calculate distances to each vertex
                 for i in range(k):
                     vertex = vertices[i]
@@ -715,9 +725,7 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
 
                     # For each near-vertex sample
                     for idx, dist in zip(near_indices.cpu().numpy(), near_distances.cpu().numpy()):
-                        # Stop collecting for this vertex if target reached
-                        if vertex_stats[i]["samples"] >= args.samples_per_vertex:
-                            continue
+                        # Continue collecting for all vertices until max_inputs_per_cluster
 
                         # Calculate batch and sequence position
                         batch_idx = idx // args.activity_seq_len
@@ -759,6 +767,7 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
 
     finally:
         samples_file.close()
+        all_coords_file.close()
         pbar.close()
 
     # Update reached_target flags
@@ -784,20 +793,23 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
         "target_samples_per_vertex": args.samples_per_vertex,
         "total_inputs_processed": total_inputs_processed,
         "total_samples_collected": samples_saved,
+        "total_barycentric_coords_saved": coords_saved,
         "vertex_stats": vertex_stats,
         "all_vertices_reached_target": all_reached,
         "collection_status": collection_status,
         "model_name": args.model_name,
         "tokenizer": str(type(tokenizer).__name__),
         "distance_threshold": args.vertex_distance_threshold,
+        "all_coords_path": str(all_coords_path),
     }
 
     print(f"\n  Saving stats to {stats_path}")
     with open(stats_path, 'w') as f:
         json.dump(stats, f, indent=2)
 
-    print(f"  ✓ Collected {samples_saved} samples across {k} vertices")
+    print(f"  ✓ Collected {samples_saved} vertex samples across {k} vertices")
     print(f"     Samples per vertex: {[vertex_stats[i]['samples'] for i in range(k)]}")
+    print(f"  ✓ Saved {coords_saved} total barycentric coordinates for distribution analysis")
     print(f"     Status: {collection_status}")
 
     return stats
