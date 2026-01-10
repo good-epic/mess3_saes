@@ -763,21 +763,26 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
                         vertex_stats[i]["samples"] += 1
                         samples_saved += 1
 
-                        # Check if vertex crossed milestone
-                        current_milestone = (vertex_stats[i]["samples"] // sample_milestone) * sample_milestone
-                        if current_milestone > last_vertex_milestone[i] and current_milestone > 0:
-                            last_vertex_milestone[i] = current_milestone
-                            print(f"    Vertex {i}: {vertex_stats[i]['samples']} samples")
-
                 total_inputs_processed += acts_flat.shape[0]
                 pbar.update(acts_flat.shape[0])
 
-                # Check if inputs crossed milestone
+                # Check if any milestone crossed (vertex samples or inputs processed)
+                vertex_milestone_crossed = False
+                for i in range(k):
+                    current_milestone = (vertex_stats[i]["samples"] // sample_milestone) * sample_milestone
+                    if current_milestone > last_vertex_milestone[i] and current_milestone > 0:
+                        last_vertex_milestone[i] = current_milestone
+                        vertex_milestone_crossed = True
+
                 current_inputs_milestone = (total_inputs_processed // inputs_milestone) * inputs_milestone
-                if current_inputs_milestone > last_inputs_milestone and current_inputs_milestone > 0:
+                inputs_milestone_crossed = (current_inputs_milestone > last_inputs_milestone and current_inputs_milestone > 0)
+                if inputs_milestone_crossed:
                     last_inputs_milestone = current_inputs_milestone
-                    samples_list = [vertex_stats[i]["samples"] for i in range(k)]
-                    print(f"  Processed {total_inputs_processed:,} inputs - Samples: {samples_list}")
+
+                # Print combined milestone update
+                if vertex_milestone_crossed or inputs_milestone_crossed:
+                    vertex_counts = ", ".join([f"v{i}={vertex_stats[i]['samples']}" for i in range(k)])
+                    print(f"  Iteration {total_inputs_processed:,}: {vertex_counts}")
 
             del tokens, cache, acts, acts_flat, feature_acts
 
