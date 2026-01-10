@@ -714,6 +714,10 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
                 if coords_saved % 10000 == 0:
                     all_coords_file.flush()
 
+                # Accumulate samples per (batch_idx, vertex_id) to avoid duplicates
+                # Key: (batch_idx, vertex_id), Value: sample dict with lists
+                batch_samples = {}
+
                 # Calculate distances to each vertex
                 for i in range(k):
                     vertex = vertices[i]
@@ -729,37 +733,40 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
 
                     # For each near-vertex sample
                     for idx, dist in zip(near_indices.cpu().numpy(), near_distances.cpu().numpy()):
-                        # Continue collecting for all vertices until max_inputs_per_cluster
-
                         # Calculate batch and sequence position
                         batch_idx = idx // args.activity_seq_len
                         seq_idx = idx % args.activity_seq_len
 
-                        # Get full sequence tokens
-                        sequence_tokens = tokens[batch_idx].cpu().numpy()
+                        # Create unique key for this (sequence, vertex) pair
+                        key = (int(batch_idx), int(i))
 
-                        # Decode full text
-                        full_text = tokenizer.decode(sequence_tokens)
+                        # If first time seeing this sequence for this vertex, initialize
+                        if key not in batch_samples:
+                            # Get full sequence tokens
+                            sequence_tokens = tokens[batch_idx].cpu().numpy()
+                            full_text = tokenizer.decode(sequence_tokens)
 
-                        # Decode trigger token
-                        trigger_token_id = sequence_tokens[seq_idx]
+                            batch_samples[key] = {
+                                "vertex_id": int(i),
+                                "distances_to_vertex": [],
+                                "full_text": full_text,
+                                "trigger_token_indices": [],
+                                "trigger_words": [],
+                            }
+
+                        # Add this token's information to the accumulated sample
+                        trigger_token_id = tokens[batch_idx, seq_idx].cpu().item()
                         trigger_word = tokenizer.decode([trigger_token_id])
 
-                        # Create sample record
-                        sample = {
-                            "vertex_id": int(i),
-                            "distance_to_vertex": float(dist),
-                            "full_text": full_text,
-                            "trigger_token_index": int(seq_idx),
-                            "trigger_word": trigger_word,
-                            "sequence_position": f"token {seq_idx} of {args.activity_seq_len}"
-                        }
+                        batch_samples[key]["distances_to_vertex"].append(float(dist))
+                        batch_samples[key]["trigger_token_indices"].append(int(seq_idx))
+                        batch_samples[key]["trigger_words"].append(trigger_word)
 
-                        # Write to file immediately
-                        samples_file.write(json.dumps(sample) + '\n')
-
-                        vertex_stats[i]["samples"] += 1
-                        samples_saved += 1
+                # Write all accumulated samples to file
+                for sample in batch_samples.values():
+                    samples_file.write(json.dumps(sample) + '\n')
+                    vertex_stats[sample["vertex_id"]]["samples"] += 1
+                    samples_saved += 1
 
                 total_inputs_processed += acts_flat.shape[0]
 
