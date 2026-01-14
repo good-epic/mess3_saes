@@ -69,15 +69,17 @@ def parse_args():
     # Selection parameters
     parser.add_argument("--n_clusters_list", type=str, required=True,
                        help="Comma-separated list of n_clusters values to process (e.g., '128,256,512,768')")
-    parser.add_argument("--corrected_csv_dir", type=str,
+    parser.add_argument("--csv_dir", type=str,
                        default="outputs/real_data_analysis_canonical",
-                       help="Directory containing corrected CSV files")
+                       help="Directory containing CSV files with AANet metrics")
 
     # Output
     parser.add_argument("--save_dir", type=str, required=True,
                        help="Base directory to save refitted models")
     parser.add_argument("--skip_training", action="store_true",
-                       help="Skip Stage 1 (training), load existing manifest and only run Stage 2 (vertex collection)")
+                       help="Skip Stage 1 (AANet training), load pre-trained models and only run Stage 2 (vertex collection). Requires --stage1_models_dir.")
+    parser.add_argument("--stage1_models_dir", type=str, default=None,
+                       help="Directory containing Stage 1 AANet models (e.g., outputs/real_data_analysis_canonical/clusters_N/). Required when --skip_training is set. Models should be named aanet_cluster_{cid}_k{k}.pt")
 
     # Model & SAE
     parser.add_argument("--model_name", type=str, default="gemma-2-9b")
@@ -88,14 +90,20 @@ def parse_args():
     parser.add_argument("--hf_token", type=str, default=None)
 
     # Data streaming
-    parser.add_argument("--dataset_name", type=str, default="monology/pile-uncopyrighted")
-    parser.add_argument("--dataset_config", type=str, default="default")
+    parser.add_argument("--hf_dataset", type=str, default="HuggingFaceFW/fineweb",
+                       help="HuggingFace dataset identifier")
+    parser.add_argument("--hf_subset_name", type=str, default="sample-10BT",
+                       help="Dataset subset/config name")
     parser.add_argument("--dataset_split", type=str, default="train")
     parser.add_argument("--activity_batch_size", type=int, default=32)
     parser.add_argument("--activity_seq_len", type=int, default=128)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--aanet_prefetch_size", type=int, default=1024,
                        help="Prefetch buffer size for RealDataSampler")
+    parser.add_argument("--shuffle_buffer_size", type=int, default=50000,
+                       help="Shuffle buffer size for streaming dataset")
+    parser.add_argument("--max_doc_tokens", type=int, default=2000,
+                       help="Filter documents longer than this (approximate, uses ~4 chars/token)")
 
     # AANet training
     parser.add_argument("--aanet_streaming_steps", type=int, default=3000,
@@ -110,8 +118,19 @@ def parse_args():
     parser.add_argument("--aanet_gamma_archetypal", type=float, default=4.0)
     parser.add_argument("--aanet_gamma_extrema", type=float, default=2.0)
     parser.add_argument("--aanet_grad_clip", type=float, default=1.0)
-    parser.add_argument("--aanet_lr_patience", type=int, default=5)
-    parser.add_argument("--aanet_lr_factor", type=float, default=0.5)
+    parser.add_argument("--aanet_lr_patience", type=int, default=50,
+                       help="Reduce LR after this many steps without improvement")
+    parser.add_argument("--aanet_lr_factor", type=float, default=0.5,
+                       help="Factor to reduce LR by (new_lr = old_lr * factor)")
+    parser.add_argument("--aanet_min_lr", type=float, default=1e-6,
+                       help="Don't reduce LR below this value")
+    parser.add_argument("--aanet_early_stop_patience", type=int, default=500,
+                       help="Stop training after this many steps without improvement")
+    parser.add_argument("--aanet_min_delta", type=float, default=1e-6,
+                       help="Minimum change in loss to count as improvement")
+    parser.add_argument("--aanet_loss_smoothing_window",
+                       type=lambda x: int(x) if int(x) > 7 else parser.error("aanet_loss_smoothing_window must be at least 8"),
+                       default=20, help="Window size for smoothing loss before early stopping comparison")
     parser.add_argument("--aanet_seed", type=int, default=43)
     parser.add_argument("--aanet_active_threshold", type=float, default=1e-6,
                        help="Threshold for active samples in AAnet training")
@@ -144,8 +163,31 @@ def parse_args():
                        help="Hard cap on total inputs processed per cluster (fail-safe)")
     parser.add_argument("--vertex_save_interval", type=int, default=10000,
                        help="Save vertex samples every N inputs (for checkpointing)")
+    parser.add_argument("--vertex_skip_docs", type=int, default=None,
+                       help="Skip this many documents before vertex collection (required with --skip_training)")
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    # Validation: skip_training requires stage1_models_dir
+    if args.skip_training and args.stage1_models_dir is None:
+        parser.error("--skip_training requires --stage1_models_dir to specify where to load pre-trained models from")
+
+    # Validation: skip_training requires vertex_skip_docs
+    if args.skip_training and args.collect_vertex_samples and args.vertex_skip_docs is None:
+        parser.error("--skip_training with --collect_vertex_samples requires --vertex_skip_docs to specify where to start sampling")
+
+    # Warning: vertex_skip_docs without skip_training won't be used
+    if not args.skip_training and args.vertex_skip_docs is not None:
+        print("\nWARNING: --vertex_skip_docs is set but --skip_training is not enabled.")
+        print("         When training AANets, the sampler will naturally continue from where training ends.")
+        print("         The --vertex_skip_docs parameter will be ignored.\n")
+
+    # Warning: stage1_models_dir without skip_training won't be used
+    if not args.skip_training and args.stage1_models_dir is not None:
+        print("\nWARNING: --stage1_models_dir is set but --skip_training is not enabled.")
+        print("         Models will be trained from scratch. The --stage1_models_dir parameter will be ignored.\n")
+
+    return args
 
 
 def select_promising_clusters(df, n_clusters_val, delta_k_threshold=1, sd_outlier=3, sd_strong=1):
@@ -236,7 +278,7 @@ def select_promising_clusters(df, n_clusters_val, delta_k_threshold=1, sd_outlie
     return selected_clusters, category_stats
 
 
-def load_selected_clusters(corrected_csv_dir, n_clusters_list):
+def load_selected_clusters(csv_dir, n_clusters_list):
     """
     Load selected clusters using the same logic as analyze_aanet_results.py
 
@@ -260,8 +302,8 @@ def load_selected_clusters(corrected_csv_dir, n_clusters_list):
         print(f"Loading selected clusters for n_clusters={n_clusters}")
         print(f"{'='*80}")
 
-        # Load corrected CSV
-        csv_path = Path(corrected_csv_dir) / f"clusters_{n_clusters}" / f"consolidated_metrics_n{n_clusters}_corrected.csv"
+        # Load CSV with metrics
+        csv_path = Path(csv_dir) / f"clusters_{n_clusters}" / f"consolidated_metrics_n{n_clusters}.csv"
         if not csv_path.exists():
             print(f"WARNING: CSV not found at {csv_path}, skipping")
             continue
@@ -269,44 +311,27 @@ def load_selected_clusters(corrected_csv_dir, n_clusters_list):
         df = pd.read_csv(csv_path)
         df['n_clusters_total'] = n_clusters
 
-        # Calculate elbow metrics (same as in plot_cluster_selection.py)
-        def calculate_elbow_score(x, y):
-            if len(x) < 3:
-                return None, 0.0
-            x_norm = (np.array(x) - x[0]) / (x[-1] - x[0]) if x[-1] != x[0] else np.zeros_like(x)
-            y_norm = (np.array(y) - y[-1]) / (y[0] - y[-1]) if y[0] != y[-1] else np.zeros_like(y)
-            distances = np.abs(x_norm + y_norm - 1) / np.sqrt(2)
-            elbow_idx = np.argmax(distances)
-            return x[elbow_idx], distances[elbow_idx]
-
+        # Read elbow metrics directly from CSV (calculated by analyze_real_saes.py)
+        # Note: Elbow metrics are per-cluster, so they're identical across all k rows for a given cluster
         elbow_results = []
         for cluster_id, group in df.groupby('cluster_id'):
-            group = group.sort_values('aanet_k')
-            if len(group) < 3:
-                continue
-
-            k_vals = group['aanet_k'].values
-            recon_losses = group['aanet_recon_loss'].values
-            arch_losses = group['aanet_archetypal_loss'].values
-
-            recon_k, recon_strength = calculate_elbow_score(k_vals, recon_losses)
-            arch_k, arch_strength = calculate_elbow_score(k_vals, arch_losses)
-            k_diff = abs(recon_k - arch_k) if (recon_k and arch_k) else np.nan
+            # Take the first row for this cluster (all rows have same elbow metrics)
+            row = group.iloc[0]
 
             elbow_results.append({
                 'n_clusters_total': n_clusters,
                 'cluster_id': cluster_id,
-                'n_latents': group['n_latents'].iloc[0],
-                'latent_indices': group['latent_indices'].iloc[0],
-                'aanet_recon_loss_elbow_k': recon_k,
-                'aanet_recon_loss_elbow_strength': recon_strength,
-                'aanet_archetypal_loss_elbow_k': arch_k,
-                'aanet_archetypal_loss_elbow_strength': arch_strength,
-                'k_differential': k_diff,
-                'recon_is_monotonic': group['recon_is_monotonic'].iloc[0],
-                'arch_is_monotonic': group['arch_is_monotonic'].iloc[0],
-                'recon_pct_decrease': group['recon_pct_decrease'].iloc[0],
-                'arch_pct_decrease': group['arch_pct_decrease'].iloc[0],
+                'n_latents': row['n_latents'],
+                'latent_indices': row['latent_indices'],
+                'aanet_recon_loss_elbow_k': row['aanet_recon_loss_elbow_k'],
+                'aanet_recon_loss_elbow_strength': row['aanet_recon_loss_elbow_strength'],
+                'aanet_archetypal_loss_elbow_k': row['aanet_archetypal_loss_elbow_k'],
+                'aanet_archetypal_loss_elbow_strength': row['aanet_archetypal_loss_elbow_strength'],
+                'k_differential': row['k_differential'],
+                'recon_is_monotonic': row['recon_is_monotonic'],
+                'arch_is_monotonic': row['arch_is_monotonic'],
+                'recon_pct_decrease': row['recon_pct_decrease'],
+                'arch_pct_decrease': row['arch_pct_decrease'],
             })
 
         elbow_df = pd.DataFrame(elbow_results)
@@ -496,7 +521,7 @@ def train_single_cluster(cluster_info, model, sae, sampler, args):
             del extrema
         torch.cuda.empty_cache()
 
-    # Training loop
+    # Training loop with early stopping
     metrics_history = {
         "loss": [],
         "reconstruction_loss": [],
@@ -504,7 +529,14 @@ def train_single_cluster(cluster_info, model, sae, sampler, args):
         "extrema_loss": []
     }
 
-    print(f"  Starting training ({args.aanet_streaming_steps} steps)...")
+    # Early stopping tracking
+    best_loss = float('inf')
+    steps_since_improvement = 0
+    best_step = 0
+    check_interval = (args.aanet_loss_smoothing_window // 2) + (args.aanet_loss_smoothing_window // 4) # Check every 3/4-window
+
+    print(f"  Starting training (max {args.aanet_streaming_steps} steps, early stop patience={args.aanet_early_stop_patience})...")
+    print(f"  Early stopping will check every {check_interval} steps using {args.aanet_loss_smoothing_window}-step smoothed loss")
     for step in tqdm(range(args.aanet_streaming_steps), desc=f"Training"):
         # Sample batch
         tokens = sampler.sample_tokens_batch(args.aanet_batch_size, args.activity_seq_len, args.device)
@@ -518,10 +550,41 @@ def train_single_cluster(cluster_info, model, sae, sampler, args):
         # Train step
         step_losses = trainer.train_step(feature_acts)
 
-        # Record metrics
+        # Record metrics and update scheduler
         if cluster_id in step_losses:
+            current_loss = step_losses[cluster_id]['loss']
+
             for key, value in step_losses[cluster_id].items():
                 metrics_history[key].append(value)
+
+            # Step LR scheduler
+            current_lr = trainer.optimizers[cluster_id].param_groups[0]['lr']
+            if current_lr > args.aanet_min_lr:
+                trainer.schedulers[cluster_id].step(current_loss)
+                new_lr = trainer.optimizers[cluster_id].param_groups[0]['lr']
+                if new_lr != current_lr:
+                    print(f"\n  Step {step}: LR reduced from {current_lr:.2e} to {new_lr:.2e}")
+
+            # Early stopping check - only compare at intervals to avoid overlapping windows
+            # Check every half-window to ensure meaningful separation between comparisons
+            if step % check_interval == 0 and len(metrics_history['loss']) >= args.aanet_loss_smoothing_window:
+                # Use smoothed loss (mean over window)
+                smoothed_loss = np.mean(metrics_history['loss'][-args.aanet_loss_smoothing_window:])
+
+                if smoothed_loss < best_loss - args.aanet_min_delta:
+                    best_loss = smoothed_loss
+                    steps_since_improvement = -1  # Will become 0 after increment below
+                    best_step = step
+                    print(f"\n  Step {step}: New best smoothed loss: {best_loss:.6f}")
+
+            # Always increment step counter
+            steps_since_improvement += 1
+
+            # Check for early stopping
+            if steps_since_improvement >= args.aanet_early_stop_patience:
+                print(f"\n  Early stopping at step {step} (best smoothed loss {best_loss:.6f} at step {best_step})")
+                print(f"  No improvement for {steps_since_improvement} steps")
+                break
 
         # Cleanup
         del tokens, cache, acts, acts_flat, feature_acts
@@ -616,7 +679,16 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
         simplex_scale=args.aanet_simplex_scale,
         device=args.device
     )
-    aanet.load_state_dict(torch.load(model_path))
+
+    # Load model from Stage 1 if skipping training, otherwise from refit output
+    if 'stage1_model_path' in cluster_metadata:
+        load_path = Path(cluster_metadata['stage1_model_path'])
+        print(f"  Loading pre-trained model from Stage 1: {load_path}")
+    else:
+        load_path = model_path
+        print(f"  Loading model: {load_path}")
+
+    aanet.load_state_dict(torch.load(load_path))
     aanet.eval()
 
     # Get hook name
@@ -865,15 +937,15 @@ def main():
     print("\n" + "="*80)
     print("LOADING SELECTED CLUSTERS")
     print("="*80)
-    selected_clusters = load_selected_clusters(args.corrected_csv_dir, n_clusters_list)
+    selected_clusters = load_selected_clusters(args.csv_dir, n_clusters_list)
     print(f"\nTotal selected clusters: {len(selected_clusters)}")
 
     # Check if we found any clusters
     if len(selected_clusters) == 0:
         print("\n" + "="*80)
-        print("ERROR: No clusters selected! Check that corrected CSV files exist.")
+        print("ERROR: No clusters selected! Check that CSV files exist.")
         print("="*80)
-        print(f"Expected location: {args.corrected_csv_dir}/clusters_*/consolidated_metrics_n*_corrected.csv")
+        print(f"Expected location: {args.csv_dir}/clusters_*/consolidated_metrics_n*.csv")
         return
 
     # Load model and SAE (shared across all clusters)
@@ -917,34 +989,68 @@ def main():
     print("\n" + "="*80)
     print("INITIALIZING DATA SAMPLER")
     print("="*80)
+
+    # Seed Python's random for reproducibility
+    import random
+    random.seed(args.seed)
+    print(f"Set Python random seed to {args.seed}")
+
     sampler = RealDataSampler(
         model,
-        dataset_name=args.dataset_name,
-        dataset_config=args.dataset_config,
+        hf_dataset=args.hf_dataset,
+        hf_subset_name=args.hf_subset_name,
         split=args.dataset_split,
         seed=args.seed,
-        prefetch_size=args.aanet_prefetch_size
+        prefetch_size=args.aanet_prefetch_size,
+        shuffle_buffer_size=args.shuffle_buffer_size,
+        max_doc_tokens=args.max_doc_tokens
     )
 
     # Stage 1: Train clusters (or load existing)
     manifest_path = Path(args.save_dir) / "manifest.json"
 
     if args.skip_training:
-        # Load existing manifest
+        # Load pre-trained models from Stage 1
         print("\n" + "="*80)
-        print("SKIPPING STAGE 1: Loading existing manifest")
+        print("SKIPPING STAGE 1: Loading pre-trained models from Stage 1 outputs")
         print("="*80)
+        print(f"Stage 1 models directory: {args.stage1_models_dir}")
 
-        if not manifest_path.exists():
-            print(f"\nERROR: Cannot skip training - manifest not found at {manifest_path}")
-            print("Run without --skip_training first to train the models.")
+        # Build metadata from selected clusters
+        all_metadata = []
+        for cluster_info in selected_clusters:
+            n_clusters = cluster_info['n_clusters']
+            cluster_id = cluster_info['cluster_id']
+            k = cluster_info['arch_elbow_k']  # Use archetypal elbow k
+            category = cluster_info['category']
+            latent_indices = cluster_info['latent_indices']
+
+            # Check if model exists in Stage 1 output
+            stage1_model_path = Path(args.stage1_models_dir) / f"clusters_{n_clusters}" / f"aanet_cluster_{cluster_id}_k{k}.pt"
+
+            if not stage1_model_path.exists():
+                print(f"\nWARNING: Model not found for cluster {cluster_id} k={k}")
+                print(f"  Expected: {stage1_model_path}")
+                print(f"  Skipping this cluster...")
+                continue
+
+            # Metadata structure matching what training produces
+            all_metadata.append({
+                'n_clusters': n_clusters,
+                'cluster_id': cluster_id,
+                'k': k,
+                'category': category,
+                'latent_indices': latent_indices,
+                'n_latents': len(latent_indices),
+                'stage1_model_path': str(stage1_model_path),  # Store original path
+            })
+
+        print(f"Found {len(all_metadata)} pre-trained models from Stage 1")
+
+        if len(all_metadata) == 0:
+            print("\nERROR: No pre-trained models found!")
+            print(f"Check that Stage 1 models exist in: {args.stage1_models_dir}")
             return
-
-        with open(manifest_path, 'r') as f:
-            manifest = json.load(f)
-
-        all_metadata = manifest['clusters']
-        print(f"Loaded {len(all_metadata)} trained clusters from manifest")
 
     else:
         # Train each cluster
@@ -989,6 +1095,26 @@ def main():
         print(f"{'='*80}")
         print(f"Target: {args.samples_per_vertex} samples per vertex")
         print(f"Distance threshold: {args.vertex_distance_threshold}")
+
+        # Skip ahead in the dataset if using --skip_training
+        # (When training, sampler naturally continues from where training ended)
+        if args.skip_training and args.vertex_skip_docs and args.vertex_skip_docs > 0:
+            print(f"\n  Skipping ahead {args.vertex_skip_docs:,} documents to avoid training data...")
+            docs_skipped = 0
+            while docs_skipped < args.vertex_skip_docs:
+                try:
+                    _ = next(sampler.iterator)
+                    docs_skipped += 1
+                    if docs_skipped % 10000 == 0:
+                        print(f"    Skipped {docs_skipped:,}/{args.vertex_skip_docs:,} documents...")
+                except StopIteration:
+                    # Reached end of dataset, reset iterator
+                    sampler.iterator = iter(sampler.dataset)
+                    print(f"    Reached end of dataset, wrapped around")
+            print(f"  ✓ Skipped {docs_skipped:,} documents, now sampling from fresh data")
+        elif not args.skip_training:
+            print(f"\n  Sampler will continue from where AANet training finished (no skip needed)")
+
         print(f"Processing clusters sequentially...")
 
         vertex_collection_results = []

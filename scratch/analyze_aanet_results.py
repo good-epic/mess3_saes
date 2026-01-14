@@ -10,13 +10,22 @@ from pathlib import Path
 base_dir = Path(__file__).parent.parent / "outputs" / "real_data_analysis_canonical"
 n_clusters_list = [128, 256, 512, 768]
 
-# Load all consolidated metrics (corrected versions)
+# NOTE: As of the latest updates, analyze_real_saes.py now outputs the full CSV
+# with all quality metrics (elbow metrics, monotonicity, pct_decrease, etc.)
+# directly in consolidated_metrics_n{n}.csv - no separate "corrected" version needed.
+# This script is kept for ad-hoc exploration and manual cluster selection.
+
+# Load all consolidated metrics
 all_metrics = {}
 for n in n_clusters_list:
-    csv_path = base_dir / f"clusters_{n}" / f"consolidated_metrics_n{n}_corrected.csv"
+    # Try standard CSV first (new behavior), fall back to _corrected (old behavior)
+    csv_path = base_dir / f"clusters_{n}" / f"consolidated_metrics_n{n}.csv"
+    if not csv_path.exists():
+        csv_path = base_dir / f"clusters_{n}" / f"consolidated_metrics_n{n}_corrected.csv"
+
     if csv_path.exists():
         all_metrics[n] = pd.read_csv(csv_path)
-        print(f"Loaded n={n}: {len(all_metrics[n])} rows")
+        print(f"Loaded n={n}: {len(all_metrics[n])} rows from {csv_path.name}")
     else:
         print(f"Missing: {csv_path}")
 

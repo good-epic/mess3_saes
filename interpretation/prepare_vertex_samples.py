@@ -55,17 +55,39 @@ def load_vertex_samples(samples_path, max_samples_per_vertex=None):
     return dict(samples_by_vertex)
 
 
-def prepare_cluster_samples(cluster_metadata, max_samples_per_vertex):
+def prepare_cluster_samples(cluster_metadata, vertex_collection_results, max_samples_per_vertex):
     """Prepare samples for one cluster."""
     cluster_id = cluster_metadata['cluster_id']
     n_clusters = cluster_metadata['n_clusters']
-    k = cluster_metadata['arch_elbow_k']
+    k = cluster_metadata.get('arch_elbow_k', cluster_metadata.get('k'))
 
     print(f"\nProcessing cluster {cluster_id} (n={n_clusters}, k={k})")
 
-    # Load vertex samples
+    # Find vertex collection results for this cluster
+    collection_result = None
+    if vertex_collection_results:
+        for result in vertex_collection_results:
+            if result['cluster_id'] == cluster_id and result['n_clusters'] == n_clusters:
+                collection_result = result
+                # Update k and category from collection result if available
+                k = collection_result.get('k', k)
+                break
+
+    # Determine samples path
     if 'vertex_samples_path' in cluster_metadata:
+        # Old format: path directly in cluster metadata
         samples_path = cluster_metadata['vertex_samples_path']
+    elif collection_result and 'all_coords_path' in collection_result:
+        # New format: construct from all_coords_path
+        import os
+        coords_path = collection_result['all_coords_path']
+        # Replace _all_barycentric_coords.jsonl with _vertex_samples.jsonl
+        samples_path = coords_path.replace('_all_barycentric_coords.jsonl', '_vertex_samples.jsonl')
+
+        # Handle local vs RunPod paths
+        if samples_path.startswith('/workspace/'):
+            # Convert RunPod path to local path
+            samples_path = samples_path.replace('/workspace/outputs/', 'outputs/')
     else:
         # Samples weren't collected for this cluster
         print(f"  No vertex samples collected for this cluster")
@@ -82,6 +104,11 @@ def prepare_cluster_samples(cluster_metadata, max_samples_per_vertex):
     for vertex_id, samples in sorted(samples_by_vertex.items()):
         print(f"    Vertex {vertex_id}: {len(samples)} samples")
 
+    # Get category from collection result or cluster metadata
+    category = cluster_metadata.get('category', 'unknown')
+    if collection_result and 'category' in collection_result:
+        category = collection_result['category']
+
     # Create prepared sample structure
     prepared = {
         'cluster_id': cluster_id,
@@ -89,7 +116,7 @@ def prepare_cluster_samples(cluster_metadata, max_samples_per_vertex):
         'k': k,
         'n_latents': cluster_metadata['n_latents'],
         'latent_indices': cluster_metadata['latent_indices'],
-        'category': cluster_metadata.get('category', 'unknown'),
+        'category': category,
         'vertices': samples_by_vertex,
         'total_samples_available': total_samples,
     }
@@ -114,12 +141,18 @@ def main():
     # Load manifest
     manifest = load_manifest(args.manifest)
 
+    # Get vertex collection results if available
+    vertex_collection_results = None
+    if 'vertex_collection' in manifest and manifest['vertex_collection'].get('enabled'):
+        vertex_collection_results = manifest['vertex_collection'].get('results', [])
+        print(f"\nFound vertex collection results for {len(vertex_collection_results)} clusters")
+
     # Process each cluster
     prepared_count = 0
     skipped_count = 0
 
     for cluster_metadata in manifest['clusters']:
-        prepared = prepare_cluster_samples(cluster_metadata, args.max_samples_per_vertex)
+        prepared = prepare_cluster_samples(cluster_metadata, vertex_collection_results, args.max_samples_per_vertex)
 
         if prepared is None:
             skipped_count += 1

@@ -67,7 +67,11 @@ INPUT FORMAT:
     "confidence": ["high|medium|low", "high|medium|low"]
     "reasoning": ["Brief explanation for proposal 0 with specific evidence from samples",
                   "Brief explanation for proposal 1 with specific evidence from samples"]
-  }
+  },
+  iteration: 1,
+  vertex: 0,
+  proposals: {...},
+  ...
 }
 
 OUTPUT FORMAT:

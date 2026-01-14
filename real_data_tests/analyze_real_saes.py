@@ -31,9 +31,10 @@ def compute_cluster_activation_pca_ranks(
     sampler,
     clustering_result,
     hook_name,
-    n_samples=5,
-    batch_size=512,
+    num_cycles=80,
+    batch_size=256,
     seq_len=128,
+    max_samples=100000,
     variance_threshold=0.95,
     device='cuda'
 ):
@@ -46,9 +47,10 @@ def compute_cluster_activation_pca_ranks(
         sampler: RealDataSampler for getting diverse batches
         clustering_result: ClusteringResult with cluster_labels
         hook_name: Hook name for model.run_with_cache
-        n_samples: Number of diverse batches to sample per cluster (default 5)
-        batch_size: Batch size for forward passes (default 256, matches AAnet batch size)
+        num_cycles: Number of sampling cycles (each cycle samples batch_size sequences). Default 80 → ~5M token positions before filtering
+        batch_size: Batch size for forward passes (hardcoded to 256 for memory safety)
         seq_len: Sequence length (default 128)
+        max_samples: Maximum samples for PCA (randomly subsample if exceeded). Limits computation/memory.
         variance_threshold: Variance explained threshold for practical rank (default 0.95)
         device: Device to run on
 
@@ -79,10 +81,10 @@ def compute_cluster_activation_pca_ranks(
             pca_results[cluster_id] = {"avg_rank": 1, "avg_variance": 1.0}
             continue
 
-        # Collect activations from n_samples diverse batches
+        # Collect activations from num_cycles diverse batches
         all_activations = []
 
-        for sample_idx in range(n_samples):
+        for cycle_idx in range(num_cycles):
             # Sample a batch of tokens
             tokens = sampler.sample_tokens_batch(batch_size, seq_len, device)
 
@@ -104,13 +106,43 @@ def compute_cluster_activation_pca_ranks(
                     cluster_acts_active = cluster_acts[active_mask].cpu().numpy()
                     all_activations.append(cluster_acts_active)
 
+            # Clear CUDA cache and force garbage collection after each cycle to avoid memory accumulation
+            torch.cuda.empty_cache()
+            gc.collect()
+
         if not all_activations:
             # No active samples found
+            print(f"  WARNING: Cluster {cluster_id} - No active samples found after {num_cycles} cycles!")
             pca_results[cluster_id] = {"avg_rank": 0, "avg_variance": 0.0}
             continue
 
         # Concatenate all samples
         X = np.vstack(all_activations)  # (n_total_samples, n_cluster_latents)
+        n_samples_collected = X.shape[0]
+        n_latents = X.shape[1]
+
+        # Calculate filtering efficiency
+        total_possible = num_cycles * batch_size * seq_len
+        efficiency = 100 * n_samples_collected / total_possible
+
+        # Subsample if we collected more than max_samples
+        if n_samples_collected > max_samples:
+            # Randomly subsample to max_samples
+            rng = np.random.RandomState(42)  # Fixed seed for reproducibility
+            subsample_indices = rng.choice(n_samples_collected, size=max_samples, replace=False)
+            X = X[subsample_indices]
+            print(f"  Cluster {cluster_id}: Subsampled {n_samples_collected:,} → {max_samples:,} samples for PCA")
+            n_samples_used = max_samples
+        else:
+            n_samples_used = n_samples_collected
+
+        # Warn if we got very few samples
+        if n_samples_collected < 1000:
+            print(f"  WARNING: Cluster {cluster_id} - Only {n_samples_collected:,} samples collected "
+                  f"({efficiency:.1f}% hit rate) for {n_latents} latents. Consider increasing --pca_num_cycles")
+        elif n_samples_collected < n_latents * 2:
+            print(f"  WARNING: Cluster {cluster_id} - {n_samples_collected:,} samples < 2× latents ({n_latents}). "
+                  f"PCA may be unreliable.")
 
         if X.shape[0] < 2:
             pca_results[cluster_id] = {"avg_rank": 1, "avg_variance": 1.0}
@@ -130,10 +162,25 @@ def compute_cluster_activation_pca_ranks(
 
         pca_results[cluster_id] = {
             "avg_rank": int(practical_rank),
-            "avg_variance": float(variance_explained)
+            "avg_variance": float(variance_explained),
+            "n_samples_collected": n_samples_collected,
+            "n_samples_used": n_samples_used,
+            "n_latents": n_latents
         }
         torch.cuda.empty_cache()
         gc.collect()
+
+    # Print summary statistics
+    if pca_results:
+        ranks = [r["avg_rank"] for r in pca_results.values() if r["avg_rank"] > 0]
+        samples_collected = [r.get("n_samples_collected", 0) for r in pca_results.values()]
+        samples_used = [r.get("n_samples_used", 0) for r in pca_results.values()]
+        if ranks and samples_collected:
+            print(f"\n  PCA Summary: {len(pca_results)} clusters")
+            print(f"    Rank range: {min(ranks)} - {max(ranks)}, median: {np.median(ranks):.0f}")
+            print(f"    Samples collected: {min(samples_collected):,} - {max(samples_collected):,}, median: {np.median(samples_collected):,.0f}")
+            if any(s > max_samples for s in samples_collected):
+                print(f"    Samples used (after subsampling): {min(samples_used):,} - {max(samples_used):,}, median: {np.median(samples_used):,.0f}")
 
     return pca_results
 
@@ -202,12 +249,29 @@ def main():
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--cache_dir", type=str, default=None, help="Directory for Hugging Face cache")
-    parser.add_argument("--dataset_name", type=str, default="wikitext", help="Dataset name for text sampling (e.g., 'wikitext', 'monology/pile-uncopyrighted')")
-    parser.add_argument("--dataset_config", type=str, default="wikitext-103-v1", help="Dataset config (use 'default' for The Pile, None will be converted to default)")
+
+    # Data streaming
+    parser.add_argument("--hf_dataset", type=str, default="HuggingFaceFW/fineweb", help="HuggingFace dataset identifier")
+    parser.add_argument("--hf_subset_name", type=str, default="sample-10BT", help="Dataset subset/config name")
     parser.add_argument("--dataset_split", type=str, default="train", help="Dataset split to use")
+    parser.add_argument("--aanet_prefetch_size", type=int, default=1024, help="Prefetch buffer size for RealDataSampler")
+    parser.add_argument("--shuffle_buffer_size", type=int, default=50000, help="Shuffle buffer size for streaming dataset")
+    parser.add_argument("--max_doc_tokens", type=int, default=3000, help="Filter documents longer than this (approximate, uses ~4 chars/token)")
     parser.add_argument("--activity_batch_size", type=int, default=16, help="Batch size for activity stats")
     parser.add_argument("--activity_batches", type=int, default=1024, help="Number of batches for activity stats")
     parser.add_argument("--activity_seq_len", type=int, default=128, help="Sequence length for activity stats")
+
+    # PCA rank estimation parameters
+    parser.add_argument("--pca_num_cycles", type=int, default=80,
+                       help="Number of data sampling cycles for PCA rank estimation. "
+                            "Each cycle: 256 sequences × seq_len tokens = 256 × 256 = 65,536 token positions. "
+                            "Default 80 cycles = 5.24M token positions sampled (before sparsity filtering). "
+                            "After filtering (~30-50%% hit rate) → ~2M samples per cluster.")
+    parser.add_argument("--pca_max_samples", type=int, default=100000,
+                       help="Maximum number of samples to use for PCA (randomly subsampled if more collected). "
+                            "Limits computational cost and memory usage. Default 100K is good for up to ~1000-D.")
+    parser.add_argument("--pca_variance_threshold", type=float, default=0.95,
+                       help="Variance threshold for PCA rank estimation (fraction of variance to explain)")
     parser.add_argument("--subspace_variance_threshold", type=float, default=0.95, help="Variance threshold for rank estimation")
     parser.add_argument("--subspace_gap_threshold", type=float, default=2.0, help="Eigengap threshold for rank estimation")
 
@@ -228,15 +292,20 @@ def main():
     parser.add_argument("--aanet_seed", type=int, default=43, help="Base seed for AAnet training.")
     parser.add_argument("--aanet_val_fraction", type=float, default=0.1, help="Fraction of samples reserved for validation per cluster.")
     parser.add_argument("--aanet_val_min_size", type=int, default=256, help="Minimum number of samples required for a validation split.")
-    parser.add_argument("--aanet_early_stop_patience", type=int, default=10, help="Early stopping patience based on validation loss.")
-    parser.add_argument("--aanet_early_stop_delta", type=float, default=1e-4, help="Minimum improvement in validation loss to reset patience.")
-    parser.add_argument("--aanet_lr_patience", type=int, default=5, help="ReduceLROnPlateau patience in epochs.")
+
+    # Early stopping and LR scheduling parameters
+    parser.add_argument("--aanet_lr_patience", type=int, default=30, help="Reduce LR after this many steps without improvement")
     parser.add_argument("--aanet_lr_factor", type=float, default=0.5, help="Factor to reduce learning rate when plateau is detected.")
+    parser.add_argument("--aanet_min_lr", type=float, default=1e-6, help="Don't reduce LR below this value")
+    parser.add_argument("--aanet_early_stop_patience", type=int, default=250, help="Stop training after this many steps without improvement")
+    parser.add_argument("--aanet_min_delta", type=float, default=1e-6, help="Minimum change in loss to count as improvement")
+    parser.add_argument("--aanet_loss_smoothing_window",
+                       type=lambda x: int(x) if int(x) > 7 else parser.error("aanet_loss_smoothing_window must be at least 8"),
+                       default=20, help="Window size for smoothing loss before early stopping comparison")
     parser.add_argument("--aanet_grad_clip", type=float, default=1.0, help="Gradient clipping norm (set <=0 to disable).")
     parser.add_argument("--aanet_restarts_no_extrema", type=int, default=3, help="Number of random restarts when no warm-start extrema are available.")
     parser.add_argument("--aanet_streaming_steps", type=int, default=1000, help="Number of streaming steps (batches) for AAnet training.")
     parser.add_argument("--aanet_warmup_steps", type=int, default=50, help="Number of batches to collect for extrema initialization.")
-    parser.add_argument("--aanet_prefetch_size", type=int, default=1024, help="Prefetch buffer size for RealDataSampler.")
     parser.add_argument("--aanet_k_min", type=int, default=2, help="Minimum k for AAnet.")
     parser.add_argument("--aanet_k_max", type=int, default=8, help="Maximum k for AAnet.")
     parser.add_argument("--aanet_warmup_max_per_cluster", type=int, default=1000, help="Max samples per cluster for extrema finding.")
@@ -290,16 +359,23 @@ def main():
     print(f"SAE Hook Name: {hook_name}")
 
     print("Initializing RealDataSampler...")
-    # Handle dataset config (The Pile doesn't use a config, just pass None or "default")
-    dataset_config = None if args.dataset_config.lower() in ["none", "default"] else args.dataset_config
-    print(f"Using dataset: {args.dataset_name}, config: {dataset_config}, split: {args.dataset_split}")
+    # Seed Python's random for reproducibility
+    import random
+    random.seed(args.seed)
+    print(f"Set Python random seed to {args.seed}")
+
+    # Handle dataset config (None means no subset)
+    hf_subset = None if args.hf_subset_name.lower() == "none" else args.hf_subset_name
+    print(f"Using dataset: {args.hf_dataset}, subset: {hf_subset}, split: {args.dataset_split}")
     sampler = RealDataSampler(
         model,
-        dataset_name=args.dataset_name,
-        dataset_config=dataset_config,
+        hf_dataset=args.hf_dataset,
+        hf_subset_name=hf_subset,
         split=args.dataset_split,
         seed=args.seed,
-        prefetch_size=args.aanet_prefetch_size
+        prefetch_size=args.aanet_prefetch_size,
+        shuffle_buffer_size=args.shuffle_buffer_size,
+        max_doc_tokens=args.max_doc_tokens
     )
     
 
@@ -424,16 +500,20 @@ def main():
             gc.collect()
 
             print(f"\nComputing activation PCA ranks for {result.n_clusters} clusters...")
+            total_tokens = args.pca_num_cycles * 256 * args.activity_seq_len
+            print(f"  Using {args.pca_num_cycles} cycles × 256 sequences × {args.activity_seq_len} tokens = {total_tokens:,} token positions sampled")
+            print(f"  Max samples per cluster: {args.pca_max_samples:,} (will subsample if exceeded)")
             pca_ranks = compute_cluster_activation_pca_ranks(
                 model=model,
                 sae=sae,
                 sampler=sampler,
                 clustering_result=result,
                 hook_name=hook_name,
-                n_samples=5,
-                batch_size=256,  # Reduced from 1024 to avoid OOM
+                num_cycles=args.pca_num_cycles,
+                batch_size=256,  # Hardcoded for memory safety
                 seq_len=args.activity_seq_len,
-                variance_threshold=0.95,
+                max_samples=args.pca_max_samples,
+                variance_threshold=args.pca_variance_threshold,
                 device=args.device
             )
 
@@ -656,24 +736,65 @@ def main():
 
                 # Streaming Loop for this k
                 metrics_history = {cid: {"loss": [], "reconstruction_loss": [], "archetypal_loss": [], "extrema_loss": []} for cid in trainer.models.keys()}
-                
+
+                # Early stopping tracking (per cluster)
+                best_losses = {cid: float('inf') for cid in trainer.models.keys()}
+                steps_since_improvement = {cid: 0 for cid in trainer.models.keys()}
+                best_steps = {cid: 0 for cid in trainer.models.keys()}
+                stopped_clusters = set()
+                check_interval = (args.aanet_loss_smoothing_window // 2) + (args.aanet_loss_smoothing_window // 4)  # Check every 3/4-window
+
                 print(f"Starting Streaming Training for k={k} ({args.aanet_streaming_steps} steps)...")
                 for step in tqdm(range(args.aanet_streaming_steps), desc=f"Streaming k={k}"):
+                    # Skip if all clusters stopped
+                    if len(stopped_clusters) == len(trainer.models):
+                        print(f"\nAll clusters have stopped early at step {step}")
+                        break
+
                     # 1. Stream ONE batch
                     tokens = sampler.sample_tokens_batch(args.aanet_batch_size, args.activity_seq_len, args.device)
-                    
+
                     with torch.no_grad():
                         _, cache = model.run_with_cache(tokens, return_type=None, names_filter=[hook_name])
                         acts = cache[hook_name]
                         acts_flat = acts.reshape(-1, acts.shape[-1])
                         feature_acts, _, _ = sae_encode_features(sae, acts_flat)
-                    
+
                     # 2. Train (Distribute to all clusters in this trainer)
                     step_losses = trainer.train_step(feature_acts)
                     for cid, metrics in step_losses.items():
+                        if cid in stopped_clusters:
+                            continue
                         for key, value in metrics.items():
                             metrics_history[cid][key].append(value)
-                    
+
+                        # Early stopping and LR scheduling for this cluster
+                        current_loss = metrics['loss']
+
+                        # Step LR scheduler
+                        current_lr = trainer.optimizers[cid].param_groups[0]['lr']
+                        if current_lr > args.aanet_min_lr:
+                            trainer.schedulers[cid].step(current_loss)
+                            new_lr = trainer.optimizers[cid].param_groups[0]['lr']
+                            if new_lr != current_lr:
+                                print(f"\n  Cluster {cid}, Step {step}: LR reduced from {current_lr:.2e} to {new_lr:.2e}")
+
+                        # Early stopping check - only at intervals
+                        if step % check_interval == 0 and len(metrics_history[cid]['loss']) >= args.aanet_loss_smoothing_window:
+                            smoothed_loss = np.mean(metrics_history[cid]['loss'][-args.aanet_loss_smoothing_window:])
+
+                            if smoothed_loss < best_losses[cid] - args.aanet_min_delta:
+                                best_losses[cid] = smoothed_loss
+                                steps_since_improvement[cid] = -1  # Will become 0 after increment below
+                                best_steps[cid] = step
+                                print(f"\n  Cluster {cid}, Step {step}: New best smoothed loss: {best_losses[cid]:.6f}")
+
+                        steps_since_improvement[cid] += 1
+
+                        if steps_since_improvement[cid] >= args.aanet_early_stop_patience:
+                            print(f"\n  Cluster {cid}: Early stopping at step {step} (best smoothed loss {best_losses[cid]:.6f} at step {best_steps[cid]})")
+                            stopped_clusters.add(cid)
+
                     # 3. Discard batch
                     del tokens, cache, acts, acts_flat, feature_acts
                 
@@ -736,11 +857,25 @@ def main():
                     import json
                     with open(jsonl_path, "a") as f:
                         f.write(json.dumps(curve_data) + "\n")
-                
+
+                    # Save model weights
+                    model_path = os.path.join(output_dir, f"aanet_cluster_{cid}_k{k}.pt")
+                    torch.save(model_inst.state_dict(), model_path)
+
                 # Cleanup trainer
                 del trainer
                 torch.cuda.empty_cache()
                 gc.collect()
+
+            # Calculate elbow quality metrics after all k values complete
+            print(f"\nCalculating elbow quality metrics for n_clusters={n_clusters}...")
+            calculate_elbow_quality_metrics(csv_path, n_clusters)
+            print(f"Elbow quality metrics saved to {csv_path}")
+
+            # Generate analysis plots
+            print(f"\nGenerating analysis plots for n_clusters={n_clusters}...")
+            generate_analysis_plots(csv_path, n_clusters, output_dir)
+            print(f"Analysis plots generated for n_clusters={n_clusters}")
 
         else:
             print(f"Running Concurrent Training (all k at once) for k={args.aanet_k_min} to {args.aanet_k_max}...")
@@ -782,24 +917,67 @@ def main():
             # Streaming Loop
             print(f"Starting Streaming Training ({args.aanet_streaming_steps} steps)...")
             training_history = {k: {cid: {"loss": [], "reconstruction_loss": [], "archetypal_loss": [], "extrema_loss": []} for cid in trainer.models.keys()} for k, trainer in trainers.items()}
-            
+
+            # Early stopping tracking (per k, per cluster)
+            best_losses = {k: {cid: float('inf') for cid in trainer.models.keys()} for k, trainer in trainers.items()}
+            steps_since_improvement = {k: {cid: 0 for cid in trainer.models.keys()} for k, trainer in trainers.items()}
+            best_steps = {k: {cid: 0 for cid in trainer.models.keys()} for k, trainer in trainers.items()}
+            stopped_clusters = {k: set() for k in trainers.keys()}
+            check_interval = (args.aanet_loss_smoothing_window // 2) + (args.aanet_loss_smoothing_window // 4)  # Check every 3/4-window
+
             for step in tqdm(range(args.aanet_streaming_steps), desc="Streaming"):
+                # Check if all clusters across all k values have stopped
+                all_stopped = all(len(stopped_clusters[k]) == len(trainers[k].models) for k in trainers.keys())
+                if all_stopped:
+                    print(f"\nAll clusters across all k values have stopped early at step {step}")
+                    break
+
                 # 1. Stream ONE batch
                 tokens = sampler.sample_tokens_batch(args.aanet_batch_size, args.activity_seq_len, args.device)
-                
+
                 with torch.no_grad():
                     _, cache = model.run_with_cache(tokens, return_type=None, names_filter=[hook_name])
                     acts = cache[hook_name]
                     acts_flat = acts.reshape(-1, acts.shape[-1])
                     feature_acts, _, _ = sae_encode_features(sae, acts_flat)
-                
+
                 # 2. Train (Distribute to ALL trainers)
                 for k, trainer in trainers.items():
                     step_losses = trainer.train_step(feature_acts)
                     for cid, metrics in step_losses.items():
+                        if cid in stopped_clusters[k]:
+                            continue
+
                         for key, value in metrics.items():
                             training_history[k][cid][key].append(value)
-                
+
+                        # Early stopping and LR scheduling for this cluster
+                        current_loss = metrics['loss']
+
+                        # Step LR scheduler
+                        current_lr = trainer.optimizers[cid].param_groups[0]['lr']
+                        if current_lr > args.aanet_min_lr:
+                            trainer.schedulers[cid].step(current_loss)
+                            new_lr = trainer.optimizers[cid].param_groups[0]['lr']
+                            if new_lr != current_lr:
+                                print(f"\n  k={k}, Cluster {cid}, Step {step}: LR reduced from {current_lr:.2e} to {new_lr:.2e}")
+
+                        # Early stopping check - only at intervals
+                        if step % check_interval == 0 and len(training_history[k][cid]['loss']) >= args.aanet_loss_smoothing_window:
+                            smoothed_loss = np.mean(training_history[k][cid]['loss'][-args.aanet_loss_smoothing_window:])
+
+                            if smoothed_loss < best_losses[k][cid] - args.aanet_min_delta:
+                                best_losses[k][cid] = smoothed_loss
+                                steps_since_improvement[k][cid] = -1  # Will become 0 after increment below
+                                best_steps[k][cid] = step
+                                print(f"\n  k={k}, Cluster {cid}, Step {step}: New best smoothed loss: {best_losses[k][cid]:.6f}")
+
+                        steps_since_improvement[k][cid] += 1
+
+                        if steps_since_improvement[k][cid] >= args.aanet_early_stop_patience:
+                            print(f"\n  k={k}, Cluster {cid}: Early stopping at step {step} (best smoothed loss {best_losses[k][cid]:.6f} at step {best_steps[k][cid]})")
+                            stopped_clusters[k].add(cid)
+
                 # 3. Discard batch
                 del tokens, cache, acts, acts_flat, feature_acts
             
@@ -864,10 +1042,315 @@ def main():
                     with open(jsonl_path, "a") as f:
                         f.write(json.dumps(curve_data) + "\n")
 
+                    # Save model weights
+                    model_path = os.path.join(output_dir, f"aanet_cluster_{cid}_k{k}.pt")
+                    torch.save(model_inst.state_dict(), model_path)
+
             # Calculate elbow quality metrics
             print(f"\nCalculating elbow quality metrics for n_clusters={n_clusters}...")
             calculate_elbow_quality_metrics(csv_path, n_clusters)
             print(f"Elbow quality metrics saved to {csv_path}")
+
+            # Generate analysis plots
+            print(f"\nGenerating analysis plots for n_clusters={n_clusters}...")
+            generate_analysis_plots(csv_path, n_clusters, output_dir)
+            print(f"Analysis plots generated for n_clusters={n_clusters}")
+
+
+def generate_analysis_plots(csv_path, n_clusters, output_dir):
+    """
+    Generate key analysis plots for cluster quality assessment.
+
+    Plots generated:
+    1. PCA rank vs Geometric rank scatter
+    2. Recon vs Arch elbow strength (unzoomed)
+    3. Recon vs Arch elbow strength (zoomed, excluding top 2 outliers)
+    4. Decoder rank distribution histogram
+    5. Elbow strength distributions (recon & arch)
+    """
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    from pathlib import Path
+
+    # Create plots directory
+    plots_dir = Path(output_dir) / "plots"
+    plots_dir.mkdir(exist_ok=True, parents=True)
+
+    # Load CSV
+    df = pd.read_csv(csv_path)
+
+    # Filter to one row per cluster (all k have same clustering metrics)
+    df_k2 = df[df['aanet_k'] == df['aanet_k'].min()].copy()
+
+    print(f"Generating analysis plots for n_clusters={n_clusters}...")
+
+    # ============================================================================
+    # Plot 1: PCA Rank vs Geometric Rank
+    # ============================================================================
+    if 'activation_pca_rank' in df_k2.columns and 'decoder_dir_rank' in df_k2.columns:
+        valid_data = df_k2.dropna(subset=['activation_pca_rank', 'decoder_dir_rank'])
+
+        if len(valid_data) > 0:
+            fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+
+            scatter = ax.scatter(
+                valid_data['decoder_dir_rank'],
+                valid_data['activation_pca_rank'],
+                alpha=0.6,
+                s=50,
+                c=valid_data['n_latents'],
+                cmap='viridis'
+            )
+
+            # Add diagonal line (perfect agreement)
+            max_rank = max(valid_data['decoder_dir_rank'].max(), valid_data['activation_pca_rank'].max())
+            ax.plot([0, max_rank], [0, max_rank], 'r--', alpha=0.5, linewidth=2, label='Perfect Agreement')
+
+            ax.set_xlabel('Geometric Rank (from Clustering)', fontsize=12)
+            ax.set_ylabel('PCA Rank (from Activations)', fontsize=12)
+            ax.set_title(f'PCA Rank vs Geometric Rank (n_clusters={n_clusters})', fontsize=14)
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+
+            plt.colorbar(scatter, ax=ax, label='Number of Latents in Cluster')
+            plt.tight_layout()
+            plt.savefig(plots_dir / f'pca_vs_geometric_rank_n{n_clusters}.png', dpi=150, bbox_inches='tight')
+            plt.close()
+            print(f"  ✓ Saved PCA vs Geometric rank plot")
+        else:
+            print(f"  ⚠ Skipping PCA vs Geometric rank plot (no valid data)")
+
+    # ============================================================================
+    # Plot 2: Decoder Rank Distribution
+    # ============================================================================
+    if 'decoder_dir_rank' in df_k2.columns:
+        valid_data = df_k2.dropna(subset=['decoder_dir_rank'])
+
+        if len(valid_data) > 0:
+            fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+
+            ax.hist(valid_data['decoder_dir_rank'], bins=30, alpha=0.7, edgecolor='black', color='steelblue')
+            ax.set_xlabel('Decoder Direction Rank', fontsize=12)
+            ax.set_ylabel('Number of Clusters', fontsize=12)
+            ax.set_title(f'Decoder Direction Rank Distribution (n_clusters={n_clusters})', fontsize=14)
+            ax.grid(True, alpha=0.3, axis='y')
+
+            # Add statistics text
+            mean_rank = valid_data['decoder_dir_rank'].mean()
+            median_rank = valid_data['decoder_dir_rank'].median()
+            ax.axvline(mean_rank, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_rank:.1f}')
+            ax.axvline(median_rank, color='orange', linestyle=':', linewidth=2, label=f'Median: {median_rank:.1f}')
+            ax.legend()
+
+            plt.tight_layout()
+            plt.savefig(plots_dir / f'decoder_rank_dist_n{n_clusters}.png', dpi=150, bbox_inches='tight')
+            plt.close()
+            print(f"  ✓ Saved decoder rank distribution")
+
+    # ============================================================================
+    # Plot 3: Elbow Strength Distributions
+    # ============================================================================
+    if 'aanet_recon_loss_elbow_strength' in df_k2.columns and 'aanet_archetypal_loss_elbow_strength' in df_k2.columns:
+        valid_data = df_k2.dropna(subset=['aanet_recon_loss_elbow_strength', 'aanet_archetypal_loss_elbow_strength'])
+
+        if len(valid_data) > 0:
+            fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+            # Reconstruction elbow strength
+            ax = axes[0]
+            ax.hist(valid_data['aanet_recon_loss_elbow_strength'], bins=30, alpha=0.7, edgecolor='black', color='steelblue')
+            ax.set_xlabel('Reconstruction Elbow Strength', fontsize=12)
+            ax.set_ylabel('Number of Clusters', fontsize=12)
+            ax.set_title(f'Reconstruction Elbow Strength (n_clusters={n_clusters})', fontsize=14)
+            ax.grid(True, alpha=0.3, axis='y')
+
+            mean_val = valid_data['aanet_recon_loss_elbow_strength'].mean()
+            median_val = valid_data['aanet_recon_loss_elbow_strength'].median()
+            ax.axvline(mean_val, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_val:.4f}')
+            ax.axvline(median_val, color='orange', linestyle=':', linewidth=2, label=f'Median: {median_val:.4f}')
+            ax.legend()
+
+            # Archetypal elbow strength
+            ax = axes[1]
+            ax.hist(valid_data['aanet_archetypal_loss_elbow_strength'], bins=30, alpha=0.7, edgecolor='black', color='coral')
+            ax.set_xlabel('Archetypal Elbow Strength', fontsize=12)
+            ax.set_ylabel('Number of Clusters', fontsize=12)
+            ax.set_title(f'Archetypal Elbow Strength (n_clusters={n_clusters})', fontsize=14)
+            ax.grid(True, alpha=0.3, axis='y')
+
+            mean_val = valid_data['aanet_archetypal_loss_elbow_strength'].mean()
+            median_val = valid_data['aanet_archetypal_loss_elbow_strength'].median()
+            ax.axvline(mean_val, color='red', linestyle='--', linewidth=2, label=f'Mean: {mean_val:.4f}')
+            ax.axvline(median_val, color='orange', linestyle=':', linewidth=2, label=f'Median: {median_val:.4f}')
+            ax.legend()
+
+            plt.tight_layout()
+            plt.savefig(plots_dir / f'elbow_strength_dists_n{n_clusters}.png', dpi=150, bbox_inches='tight')
+            plt.close()
+            print(f"  ✓ Saved elbow strength distributions")
+
+    # ============================================================================
+    # Plot 4: Recon vs Arch Elbow Strength (UNZOOMED)
+    # ============================================================================
+    if 'aanet_recon_loss_elbow_strength' in df_k2.columns and 'aanet_archetypal_loss_elbow_strength' in df_k2.columns and 'k_differential' in df_k2.columns:
+        valid_data = df_k2.dropna(subset=['aanet_recon_loss_elbow_strength', 'aanet_archetypal_loss_elbow_strength', 'k_differential']).copy()
+
+        if len(valid_data) > 0:
+            fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+
+            # Color by k_differential
+            unique_diffs = sorted(valid_data['k_differential'].unique())
+
+            if len(unique_diffs) <= 20:
+                color_palette = plt.cm.tab20(np.linspace(0, 1, 20))
+            else:
+                tab20 = plt.cm.tab20(np.linspace(0, 1, 20))
+                set3 = plt.cm.Set3(np.linspace(0, 1, 12))
+                color_palette = np.vstack([tab20, set3])
+
+            diff_to_color = {}
+            color_idx = 0
+            for diff in unique_diffs:
+                if diff == 0:
+                    diff_to_color[diff] = 'black'
+                else:
+                    diff_to_color[diff] = color_palette[color_idx % len(color_palette)]
+                    color_idx += 1
+
+            # Sort so differential == 0 is plotted last (on top)
+            valid_data['plot_order'] = (valid_data['k_differential'] == 0).astype(int)
+            valid_data = valid_data.sort_values('plot_order')
+            colors = [diff_to_color[diff] for diff in valid_data['k_differential']]
+
+            ax.scatter(
+                valid_data['aanet_recon_loss_elbow_strength'],
+                valid_data['aanet_archetypal_loss_elbow_strength'],
+                c=colors,
+                s=40,
+                alpha=0.6
+            )
+
+            ax.set_xlabel('Reconstruction Loss Elbow Strength', fontsize=12)
+            ax.set_ylabel('Archetypal Loss Elbow Strength', fontsize=12)
+            ax.set_title(f'Elbow Strength: Recon vs Arch (Unzoomed, n_clusters={n_clusters})', fontsize=14)
+            ax.grid(True, alpha=0.3)
+
+            # Add legend (limit to first 10 for readability)
+            from matplotlib.patches import Patch
+            legend_elements = []
+            for diff in sorted(unique_diffs)[:10]:
+                label = f'Δk={int(diff)}' if diff != 0 else 'Δk=0 (same)'
+                legend_elements.append(Patch(facecolor=diff_to_color[diff], label=label, alpha=0.6))
+            ax.legend(handles=legend_elements, loc='best', fontsize=9, framealpha=0.9, title='K Differential')
+
+            plt.tight_layout()
+            plt.savefig(plots_dir / f'recon_vs_arch_unzoomed_n{n_clusters}.png', dpi=150, bbox_inches='tight')
+            plt.close()
+            print(f"  ✓ Saved recon vs arch (unzoomed)")
+
+    # ============================================================================
+    # Plot 5: Recon vs Arch Elbow Strength (ZOOMED - exclude top 2 outliers)
+    # ============================================================================
+    if 'aanet_recon_loss_elbow_strength' in df_k2.columns and 'aanet_archetypal_loss_elbow_strength' in df_k2.columns and 'k_differential' in df_k2.columns:
+        # Apply quality filters first
+        quality_filtered = df_k2.copy()
+        if 'n_latents' in quality_filtered.columns:
+            quality_filtered = quality_filtered[quality_filtered['n_latents'] >= 2].copy()
+        if 'recon_is_monotonic' in quality_filtered.columns:
+            quality_filtered = quality_filtered[quality_filtered['recon_is_monotonic'] == True].copy()
+        if 'arch_is_monotonic' in quality_filtered.columns:
+            quality_filtered = quality_filtered[quality_filtered['arch_is_monotonic'] == True].copy()
+        if 'recon_pct_decrease' in quality_filtered.columns:
+            quality_filtered = quality_filtered[quality_filtered['recon_pct_decrease'] >= 20].copy()
+        if 'arch_pct_decrease' in quality_filtered.columns:
+            quality_filtered = quality_filtered[quality_filtered['arch_pct_decrease'] >= 20].copy()
+        if 'k_differential' in quality_filtered.columns:
+            quality_filtered = quality_filtered[quality_filtered['k_differential'].abs() <= 1].copy()
+
+        valid_data = quality_filtered.dropna(subset=['aanet_recon_loss_elbow_strength', 'aanet_archetypal_loss_elbow_strength', 'k_differential']).copy()
+
+        if len(valid_data) > 0:
+            # Calculate zoom limits from quality-filtered data
+            recon_mean = valid_data['aanet_recon_loss_elbow_strength'].mean()
+            recon_std = valid_data['aanet_recon_loss_elbow_strength'].std()
+            arch_mean = valid_data['aanet_archetypal_loss_elbow_strength'].mean()
+            arch_std = valid_data['aanet_archetypal_loss_elbow_strength'].std()
+
+            xlim_max = recon_mean + 10 * recon_std
+            ylim_max = arch_mean + 10 * arch_std
+
+            # For display, exclude top 2 outliers
+            recon_threshold = df_k2['aanet_recon_loss_elbow_strength'].nlargest(2).min()
+            arch_threshold = df_k2['aanet_archetypal_loss_elbow_strength'].nlargest(2).min()
+
+            plot_data = valid_data[
+                (valid_data['aanet_recon_loss_elbow_strength'] < recon_threshold) &
+                (valid_data['aanet_archetypal_loss_elbow_strength'] < arch_threshold)
+            ].copy()
+
+            if len(plot_data) > 0:
+                fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+
+                # Color by k_differential
+                unique_diffs = sorted(plot_data['k_differential'].unique())
+
+                if len(unique_diffs) <= 20:
+                    color_palette = plt.cm.tab20(np.linspace(0, 1, 20))
+                else:
+                    tab20 = plt.cm.tab20(np.linspace(0, 1, 20))
+                    set3 = plt.cm.Set3(np.linspace(0, 1, 12))
+                    color_palette = np.vstack([tab20, set3])
+
+                diff_to_color = {}
+                color_idx = 0
+                for diff in unique_diffs:
+                    if diff == 0:
+                        diff_to_color[diff] = 'black'
+                    else:
+                        diff_to_color[diff] = color_palette[color_idx % len(color_palette)]
+                        color_idx += 1
+
+                # Sort so differential == 0 is plotted last (on top)
+                plot_data['plot_order'] = (plot_data['k_differential'] == 0).astype(int)
+                plot_data = plot_data.sort_values('plot_order')
+                colors = [diff_to_color[diff] for diff in plot_data['k_differential']]
+
+                ax.scatter(
+                    plot_data['aanet_recon_loss_elbow_strength'],
+                    plot_data['aanet_archetypal_loss_elbow_strength'],
+                    c=colors,
+                    s=40,
+                    alpha=0.6
+                )
+
+                ax.set_xlabel('Reconstruction Loss Elbow Strength', fontsize=12)
+                ax.set_ylabel('Archetypal Loss Elbow Strength', fontsize=12)
+                ax.set_title(f'Elbow Strength: Recon vs Arch (Zoomed, n_clusters={n_clusters})\nExcluding top 2 outliers, showing quality-filtered clusters', fontsize=13)
+                ax.grid(True, alpha=0.3)
+
+                # Set zoom limits
+                ax.set_xlim(0, xlim_max)
+                ax.set_ylim(0, ylim_max)
+
+                # Add legend
+                from matplotlib.patches import Patch
+                legend_elements = []
+                for diff in sorted(unique_diffs)[:10]:
+                    label = f'Δk={int(diff)}' if diff != 0 else 'Δk=0 (same)'
+                    legend_elements.append(Patch(facecolor=diff_to_color[diff], label=label, alpha=0.6))
+                ax.legend(handles=legend_elements, loc='best', fontsize=9, framealpha=0.9, title='K Differential')
+
+                plt.tight_layout()
+                plt.savefig(plots_dir / f'recon_vs_arch_zoomed_n{n_clusters}.png', dpi=150, bbox_inches='tight')
+                plt.close()
+                print(f"  ✓ Saved recon vs arch (zoomed)")
+            else:
+                print(f"  ⚠ Skipping zoomed plot (no data after filtering)")
+        else:
+            print(f"  ⚠ Skipping zoomed plot (no valid data after quality filters)")
+
+    print(f"All plots saved to: {plots_dir}/")
 
 
 def calculate_elbow_quality_metrics(csv_path, n_clusters):
@@ -941,12 +1424,12 @@ def calculate_elbow_quality_metrics(csv_path, n_clusters):
 
         results.append({
             'cluster_id': cluster_id,
-            'recon_elbow_k': recon_elbow_k,
-            'recon_elbow_strength': recon_elbow_strength,
+            'aanet_recon_loss_elbow_k': recon_elbow_k,
+            'aanet_recon_loss_elbow_strength': recon_elbow_strength,
             'recon_pct_decrease': recon_pct_decrease,
             'recon_is_monotonic': recon_is_monotonic,
-            'arch_elbow_k': arch_elbow_k,
-            'arch_elbow_strength': arch_elbow_strength,
+            'aanet_archetypal_loss_elbow_k': arch_elbow_k,
+            'aanet_archetypal_loss_elbow_strength': arch_elbow_strength,
             'arch_pct_decrease': arch_pct_decrease,
             'arch_is_monotonic': arch_is_monotonic,
             'k_differential': k_differential

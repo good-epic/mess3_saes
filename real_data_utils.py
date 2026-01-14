@@ -30,28 +30,48 @@ def _prepare_cluster_indices(
 
 class RealDataSampler:
     """
-    Sampler for real text data (e.g. OpenWebText, The Pile, Wikitext).
-    Supports streaming and flexible batch sampling with prefetching.
+    Sampler for real text data from HuggingFace datasets.
+    Supports streaming with filtering and shuffling.
     """
-    def __init__(self, model: HookedTransformer, dataset_name: str = "wikitext", dataset_config: str = "wikitext-103-v1", split: str = "train", streaming: bool = True, seed: int = 42, prefetch_size: int = 1024):
+    def __init__(self, model: HookedTransformer, hf_dataset: str = "wikitext", hf_subset_name: str = "wikitext-103-v1", split: str = "train", streaming: bool = True, seed: int = 42, prefetch_size: int = 1024, shuffle_buffer_size: int = 10000, max_doc_tokens: int = None):
+        """
+        Args:
+            hf_dataset: HuggingFace dataset identifier (e.g., "HuggingFaceFW/fineweb")
+            hf_subset_name: Dataset subset/config name (e.g., "sample-10BT")
+            max_doc_tokens: Filter out documents longer than this (approximate, uses ~4 chars/token)
+        """
         self.model = model
-        self.dataset_name = dataset_name
-        self.dataset_config = dataset_config
+        self.hf_dataset = hf_dataset
+        self.hf_subset_name = hf_subset_name
         self.split = split
         self.streaming = streaming
         self.seed = seed
         self.prefetch_size = prefetch_size
-        
-        print(f"Loading dataset: {dataset_name} ({dataset_config}) split={split} streaming={streaming}")
-        if dataset_config is None:
-            self.dataset = load_dataset(dataset_name, split=split, streaming=streaming)
+        self.shuffle_buffer_size = shuffle_buffer_size
+        self.max_doc_tokens = max_doc_tokens
+
+        print(f"Loading dataset: {hf_dataset} (subset: {hf_subset_name}) split={split} streaming={streaming}")
+
+        # Load dataset
+        if hf_subset_name is None:
+            dataset = load_dataset(hf_dataset, split=split, streaming=streaming)
         else:
-            self.dataset = load_dataset(dataset_name, dataset_config, split=split, streaming=streaming)
+            dataset = load_dataset(hf_dataset, name=hf_subset_name, split=split, streaming=streaming)
+
+        # Filter long documents if requested
+        if max_doc_tokens:
+            print(f"  Filtering documents longer than ~{max_doc_tokens} tokens (~{max_doc_tokens * 4} chars)")
+            max_chars = max_doc_tokens * 4
+            dataset = dataset.filter(lambda ex: len(ex.get('text', '')) < max_chars)
+
+        # Shuffle
         if streaming:
-            self.dataset = self.dataset.shuffle(seed=seed, buffer_size=10000)
+            print(f"  Shuffle buffer size: {shuffle_buffer_size}")
+            dataset = dataset.shuffle(seed=seed, buffer_size=shuffle_buffer_size)
         else:
-            self.dataset = self.dataset.shuffle(seed=seed)
-            
+            dataset = dataset.shuffle(seed=seed)
+
+        self.dataset = dataset
         self.iterator = iter(self.dataset)
         self.buffer = []
         
@@ -63,21 +83,19 @@ class RealDataSampler:
                 text = item.get("text", "")
                 if not text:
                     continue
-                    
-                # Tokenize
-                # Gemma 2 usually expects BOS.
+
+                # Tokenize (Gemma 2 expects BOS)
                 tokens = self.model.to_tokens(text, prepend_bos=True).squeeze(0)
-                
+
                 # If sequence is long enough, take chunks
                 if len(tokens) >= sample_len:
                     # Take as many non-overlapping chunks as possible
-                    # This is more efficient than taking just one random chunk
                     num_chunks = len(tokens) // sample_len
                     for i in range(num_chunks):
                         self.buffer.append(tokens[i*sample_len : (i+1)*sample_len])
-                        
+
             except StopIteration:
-                # Reset iterator
+                # Reset iterator (shouldn't happen with infinite streaming)
                 self.iterator = iter(self.dataset)
                 
     def sample_tokens_batch(self, batch_size: int, sample_len: int, device: str) -> torch.Tensor:
