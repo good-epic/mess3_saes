@@ -969,6 +969,18 @@ def main():
             print(f"Check that Stage 1 models exist in: {args.stage1_models_dir}")
             return
 
+        # Create manifest for skip_training mode
+        manifest = {
+            'total_clusters': len(all_metadata),
+            'n_clusters_list': n_clusters_list,
+            'model_name': args.model_name,
+            'tokenizer': str(type(model.tokenizer).__name__),
+            'sae_release': args.sae_release,
+            'sae_id': args.sae_id,
+            'stage1_models_dir': args.stage1_models_dir,
+            'clusters': all_metadata
+        }
+
     else:
         # Train each cluster
         print("\n" + "="*80)
