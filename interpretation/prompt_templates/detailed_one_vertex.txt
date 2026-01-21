@@ -39,6 +39,9 @@ ANALYSIS GUIDELINES:
 - The kind of state or class the latents represent are not limited to the above examples
 - Be specific: "past tense verbs" not "temporal stuff"
 - Provide two proposals for the latent represented by the vertex
+- At the beginning of each example we will share the words (and their position in the text) where the vertex in
+  question was active. Remember not to try to interpret the whole example. Interpret the word(s) where the vertex
+  was active, using the rest of the test to better understand the context and meaning of the given word(s)
 
 EXAMPLES OF GOOD INTERPRETATIONS:
 - "Past tense/completed actions"

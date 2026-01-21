@@ -3,11 +3,15 @@
 Generate cluster selection visualization plots.
 """
 
+import sys
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from cluster_selection import calculate_elbow_score, select_promising_clusters
 
 matplotlib.use('Agg')  # Use non-interactive backend
 
@@ -33,18 +37,7 @@ for clusters_dir in sorted(DATA_DIR.glob("clusters_*")):
 
 print(f"Loaded {len(all_elbow_df)} rows from {len(all_elbow_df['n_clusters_total'].unique())} different n_clusters values")
 
-# Calculate elbow metrics
-def calculate_elbow_score(x, y):
-    if len(x) < 3:
-        return None, 0.0
-    x_norm = (np.array(x) - x[0]) / (x[-1] - x[0]) if x[-1] != x[0] else np.zeros_like(x)
-    y_norm = (np.array(y) - y[-1]) / (y[0] - y[-1]) if y[0] != y[-1] else np.zeros_like(y)
-    distances = np.abs(x_norm + y_norm - 1) / np.sqrt(2)
-    elbow_idx = np.argmax(distances)
-    elbow_k = x[elbow_idx]
-    elbow_strength = distances[elbow_idx]
-    return elbow_k, elbow_strength
-
+# Calculate elbow metrics (calculate_elbow_score imported from cluster_selection module)
 print("\nCalculating elbow metrics...")
 elbow_results = []
 
@@ -82,119 +75,7 @@ for (n_clust, cluster_id), group in all_elbow_df.groupby(['n_clusters_total', 'c
 all_elbow_df_processed = pd.DataFrame(elbow_results)
 print(f"Calculated elbows for {len(all_elbow_df_processed)} clusters")
 
-# Selection function
-def select_promising_clusters(df, n_clusters_val, delta_k_threshold=1,
-                               sd_outlier=3, sd_strong=1):
-    """
-    Select promising clusters based on multi-criteria approach.
-
-    Takes ALL clusters that meet the criteria (no arbitrary top-N limits).
-
-    All categories now use standard deviation cutoffs:
-    - Categories B & C (outliers): mean + sd_outlier*SD (default 3)
-    - Categories A & D (strong): mean + sd_strong*SD (default 1)
-
-    Quality filters applied:
-    - n_latents >= 2 (no single-latent clusters)
-    - recon_is_monotonic == True (monotonic decrease to elbow)
-    - arch_is_monotonic == True (monotonic decrease to elbow)
-    - recon_pct_decrease >= 20 (at least 20% decrease from max to min)
-    - arch_pct_decrease >= 20 (at least 20% decrease from max to min)
-    - k_differential <= 1 (elbow agreement within 1 k value)
-    """
-    group = df[df['n_clusters_total'] == n_clusters_val].copy()
-
-    # Apply quality filters with detailed statistics
-    def print_filter_stats(group, label):
-        recon_mean = group['aanet_recon_loss_elbow_strength'].mean()
-        recon_std = group['aanet_recon_loss_elbow_strength'].std()
-        arch_mean = group['aanet_archetypal_loss_elbow_strength'].mean()
-        arch_std = group['aanet_archetypal_loss_elbow_strength'].std()
-        print(f"  {label}: {len(group)} clusters | "
-              f"recon μ={recon_mean:.4f} σ={recon_std:.4f} | "
-              f"arch μ={arch_mean:.4f} σ={arch_std:.4f}")
-
-    print_filter_stats(group, "Before filters")
-    group = group[group['n_latents'] >= 2].copy()
-    print_filter_stats(group, "After n_latents >= 2")
-    group = group[group['recon_is_monotonic'] == True].copy()
-    print_filter_stats(group, "After recon_is_monotonic")
-    group = group[group['arch_is_monotonic'] == True].copy()
-    print_filter_stats(group, "After arch_is_monotonic")
-    group = group[group['recon_pct_decrease'] >= 20].copy()
-    print_filter_stats(group, "After recon_pct_decrease >= 20")
-    group = group[group['arch_pct_decrease'] >= 20].copy()
-    print_filter_stats(group, "After arch_pct_decrease >= 20")
-
-    # Filter: Delta K constraint (using k_differential from CSV)
-    group = group[group['k_differential'].abs() <= delta_k_threshold].copy()
-    print_filter_stats(group, f"After k_differential <= {delta_k_threshold}")
-
-    if len(group) == 0:
-        return set(), {}
-
-    # Calculate distance from origin for ranking
-    group['distance_from_origin'] = np.sqrt(
-        group['aanet_recon_loss_elbow_strength']**2 +
-        group['aanet_archetypal_loss_elbow_strength']**2
-    )
-
-    # Calculate SD-based thresholds
-    recon_mean = group['aanet_recon_loss_elbow_strength'].mean()
-    recon_std = group['aanet_recon_loss_elbow_strength'].std()
-    arch_mean = group['aanet_archetypal_loss_elbow_strength'].mean()
-    arch_std = group['aanet_archetypal_loss_elbow_strength'].std()
-
-    # Thresholds for outliers (categories B & C)
-    recon_outlier_threshold = recon_mean + sd_outlier * recon_std
-    arch_outlier_threshold = arch_mean + sd_outlier * arch_std
-
-    # Thresholds for strong values (categories A & D)
-    recon_strong_threshold = recon_mean + sd_strong * recon_std
-    arch_strong_threshold = arch_mean + sd_strong * arch_std
-
-    selected_clusters = set()
-    category_stats = {
-        'A_strong_both': [],
-        'B_recon_outliers': [],
-        'C_arch_outliers': [],
-        'D_agreement': []
-    }
-
-    # Category A: Strong on Both Axes
-    # Both above mean+1SD
-    cat_a = group[
-        (group['aanet_recon_loss_elbow_strength'] > recon_strong_threshold) &
-        (group['aanet_archetypal_loss_elbow_strength'] > arch_strong_threshold)
-    ].copy()
-    category_stats['A_strong_both'] = cat_a['cluster_id'].tolist()
-    selected_clusters.update(cat_a['cluster_id'])
-
-    # Category B: Reconstruction Outliers (mean + 3*SD)
-    cat_b = group[
-        group['aanet_recon_loss_elbow_strength'] > recon_outlier_threshold
-    ].copy()
-    category_stats['B_recon_outliers'] = cat_b['cluster_id'].tolist()
-    selected_clusters.update(cat_b['cluster_id'])
-
-    # Category C: Archetypal Outliers (mean + 3*SD)
-    cat_c = group[
-        group['aanet_archetypal_loss_elbow_strength'] > arch_outlier_threshold
-    ].copy()
-    category_stats['C_arch_outliers'] = cat_c['cluster_id'].tolist()
-    selected_clusters.update(cat_c['cluster_id'])
-
-    # Category D: Perfect Agreement Standouts
-    # Delta k = 0 AND both metrics above their means
-    cat_d = group[
-        (group['k_differential'] == 0) &
-        (group['aanet_recon_loss_elbow_strength'] > recon_mean) &
-        (group['aanet_archetypal_loss_elbow_strength'] > arch_mean)
-    ].copy()
-    category_stats['D_agreement'] = cat_d['cluster_id'].tolist()
-    selected_clusters.update(cat_d['cluster_id'])
-
-    return selected_clusters, category_stats
+# select_promising_clusters imported from cluster_selection module
 
 # Select promising clusters for each n_clusters value
 print("\n" + "="*80)
@@ -205,7 +86,7 @@ all_selected = {}
 all_category_stats = {}
 
 for n_clust in sorted(all_elbow_df_processed['n_clusters_total'].unique()):
-    selected_ids, cat_stats = select_promising_clusters(all_elbow_df_processed, n_clust)
+    selected_ids, cat_stats = select_promising_clusters(all_elbow_df_processed, n_clust, verbose=True)
     all_selected[n_clust] = selected_ids
     all_category_stats[n_clust] = cat_stats
 

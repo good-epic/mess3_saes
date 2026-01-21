@@ -42,6 +42,9 @@ ANALYSIS GUIDELINES:
 - Think about what a mixture would mean (e.g., "uncertain between past and future", or "uncertain between truthful
   and lying")
 - Be specific: "past tense verbs" not "temporal stuff"
+- At the beginning of each example we will share the words (and their position in the text) where the vertex in
+  question was active. Remember not to try to interpret the whole example. Interpret the word(s) where the vertex
+  was active, using the rest of the test to better understand the context and meaning of the given word(s)
 
 EXAMPLES OF GOOD INTERPRETATIONS:
 - State space: "Temporal reference for verb tense"

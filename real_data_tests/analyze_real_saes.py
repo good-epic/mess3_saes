@@ -831,7 +831,11 @@ def main():
                     # Add activation PCA rank
                     if result.cluster_stats and cid in result.cluster_stats:
                         stats = result.cluster_stats[cid]
-                        if "explained_variance_ratio" in stats:
+                        # First check for pre-computed rank (new format)
+                        if "activation_pca_rank" in stats:
+                            row["activation_pca_rank"] = stats["activation_pca_rank"]
+                        # Fall back to computing from variance ratios (old format)
+                        elif "explained_variance_ratio" in stats:
                             var_ratios = np.array(stats["explained_variance_ratio"])
                             cumsum = np.cumsum(var_ratios)
                             rank_95 = np.argmax(cumsum >= 0.95) + 1 if np.any(cumsum >= 0.95) else len(var_ratios)
@@ -1015,7 +1019,11 @@ def main():
                     # Add activation PCA rank
                     if result.cluster_stats and cid in result.cluster_stats:
                         stats = result.cluster_stats[cid]
-                        if "explained_variance_ratio" in stats:
+                        # First check for pre-computed rank (new format)
+                        if "activation_pca_rank" in stats:
+                            row["activation_pca_rank"] = stats["activation_pca_rank"]
+                        # Fall back to computing from variance ratios (old format)
+                        elif "explained_variance_ratio" in stats:
                             var_ratios = np.array(stats["explained_variance_ratio"])
                             cumsum = np.cumsum(var_ratios)
                             rank_95 = np.argmax(cumsum >= 0.95) + 1 if np.any(cumsum >= 0.95) else len(var_ratios)

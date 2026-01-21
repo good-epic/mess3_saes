@@ -4,11 +4,20 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from cluster_selection import calculate_elbow_score, select_promising_clusters
+
+# %% Selection parameters
+# These control the SD thresholds for cluster selection
+SD_STRONG = 1      # For categories A (strong both) and D (perfect agreement): mean + SD_STRONG * std
+SD_OUTLIER = 3     # For categories B (recon outliers) and C (arch outliers): mean + SD_OUTLIER * std
+DELTA_K_THRESHOLD = 1  # Maximum allowed |k_differential| for quality filter
 
 # %% Setup - Load data
 # Configure paths
 base_dir = Path(__file__).parent.parent / "outputs" / "real_data_analysis_canonical"
-n_clusters_list = [128, 256, 512, 768]
+n_clusters_list = [512, 768]
 
 # NOTE: As of the latest updates, analyze_real_saes.py now outputs the full CSV
 # with all quality metrics (elbow metrics, monotonicity, pct_decrease, etc.)
@@ -48,7 +57,6 @@ print(f"Unique k values: {sorted(df['aanet_k'].unique())}")
 # Only plot one point per cluster (take k=2 arbitrarily)
 df_k2 = df[df['aanet_k'] == 2].copy()
 
-# Note: activation_pca_rank is all NaN in the data, so we can't plot that
 # Check what data is available
 print("Data availability check:")
 print(f"  decoder_dir_rank non-null: {df_k2['decoder_dir_rank'].notna().sum()} / {len(df_k2)}")
@@ -85,6 +93,45 @@ plt.show()
 
 print(f"\nDecoder rank stats:")
 print(df_k2['decoder_dir_rank'].describe())
+
+# %% Analysis 1b: Geometric Rank vs PCA Rank
+# Compare the decoder direction rank (geometric) with the activation PCA rank
+valid_rank_data = df_k2.dropna(subset=['decoder_dir_rank', 'activation_pca_rank'])
+
+if len(valid_rank_data) > 0:
+    fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+
+    scatter = ax.scatter(
+        valid_rank_data['decoder_dir_rank'],
+        valid_rank_data['activation_pca_rank'],
+        c=valid_rank_data['n_latents'],
+        cmap='viridis',
+        alpha=0.6,
+        s=40
+    )
+
+    # Add diagonal line (y=x)
+    max_rank = max(valid_rank_data['decoder_dir_rank'].max(), valid_rank_data['activation_pca_rank'].max())
+    ax.plot([0, max_rank], [0, max_rank], 'r--', alpha=0.5, label='y=x')
+
+    ax.set_xlabel('Geometric Rank (Decoder Directions)', fontsize=12)
+    ax.set_ylabel('PCA Rank (Activations)', fontsize=12)
+    ax.set_title(f'Geometric Rank vs PCA Rank (n_clusters={primary_n_clusters})', fontsize=14)
+    ax.grid(True, alpha=0.3)
+    ax.legend()
+    plt.colorbar(scatter, ax=ax, label='Cluster Size (n_latents)')
+
+    plt.tight_layout()
+    plt.show()
+
+    # Print correlation
+    corr = valid_rank_data['decoder_dir_rank'].corr(valid_rank_data['activation_pca_rank'])
+    print(f"\nCorrelation between geometric rank and PCA rank: {corr:.3f}")
+    print(f"Clusters plotted: {len(valid_rank_data)}")
+    print(f"\nPCA rank stats:")
+    print(valid_rank_data['activation_pca_rank'].describe())
+else:
+    print("No valid data for geometric rank vs PCA rank plot (both columns have NaN)")
 
 # %% Analysis 2: AAnet losses vs n_latents (colored by k)
 loss_types = ['aanet_loss', 'aanet_recon_loss', 'aanet_archetypal_loss', 'aanet_extrema_loss']
@@ -158,32 +205,7 @@ for k in k_values:
         print(f"  {loss_type:25s}: {mean_val:.6f} ± {std_val:.6f}")
 
 # %% Analysis 4: K-elbow detection for each cluster
-def calculate_elbow_score(x, y):
-    """
-    Calculate elbow scores using perpendicular distance from line.
-    Returns the k value at the elbow and the elbow strength.
-
-    Based on the Kneedle algorithm idea: find point of maximum distance
-    from the line connecting first and last points.
-    """
-    if len(x) < 3:
-        return None, 0.0
-
-    # Normalize to [0, 1] range for both x and y
-    x_norm = (np.array(x) - x[0]) / (x[-1] - x[0]) if x[-1] != x[0] else np.zeros_like(x)
-    y_norm = (np.array(y) - y[-1]) / (y[0] - y[-1]) if y[0] != y[-1] else np.zeros_like(y)
-
-    # Calculate perpendicular distance from line connecting first to last point
-    # Line from (0,1) to (1,0) in normalized space
-    # Distance = |x + y - 1| / sqrt(2)
-    distances = np.abs(x_norm + y_norm - 1) / np.sqrt(2)
-
-    # Find elbow (maximum distance)
-    elbow_idx = np.argmax(distances)
-    elbow_k = x[elbow_idx]
-    elbow_strength = distances[elbow_idx]
-
-    return elbow_k, elbow_strength
+# (calculate_elbow_score imported from cluster_selection module)
 
 # Calculate elbow for each cluster and each loss type
 elbow_results = []
@@ -563,126 +585,7 @@ plt.tight_layout()
 plt.show()
 
 # %% Analysis 10: Cluster Selection Visualization
-
-def select_promising_clusters(df, n_clusters_val, delta_k_threshold=1,
-                               sd_outlier=3, sd_strong=1):
-    """
-    Select promising clusters based on multi-criteria approach.
-
-    Takes ALL clusters that meet the criteria (no arbitrary top-N limits).
-
-    All categories now use standard deviation cutoffs:
-    - Categories B & C (outliers): mean + sd_outlier*SD (default 3)
-    - Categories A & D (strong): mean + sd_strong*SD (default 1)
-
-    Quality filters applied:
-    - n_latents >= 2 (no single-latent clusters)
-    - recon_is_monotonic == True (monotonic decrease to elbow)
-    - arch_is_monotonic == True (monotonic decrease to elbow)
-    - recon_pct_decrease >= 20 (at least 20% decrease from max to min)
-    - arch_pct_decrease >= 20 (at least 20% decrease from max to min)
-    - k_differential <= 1 (elbow agreement within 1 k value)
-
-    Returns: set of cluster_ids that are selected
-    """
-    # Filter for this n_clusters value
-    group = df[df['n_clusters_total'] == n_clusters_val].copy()
-
-    # Apply quality filters with detailed statistics
-    def print_filter_stats(group, label):
-        recon_mean = group['aanet_recon_loss_elbow_strength'].mean()
-        recon_std = group['aanet_recon_loss_elbow_strength'].std()
-        arch_mean = group['aanet_archetypal_loss_elbow_strength'].mean()
-        arch_std = group['aanet_archetypal_loss_elbow_strength'].std()
-        print(f"  {label}: {len(group)} clusters | "
-              f"recon μ={recon_mean:.4f} σ={recon_std:.4f} | "
-              f"arch μ={arch_mean:.4f} σ={arch_std:.4f}")
-
-    print_filter_stats(group, "Before filters")
-    group = group[group['n_latents'] >= 2].copy()
-    print_filter_stats(group, "After n_latents >= 2")
-    group = group[group['recon_is_monotonic'] == True].copy()
-    print_filter_stats(group, "After recon_is_monotonic")
-    group = group[group['arch_is_monotonic'] == True].copy()
-    print_filter_stats(group, "After arch_is_monotonic")
-    group = group[group['recon_pct_decrease'] >= 20].copy()
-    print_filter_stats(group, "After recon_pct_decrease >= 20")
-    group = group[group['arch_pct_decrease'] >= 20].copy()
-    print_filter_stats(group, "After arch_pct_decrease >= 20")
-
-    # Filter: Delta K constraint (using k_differential from CSV if available, else calculate)
-    if 'k_differential' not in group.columns:
-        group['k_differential'] = (group['aanet_recon_loss_elbow_k'] -
-                                    group['aanet_archetypal_loss_elbow_k'])
-    group = group[group['k_differential'].abs() <= delta_k_threshold].copy()
-    print_filter_stats(group, f"After k_differential <= {delta_k_threshold}")
-
-    if len(group) == 0:
-        return set(), {}
-
-    # Calculate distance from origin for ranking
-    group['distance_from_origin'] = np.sqrt(
-        group['aanet_recon_loss_elbow_strength']**2 +
-        group['aanet_archetypal_loss_elbow_strength']**2
-    )
-
-    # Calculate SD-based thresholds
-    recon_mean = group['aanet_recon_loss_elbow_strength'].mean()
-    recon_std = group['aanet_recon_loss_elbow_strength'].std()
-    arch_mean = group['aanet_archetypal_loss_elbow_strength'].mean()
-    arch_std = group['aanet_archetypal_loss_elbow_strength'].std()
-
-    # Thresholds for outliers (categories B & C)
-    recon_outlier_threshold = recon_mean + sd_outlier * recon_std
-    arch_outlier_threshold = arch_mean + sd_outlier * arch_std
-
-    # Thresholds for strong values (categories A & D)
-    recon_strong_threshold = recon_mean + sd_strong * recon_std
-    arch_strong_threshold = arch_mean + sd_strong * arch_std
-
-    selected_clusters = set()
-    category_stats = {
-        'A_strong_both': [],
-        'B_recon_outliers': [],
-        'C_arch_outliers': [],
-        'D_agreement': []
-    }
-
-    # Category A: Strong on Both Axes
-    # Both above mean+1SD
-    cat_a = group[
-        (group['aanet_recon_loss_elbow_strength'] > recon_strong_threshold) &
-        (group['aanet_archetypal_loss_elbow_strength'] > arch_strong_threshold)
-    ].copy()
-    category_stats['A_strong_both'] = cat_a['cluster_id'].tolist()
-    selected_clusters.update(cat_a['cluster_id'])
-
-    # Category B: Reconstruction Outliers (mean + 3*SD)
-    cat_b = group[
-        group['aanet_recon_loss_elbow_strength'] > recon_outlier_threshold
-    ].copy()
-    category_stats['B_recon_outliers'] = cat_b['cluster_id'].tolist()
-    selected_clusters.update(cat_b['cluster_id'])
-
-    # Category C: Archetypal Outliers (mean + 3*SD)
-    cat_c = group[
-        group['aanet_archetypal_loss_elbow_strength'] > arch_outlier_threshold
-    ].copy()
-    category_stats['C_arch_outliers'] = cat_c['cluster_id'].tolist()
-    selected_clusters.update(cat_c['cluster_id'])
-
-    # Category D: Perfect Agreement Standouts
-    # Delta k = 0 AND both metrics above their means
-    cat_d = group[
-        (group['k_differential'] == 0) &
-        (((group['aanet_recon_loss_elbow_strength'] > recon_mean) & (group['aanet_archetypal_loss_elbow_strength'] > arch_mean)) |
-         ((group['aanet_archetypal_loss_elbow_strength'] > arch_mean) & (group['aanet_recon_loss_elbow_strength'] > recon_mean)))
-    ].copy()
-    category_stats['D_agreement'] = cat_d['cluster_id'].tolist()
-    selected_clusters.update(cat_d['cluster_id'])
-
-    return selected_clusters, category_stats
-
+# (select_promising_clusters imported from cluster_selection module)
 
 # Select promising clusters for each n_clusters value
 all_selected = {}
@@ -693,7 +596,13 @@ print("CLUSTER SELECTION SUMMARY")
 print("="*80)
 
 for n_clust in sorted(all_elbow_df['n_clusters_total'].unique()):
-    selected_ids, cat_stats = select_promising_clusters(all_elbow_df, n_clust)
+    selected_ids, cat_stats = select_promising_clusters(
+        all_elbow_df, n_clust,
+        delta_k_threshold=DELTA_K_THRESHOLD,
+        sd_outlier=SD_OUTLIER,
+        sd_strong=SD_STRONG,
+        verbose=True
+    )
     all_selected[n_clust] = selected_ids
     all_category_stats[n_clust] = cat_stats
 
@@ -720,11 +629,15 @@ print(f"Estimated cost at $0.003/latent: ${total_latents * 0.003:.2f}")
 
 # %% Analysis 10b: Side-by-side visualization
 
-fig, axes = plt.subplots(4, 2, figsize=(20, 24))
+n_cluster_values_10b = sorted(all_elbow_df['n_clusters_total'].unique())
+n_rows_10b = len(n_cluster_values_10b)
+fig, axes = plt.subplots(n_rows_10b, 2, figsize=(20, 6 * n_rows_10b))
 
-for idx, n_clust in enumerate(sorted(all_elbow_df['n_clusters_total'].unique())):
-    if idx >= 4:
-        break
+# Handle case where there's only 1 row (axes won't be 2D)
+if n_rows_10b == 1:
+    axes = axes.reshape(1, -1)
+
+for idx, n_clust in enumerate(n_cluster_values_10b):
 
     # Get data for this n_clusters
     plot_data = all_elbow_df[all_elbow_df['n_clusters_total'] == n_clust].copy()
@@ -783,12 +696,37 @@ for idx, n_clust in enumerate(sorted(all_elbow_df['n_clusters_total'].unique()))
     # RIGHT COLUMN: Selected by Category
     ax_right = axes[idx, 1]
 
+    # Calculate quality-filtered data to get thresholds
+    quality_filtered = plot_data.copy()
+    quality_filtered = quality_filtered[quality_filtered['n_latents'] >= 2].copy()
+    quality_filtered = quality_filtered[quality_filtered['recon_is_monotonic'] == True].copy()
+    quality_filtered = quality_filtered[quality_filtered['arch_is_monotonic'] == True].copy()
+    quality_filtered = quality_filtered[quality_filtered['recon_pct_decrease'] >= 20].copy()
+    quality_filtered = quality_filtered[quality_filtered['arch_pct_decrease'] >= 20].copy()
+    quality_filtered = quality_filtered[quality_filtered['k_differential'].abs() <= DELTA_K_THRESHOLD].copy()
+
+    # Calculate thresholds from quality-filtered data
+    recon_mean = quality_filtered['aanet_recon_loss_elbow_strength'].mean()
+    recon_std = quality_filtered['aanet_recon_loss_elbow_strength'].std()
+    arch_mean = quality_filtered['aanet_archetypal_loss_elbow_strength'].mean()
+    arch_std = quality_filtered['aanet_archetypal_loss_elbow_strength'].std()
+    recon_strong = recon_mean + SD_STRONG * recon_std
+    arch_strong = arch_mean + SD_STRONG * arch_std
+
     # Mark selected vs rejected
     selected_set = all_selected[n_clust]
     plot_data['is_selected'] = plot_data['cluster_id'].isin(selected_set)
 
-    # Plot rejected first (gray)
-    rejected = plot_data[~plot_data['is_selected']]
+    # Identify clusters that meet strength threshold but failed quality filters
+    plot_data['meets_strength'] = (
+        (plot_data['aanet_recon_loss_elbow_strength'] > recon_strong) &
+        (plot_data['aanet_archetypal_loss_elbow_strength'] > arch_strong)
+    )
+    plot_data['passed_quality'] = plot_data['cluster_id'].isin(quality_filtered['cluster_id'])
+    plot_data['failed_quality_but_strong'] = plot_data['meets_strength'] & ~plot_data['passed_quality']
+
+    # Plot rejected first (gray) - exclude the "failed quality but strong" ones
+    rejected = plot_data[~plot_data['is_selected'] & ~plot_data['failed_quality_but_strong']]
     ax_right.scatter(
         rejected['aanet_recon_loss_elbow_strength'],
         rejected['aanet_archetypal_loss_elbow_strength'],
@@ -797,6 +735,19 @@ for idx, n_clust in enumerate(sorted(all_elbow_df['n_clusters_total'].unique()))
         alpha=0.3,
         label=f'Rejected ({len(rejected)})'
     )
+
+    # Plot "failed quality but strong" as new category E (purple)
+    failed_quality_strong = plot_data[plot_data['failed_quality_but_strong']]
+    if len(failed_quality_strong) > 0:
+        ax_right.scatter(
+            failed_quality_strong['aanet_recon_loss_elbow_strength'],
+            failed_quality_strong['aanet_archetypal_loss_elbow_strength'],
+            c='#9467bd',  # purple
+            s=50,
+            alpha=0.7,
+            marker='s',  # square marker to distinguish
+            label=f'E: Strong but Failed Quality ({len(failed_quality_strong)})'
+        )
 
     # Assign category to each selected cluster (priority: A, D, B, C)
     cat_stats = all_category_stats[n_clust]
@@ -855,11 +806,15 @@ plt.show()
 
 # %% Analysis 10c: Zoomed version (excluding top 2 outliers)
 
-fig, axes = plt.subplots(4, 2, figsize=(20, 24))
+n_cluster_values = sorted(all_elbow_df['n_clusters_total'].unique())
+n_rows = len(n_cluster_values)
+fig, axes = plt.subplots(n_rows, 2, figsize=(20, 6 * n_rows))
 
-for idx, n_clust in enumerate(sorted(all_elbow_df['n_clusters_total'].unique())):
-    if idx >= 4:
-        break
+# Handle case where there's only 1 row (axes won't be 2D)
+if n_rows == 1:
+    axes = axes.reshape(1, -1)
+
+for idx, n_clust in enumerate(n_cluster_values):
 
     # Get data for this n_clusters
     plot_data = all_elbow_df[all_elbow_df['n_clusters_total'] == n_clust].copy()
@@ -871,7 +826,7 @@ for idx, n_clust in enumerate(sorted(all_elbow_df['n_clusters_total'].unique()))
     quality_filtered = quality_filtered[quality_filtered['arch_is_monotonic'] == True].copy()
     quality_filtered = quality_filtered[quality_filtered['recon_pct_decrease'] >= 20].copy()
     quality_filtered = quality_filtered[quality_filtered['arch_pct_decrease'] >= 20].copy()
-    quality_filtered = quality_filtered[quality_filtered['k_differential'].abs() <= 1].copy()
+    quality_filtered = quality_filtered[quality_filtered['k_differential'].abs() <= DELTA_K_THRESHOLD].copy()
 
     # Calculate mean and SD from quality-filtered data for axis limits
     recon_mean = quality_filtered['aanet_recon_loss_elbow_strength'].mean()
@@ -951,12 +906,24 @@ for idx, n_clust in enumerate(sorted(all_elbow_df['n_clusters_total'].unique()))
     # RIGHT COLUMN: Selected by Category
     ax_right = axes[idx, 1]
 
+    # Calculate strength thresholds from quality-filtered data
+    recon_strong = recon_mean + SD_STRONG * recon_std
+    arch_strong = arch_mean + SD_STRONG * arch_std
+
     # Mark selected vs rejected
     selected_set = all_selected[n_clust]
     plot_data_filtered['is_selected'] = plot_data_filtered['cluster_id'].isin(selected_set)
 
-    # Plot rejected first (gray)
-    rejected = plot_data_filtered[~plot_data_filtered['is_selected']]
+    # Identify clusters that meet strength threshold but failed quality filters
+    plot_data_filtered['meets_strength'] = (
+        (plot_data_filtered['aanet_recon_loss_elbow_strength'] > recon_strong) &
+        (plot_data_filtered['aanet_archetypal_loss_elbow_strength'] > arch_strong)
+    )
+    plot_data_filtered['passed_quality'] = plot_data_filtered['cluster_id'].isin(quality_filtered['cluster_id'])
+    plot_data_filtered['failed_quality_but_strong'] = plot_data_filtered['meets_strength'] & ~plot_data_filtered['passed_quality']
+
+    # Plot rejected first (gray) - exclude the "failed quality but strong" ones
+    rejected = plot_data_filtered[~plot_data_filtered['is_selected'] & ~plot_data_filtered['failed_quality_but_strong']]
     ax_right.scatter(
         rejected['aanet_recon_loss_elbow_strength'],
         rejected['aanet_archetypal_loss_elbow_strength'],
@@ -965,6 +932,19 @@ for idx, n_clust in enumerate(sorted(all_elbow_df['n_clusters_total'].unique()))
         alpha=0.3,
         label=f'Rejected ({len(rejected)})'
     )
+
+    # Plot "failed quality but strong" as new category E (purple)
+    failed_quality_strong = plot_data_filtered[plot_data_filtered['failed_quality_but_strong']]
+    if len(failed_quality_strong) > 0:
+        ax_right.scatter(
+            failed_quality_strong['aanet_recon_loss_elbow_strength'],
+            failed_quality_strong['aanet_archetypal_loss_elbow_strength'],
+            c='#9467bd',  # purple
+            s=50,
+            alpha=0.7,
+            marker='s',  # square marker to distinguish
+            label=f'E: Strong but Failed Quality ({len(failed_quality_strong)})'
+        )
 
     # Assign category to each selected cluster (priority: A, D, B, C)
     cat_stats = all_category_stats[n_clust]
@@ -1025,6 +1005,264 @@ plt.suptitle('Cluster Selection Visualization - ZOOMED (excl. top 2 outliers): O
 plt.tight_layout()
 plt.show()
 
+# %% Analysis 10d: Rejection Diagnostics - Why are clusters being rejected?
+# This helps understand why clusters in the "balanced" region (near y=x) aren't being selected
+
+print("\n" + "="*100)
+print("REJECTION DIAGNOSTICS: Why are clusters being rejected?")
+print("="*100)
+
+for n_clust in sorted(all_elbow_df['n_clusters_total'].unique()):
+    print(f"\n{'='*80}")
+    print(f"n_clusters = {n_clust}")
+    print(f"{'='*80}")
+
+    group = all_elbow_df[all_elbow_df['n_clusters_total'] == n_clust].copy()
+    total = len(group)
+    print(f"Total clusters: {total}")
+
+    # Track rejection reasons
+    rejection_counts = {}
+
+    # Quality filter 1: n_latents >= 2
+    failed_n_latents = group[group['n_latents'] < 2]
+    rejection_counts['n_latents < 2'] = len(failed_n_latents)
+    group = group[group['n_latents'] >= 2].copy()
+
+    # Quality filter 2: recon_is_monotonic
+    failed_recon_mono = group[group['recon_is_monotonic'] != True]
+    rejection_counts['recon_is_monotonic=False'] = len(failed_recon_mono)
+    group = group[group['recon_is_monotonic'] == True].copy()
+
+    # Quality filter 3: arch_is_monotonic
+    failed_arch_mono = group[group['arch_is_monotonic'] != True]
+    rejection_counts['arch_is_monotonic=False'] = len(failed_arch_mono)
+    group = group[group['arch_is_monotonic'] == True].copy()
+
+    # Quality filter 4: recon_pct_decrease >= 20
+    failed_recon_pct = group[group['recon_pct_decrease'] < 20]
+    rejection_counts['recon_pct_decrease < 20'] = len(failed_recon_pct)
+    group = group[group['recon_pct_decrease'] >= 20].copy()
+
+    # Quality filter 5: arch_pct_decrease >= 20
+    failed_arch_pct = group[group['arch_pct_decrease'] < 20]
+    rejection_counts['arch_pct_decrease < 20'] = len(failed_arch_pct)
+    group = group[group['arch_pct_decrease'] >= 20].copy()
+
+    # Quality filter 6: k_differential <= 1
+    failed_k_diff = group[group['k_differential'].abs() > 1]
+    rejection_counts['|k_differential| > 1'] = len(failed_k_diff)
+    group = group[group['k_differential'].abs() <= DELTA_K_THRESHOLD].copy()
+
+    passed_quality = len(group)
+    print(f"\nQuality filter breakdown (cumulative):")
+    for reason, count in rejection_counts.items():
+        print(f"  {reason}: {count} rejected")
+    print(f"  → Passed all quality filters: {passed_quality}/{total} ({100*passed_quality/total:.1f}%)")
+
+    if passed_quality == 0:
+        continue
+
+    # Now check selection thresholds
+    recon_mean = group['aanet_recon_loss_elbow_strength'].mean()
+    recon_std = group['aanet_recon_loss_elbow_strength'].std()
+    arch_mean = group['aanet_archetypal_loss_elbow_strength'].mean()
+    arch_std = group['aanet_archetypal_loss_elbow_strength'].std()
+
+    # Selection thresholds
+    recon_strong = recon_mean + SD_STRONG * recon_std  # For category A/D
+    arch_strong = arch_mean + SD_STRONG * arch_std
+    recon_outlier = recon_mean + SD_OUTLIER * recon_std  # For category B/C
+    arch_outlier = arch_mean + SD_OUTLIER * arch_std
+
+    print(f"\nSelection thresholds (on quality-filtered data):")
+    print(f"  Recon: mean={recon_mean:.4f}, SD={recon_std:.4f}")
+    print(f"    Strong (A/D): > {recon_strong:.4f} (mean + {SD_STRONG}*SD)")
+    print(f"    Outlier (B): > {recon_outlier:.4f} (mean + {SD_OUTLIER}*SD)")
+    print(f"  Arch: mean={arch_mean:.4f}, SD={arch_std:.4f}")
+    print(f"    Strong (A/D): > {arch_strong:.4f} (mean + {SD_STRONG}*SD)")
+    print(f"    Outlier (C): > {arch_outlier:.4f} (mean + {SD_OUTLIER}*SD)")
+
+    # Count how many meet each criterion
+    strong_recon = group['aanet_recon_loss_elbow_strength'] > recon_strong
+    strong_arch = group['aanet_archetypal_loss_elbow_strength'] > arch_strong
+    outlier_recon = group['aanet_recon_loss_elbow_strength'] > recon_outlier
+    outlier_arch = group['aanet_archetypal_loss_elbow_strength'] > arch_outlier
+    k_diff_zero = group['k_differential'] == 0
+
+    print(f"\nSelection criterion counts (quality-filtered clusters):")
+    print(f"  Recon > mean+{SD_STRONG}*SD: {strong_recon.sum()}/{passed_quality}")
+    print(f"  Arch > mean+{SD_STRONG}*SD: {strong_arch.sum()}/{passed_quality}")
+    print(f"  Recon > mean+{SD_OUTLIER}*SD (outlier): {outlier_recon.sum()}/{passed_quality}")
+    print(f"  Arch > mean+{SD_OUTLIER}*SD (outlier): {outlier_arch.sum()}/{passed_quality}")
+    print(f"  k_differential == 0: {k_diff_zero.sum()}/{passed_quality}")
+
+    # Category breakdown
+    cat_a = (strong_recon & strong_arch).sum()
+    cat_b = outlier_recon.sum()
+    cat_c = outlier_arch.sum()
+    cat_d = (k_diff_zero & ((group['aanet_recon_loss_elbow_strength'] > recon_mean) |
+                            (group['aanet_archetypal_loss_elbow_strength'] > arch_mean))).sum()
+
+    selected = len(all_selected.get(n_clust, set()))
+    not_selected = passed_quality - selected
+
+    print(f"\nCategory counts:")
+    print(f"  A (strong both): {cat_a}")
+    print(f"  B (recon outlier): {cat_b}")
+    print(f"  C (arch outlier): {cat_c}")
+    print(f"  D (perfect agreement): {cat_d}")
+    print(f"  Total selected: {selected}")
+    print(f"  NOT selected (passed quality but below thresholds): {not_selected}")
+
+# %% Analysis 10e: Details on "Strong but Failed Quality" clusters (purple squares)
+# These are clusters that have strong elbow strengths but failed quality filters
+
+print("\n" + "="*100)
+print("DETAILS ON 'STRONG BUT FAILED QUALITY' CLUSTERS (Purple Squares)")
+print("="*100)
+print("These clusters have both recon AND arch elbow strength > mean + SD_STRONG*std")
+print("but failed at least one quality filter.")
+
+for n_clust in sorted(all_elbow_df['n_clusters_total'].unique()):
+    print(f"\n{'='*80}")
+    print(f"n_clusters = {n_clust}")
+    print(f"{'='*80}")
+
+    # Get all data for this n_clusters
+    group = all_elbow_df[all_elbow_df['n_clusters_total'] == n_clust].copy()
+
+    # Calculate quality-filtered data to get thresholds
+    quality_filtered = group.copy()
+    quality_filtered = quality_filtered[quality_filtered['n_latents'] >= 2].copy()
+    quality_filtered = quality_filtered[quality_filtered['recon_is_monotonic'] == True].copy()
+    quality_filtered = quality_filtered[quality_filtered['arch_is_monotonic'] == True].copy()
+    quality_filtered = quality_filtered[quality_filtered['recon_pct_decrease'] >= 20].copy()
+    quality_filtered = quality_filtered[quality_filtered['arch_pct_decrease'] >= 20].copy()
+    quality_filtered = quality_filtered[quality_filtered['k_differential'].abs() <= DELTA_K_THRESHOLD].copy()
+
+    if len(quality_filtered) == 0:
+        print("No clusters passed quality filters - cannot calculate thresholds")
+        continue
+
+    # Calculate thresholds from quality-filtered data
+    recon_mean = quality_filtered['aanet_recon_loss_elbow_strength'].mean()
+    recon_std = quality_filtered['aanet_recon_loss_elbow_strength'].std()
+    arch_mean = quality_filtered['aanet_archetypal_loss_elbow_strength'].mean()
+    arch_std = quality_filtered['aanet_archetypal_loss_elbow_strength'].std()
+    recon_strong = recon_mean + SD_STRONG * recon_std
+    arch_strong = arch_mean + SD_STRONG * arch_std
+
+    # Find clusters that meet strength threshold
+    group['meets_strength'] = (
+        (group['aanet_recon_loss_elbow_strength'] > recon_strong) &
+        (group['aanet_archetypal_loss_elbow_strength'] > arch_strong)
+    )
+    group['passed_quality'] = group['cluster_id'].isin(quality_filtered['cluster_id'])
+
+    # The purple squares: strong but failed quality
+    purple_squares = group[group['meets_strength'] & ~group['passed_quality']].copy()
+
+    if len(purple_squares) == 0:
+        print("No 'strong but failed quality' clusters found")
+        continue
+
+    print(f"Found {len(purple_squares)} clusters with strong elbow strengths that failed quality filters:\n")
+
+    # For each purple square, identify which filter(s) it failed
+    for _, row in purple_squares.iterrows():
+        cid = row['cluster_id']
+        print(f"  Cluster {cid}:")
+        print(f"    n_latents: {row['n_latents']}")
+        print(f"    Recon elbow strength: {row['aanet_recon_loss_elbow_strength']:.4f} (threshold: {recon_strong:.4f})")
+        print(f"    Arch elbow strength: {row['aanet_archetypal_loss_elbow_strength']:.4f} (threshold: {arch_strong:.4f})")
+        print(f"    k_differential: {row['k_differential']}")
+
+        # Check which filters failed
+        failed_filters = []
+        if row['n_latents'] < 2:
+            failed_filters.append(f"n_latents < 2 (has {row['n_latents']})")
+        if row['recon_is_monotonic'] != True:
+            failed_filters.append(f"recon_is_monotonic=False")
+        if row['arch_is_monotonic'] != True:
+            failed_filters.append(f"arch_is_monotonic=False")
+        if row['recon_pct_decrease'] < 20:
+            failed_filters.append(f"recon_pct_decrease={row['recon_pct_decrease']:.1f}% < 20%")
+        if row['arch_pct_decrease'] < 20:
+            failed_filters.append(f"arch_pct_decrease={row['arch_pct_decrease']:.1f}% < 20%")
+        if abs(row['k_differential']) > DELTA_K_THRESHOLD:
+            failed_filters.append(f"|k_differential|={abs(row['k_differential'])} > {DELTA_K_THRESHOLD}")
+
+        print(f"    FAILED FILTERS: {', '.join(failed_filters)}")
+        print()
+
+    # Plot elbow curves for each purple square cluster
+    print(f"\nPlotting elbow curves for {len(purple_squares)} purple square clusters...")
+
+    for _, row in purple_squares.iterrows():
+        cid = row['cluster_id']
+
+        # Get all k values for this cluster from the full metrics
+        if n_clust in all_metrics:
+            cluster_data = all_metrics[n_clust][all_metrics[n_clust]['cluster_id'] == cid].sort_values('aanet_k')
+
+            if len(cluster_data) > 0:
+                fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+                k_vals = cluster_data['aanet_k'].values
+                recon_losses = cluster_data['aanet_recon_loss'].values
+                arch_losses = cluster_data['aanet_archetypal_loss'].values
+
+                # Get elbow k values
+                recon_elbow_k = row['aanet_recon_loss_elbow_k']
+                arch_elbow_k = row['aanet_archetypal_loss_elbow_k']
+
+                # Left plot: Reconstruction loss
+                ax = axes[0]
+                ax.plot(k_vals, recon_losses, 'b-o', markersize=8, linewidth=2)
+                if recon_elbow_k in k_vals:
+                    elbow_idx = list(k_vals).index(recon_elbow_k)
+                    ax.axvline(x=recon_elbow_k, color='red', linestyle='--', alpha=0.7, label=f'Elbow k={int(recon_elbow_k)}')
+                    ax.plot(recon_elbow_k, recon_losses[elbow_idx], 'ro', markersize=12, zorder=5)
+                ax.set_xlabel('k (number of vertices)', fontsize=11)
+                ax.set_ylabel('Reconstruction Loss', fontsize=11)
+                ax.set_title(f'Reconstruction Loss\nStrength={row["aanet_recon_loss_elbow_strength"]:.4f}, Monotonic={row["recon_is_monotonic"]}, Decrease={row["recon_pct_decrease"]:.1f}%', fontsize=10)
+                ax.grid(True, alpha=0.3)
+                ax.legend()
+
+                # Right plot: Archetypal loss
+                ax = axes[1]
+                ax.plot(k_vals, arch_losses, 'g-o', markersize=8, linewidth=2)
+                if arch_elbow_k in k_vals:
+                    elbow_idx = list(k_vals).index(arch_elbow_k)
+                    ax.axvline(x=arch_elbow_k, color='red', linestyle='--', alpha=0.7, label=f'Elbow k={int(arch_elbow_k)}')
+                    ax.plot(arch_elbow_k, arch_losses[elbow_idx], 'ro', markersize=12, zorder=5)
+                ax.set_xlabel('k (number of vertices)', fontsize=11)
+                ax.set_ylabel('Archetypal Loss', fontsize=11)
+                ax.set_title(f'Archetypal Loss\nStrength={row["aanet_archetypal_loss_elbow_strength"]:.4f}, Monotonic={row["arch_is_monotonic"]}, Decrease={row["arch_pct_decrease"]:.1f}%', fontsize=10)
+                ax.grid(True, alpha=0.3)
+                ax.legend()
+
+                # Build failed filters string for suptitle
+                failed_filters = []
+                if row['n_latents'] < 2:
+                    failed_filters.append(f"n_latents<2")
+                if row['recon_is_monotonic'] != True:
+                    failed_filters.append(f"recon_monotonic=F")
+                if row['arch_is_monotonic'] != True:
+                    failed_filters.append(f"arch_monotonic=F")
+                if row['recon_pct_decrease'] < 20:
+                    failed_filters.append(f"recon_dec<20%")
+                if row['arch_pct_decrease'] < 20:
+                    failed_filters.append(f"arch_dec<20%")
+                if abs(row['k_differential']) > DELTA_K_THRESHOLD:
+                    failed_filters.append(f"|Δk|>{DELTA_K_THRESHOLD}")
+
+                plt.suptitle(f"Cluster {cid} (n={n_clust}, {row['n_latents']} latents) - FAILED: {', '.join(failed_filters)}",
+                            fontsize=12, y=1.02)
+                plt.tight_layout()
+                plt.show()
+
 # %% Print detailed information about selected latents
 print("\n" + "="*100)
 print("DETAILED SELECTED LATENT INFORMATION")
@@ -1044,7 +1282,7 @@ for n_clust in sorted(all_elbow_df['n_clusters_total'].unique()):
     group = group[group['arch_is_monotonic'] == True].copy()
     group = group[group['recon_pct_decrease'] >= 20].copy()
     group = group[group['arch_pct_decrease'] >= 20].copy()
-    group = group[group['k_differential'].abs() <= 1].copy()
+    group = group[group['k_differential'].abs() <= DELTA_K_THRESHOLD].copy()
 
     if len(group) == 0:
         print("No clusters after quality filters")
@@ -1115,6 +1353,63 @@ for n_clust in sorted(all_elbow_df['n_clusters_total'].unique()):
             latent_indices = row['latent_indices']
             print(f"{'':>10} Latent indices: {latent_indices}")
         print()  # Empty line between clusters
+
+    # Plot elbow curves for each selected cluster
+    print(f"\nPlotting elbow curves for {len(selected_df)} selected clusters...")
+
+    for _, row in selected_df.iterrows():
+        cid = row['cluster_id']
+        cat = row['category']
+
+        # Get all k values for this cluster from the full metrics
+        if n_clust in all_metrics:
+            cluster_data = all_metrics[n_clust][all_metrics[n_clust]['cluster_id'] == cid].sort_values('aanet_k')
+
+            if len(cluster_data) > 0:
+                fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+                k_vals = cluster_data['aanet_k'].values
+                recon_losses = cluster_data['aanet_recon_loss'].values
+                arch_losses = cluster_data['aanet_archetypal_loss'].values
+
+                # Get elbow k values
+                recon_elbow_k = row['aanet_recon_loss_elbow_k']
+                arch_elbow_k = row['aanet_archetypal_loss_elbow_k']
+
+                # Left plot: Reconstruction loss
+                ax = axes[0]
+                ax.plot(k_vals, recon_losses, 'b-o', markersize=8, linewidth=2)
+                if recon_elbow_k in k_vals:
+                    elbow_idx = list(k_vals).index(recon_elbow_k)
+                    ax.axvline(x=recon_elbow_k, color='red', linestyle='--', alpha=0.7, label=f'Elbow k={int(recon_elbow_k)}')
+                    ax.plot(recon_elbow_k, recon_losses[elbow_idx], 'ro', markersize=12, zorder=5)
+                ax.set_xlabel('k (number of vertices)', fontsize=11)
+                ax.set_ylabel('Reconstruction Loss', fontsize=11)
+                ax.set_title(f'Reconstruction Loss\nStrength={row["aanet_recon_loss_elbow_strength"]:.4f} ({row["recon_sds"]:+.2f} SD), Decrease={row["recon_pct_decrease"]:.1f}%', fontsize=10)
+                ax.grid(True, alpha=0.3)
+                ax.legend()
+
+                # Right plot: Archetypal loss
+                ax = axes[1]
+                ax.plot(k_vals, arch_losses, 'g-o', markersize=8, linewidth=2)
+                if arch_elbow_k in k_vals:
+                    elbow_idx = list(k_vals).index(arch_elbow_k)
+                    ax.axvline(x=arch_elbow_k, color='red', linestyle='--', alpha=0.7, label=f'Elbow k={int(arch_elbow_k)}')
+                    ax.plot(arch_elbow_k, arch_losses[elbow_idx], 'ro', markersize=12, zorder=5)
+                ax.set_xlabel('k (number of vertices)', fontsize=11)
+                ax.set_ylabel('Archetypal Loss', fontsize=11)
+                ax.set_title(f'Archetypal Loss\nStrength={row["aanet_archetypal_loss_elbow_strength"]:.4f} ({row["arch_sds"]:+.2f} SD), Decrease={row["arch_pct_decrease"]:.1f}%', fontsize=10)
+                ax.grid(True, alpha=0.3)
+                ax.legend()
+
+                # Category colors for title
+                cat_colors = {'A': 'blue', 'B': 'green', 'C': 'red', 'D': 'orange'}
+                cat_names = {'A': 'Strong Both', 'B': 'Recon Outlier', 'C': 'Arch Outlier', 'D': 'Perfect Agreement'}
+
+                plt.suptitle(f"Cluster {cid} (n={n_clust}, {row['n_latents']} latents) - Category {cat}: {cat_names.get(cat, 'Unknown')}",
+                            fontsize=12, y=1.02, color=cat_colors.get(cat, 'black'))
+                plt.tight_layout()
+                plt.show()
 
 print("\n" + "="*100)
 

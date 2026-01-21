@@ -61,6 +61,7 @@ from aanet_pipeline.training import TrainingConfig
 from aanet_pipeline.cluster_summary import AAnetDescriptor
 from aanet_pipeline.extrema import compute_diffusion_extrema, ExtremaConfig
 from mess3_gmg_analysis_utils import sae_encode_features
+from cluster_selection import select_promising_clusters
 
 
 def parse_args():
@@ -190,92 +191,7 @@ def parse_args():
     return args
 
 
-def select_promising_clusters(df, n_clusters_val, delta_k_threshold=1, sd_outlier=3, sd_strong=1):
-    """
-    Select promising clusters - copied from analyze_aanet_results.py
-    """
-    import pandas as pd
-
-    # Filter for this n_clusters value
-    group = df[df['n_clusters_total'] == n_clusters_val].copy()
-
-    # Apply quality filters
-    group = group[group['n_latents'] >= 2].copy()
-    group = group[group['recon_is_monotonic'] == True].copy()
-    group = group[group['arch_is_monotonic'] == True].copy()
-    group = group[group['recon_pct_decrease'] >= 20].copy()
-    group = group[group['arch_pct_decrease'] >= 20].copy()
-
-    # Filter: Delta K constraint
-    if 'k_differential' not in group.columns:
-        group['k_differential'] = (group['aanet_recon_loss_elbow_k'] -
-                                    group['aanet_archetypal_loss_elbow_k'])
-    group = group[group['k_differential'].abs() <= delta_k_threshold].copy()
-
-    if len(group) == 0:
-        return set(), {}
-
-    # Calculate distance from origin for ranking
-    group['distance_from_origin'] = np.sqrt(
-        group['aanet_recon_loss_elbow_strength']**2 +
-        group['aanet_archetypal_loss_elbow_strength']**2
-    )
-
-    # Calculate SD-based thresholds
-    recon_mean = group['aanet_recon_loss_elbow_strength'].mean()
-    recon_std = group['aanet_recon_loss_elbow_strength'].std()
-    arch_mean = group['aanet_archetypal_loss_elbow_strength'].mean()
-    arch_std = group['aanet_archetypal_loss_elbow_strength'].std()
-
-    # Thresholds for outliers (categories B & C)
-    recon_outlier_threshold = recon_mean + sd_outlier * recon_std
-    arch_outlier_threshold = arch_mean + sd_outlier * arch_std
-
-    # Thresholds for strong values (categories A & D)
-    recon_strong_threshold = recon_mean + sd_strong * recon_std
-    arch_strong_threshold = arch_mean + sd_strong * arch_std
-
-    selected_clusters = set()
-    category_stats = {
-        'A_strong_both': [],
-        'B_recon_outliers': [],
-        'C_arch_outliers': [],
-        'D_agreement': []
-    }
-
-    # Category A: Strong on Both Axes
-    cat_a = group[
-        (group['aanet_recon_loss_elbow_strength'] > recon_strong_threshold) &
-        (group['aanet_archetypal_loss_elbow_strength'] > arch_strong_threshold)
-    ].copy()
-    category_stats['A_strong_both'] = cat_a['cluster_id'].tolist()
-    selected_clusters.update(cat_a['cluster_id'])
-
-    # Category B: Reconstruction Outliers
-    cat_b = group[
-        group['aanet_recon_loss_elbow_strength'] > recon_outlier_threshold
-    ].copy()
-    category_stats['B_recon_outliers'] = cat_b['cluster_id'].tolist()
-    selected_clusters.update(cat_b['cluster_id'])
-
-    # Category C: Archetypal Outliers
-    cat_c = group[
-        group['aanet_archetypal_loss_elbow_strength'] > arch_outlier_threshold
-    ].copy()
-    category_stats['C_arch_outliers'] = cat_c['cluster_id'].tolist()
-    selected_clusters.update(cat_c['cluster_id'])
-
-    # Category D: Perfect Agreement Standouts
-    # Delta k = 0 AND both metrics above their means
-    cat_d = group[
-        (group['k_differential'] == 0) &
-        (((group['aanet_recon_loss_elbow_strength'] > recon_mean) & (group['aanet_archetypal_loss_elbow_strength'] > arch_mean)) |
-         ((group['aanet_archetypal_loss_elbow_strength'] > arch_mean) & (group['aanet_recon_loss_elbow_strength'] > recon_mean)))
-    ].copy()
-    category_stats['D_agreement'] = cat_d['cluster_id'].tolist()
-    selected_clusters.update(cat_d['cluster_id'])
-
-    return selected_clusters, category_stats
+# select_promising_clusters imported from cluster_selection module
 
 
 def load_selected_clusters(csv_dir, n_clusters_list):
