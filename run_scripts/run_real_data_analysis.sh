@@ -21,12 +21,12 @@ python -u real_data_tests/analyze_real_saes.py \
     --sae_release "gemma-scope-9b-pt-res" \
     --sae_id "layer_20/width_16k/average_l0_68" \
     --output_dir "/workspace/outputs/real_data_analysis_canonical" \
-    --n_clusters_list 128 256 512 768 \
+    --n_clusters_list 512 768 \
     --latent_activity_threshold 0 \
     --activity_batch_size 32 \
     --activity_batches 4096 \
     --activity_seq_len 256 \
-    --pca_num_cycles 80 \
+    --pca_num_cycles 20 \
     --pca_max_samples 100000 \
     --pca_variance_threshold 0.95 \
     --device "cuda" \
