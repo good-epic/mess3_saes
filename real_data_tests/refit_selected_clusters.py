@@ -578,6 +578,7 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
 
     # Setup paths
     save_dir = Path(args.save_dir) / f"n{n_clusters}"
+    save_dir.mkdir(parents=True, exist_ok=True)
     model_path = save_dir / f"cluster_{cluster_id}_k{k}_category{category}.pt"
     samples_path = save_dir / f"cluster_{cluster_id}_k{k}_category{category}_vertex_samples.jsonl"
     stats_path = save_dir / f"cluster_{cluster_id}_k{k}_category{category}_vertex_stats.json"
