@@ -731,24 +731,37 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
 
                         # If first time seeing this sequence for this vertex, initialize
                         if key not in batch_samples:
-                            # Get full sequence tokens
+                            # Get full sequence tokens (skip special tokens for clean text)
                             sequence_tokens = tokens[batch_idx].cpu().numpy()
-                            full_text = tokenizer.decode(sequence_tokens)
+                            full_text = tokenizer.decode(sequence_tokens, skip_special_tokens=True)
 
                             batch_samples[key] = {
                                 "vertex_id": int(i),
                                 "distances_to_vertex": [],
                                 "full_text": full_text,
                                 "trigger_token_indices": [],
+                                "trigger_word_indices": [],
                                 "trigger_words": [],
                             }
 
                         # Add this token's information to the accumulated sample
                         trigger_token_id = tokens[batch_idx, seq_idx].cpu().item()
-                        trigger_word = tokenizer.decode([trigger_token_id])
+                        trigger_word = tokenizer.decode([trigger_token_id], skip_special_tokens=True)
+
+                        # Compute word index by decoding up to this token and counting words
+                        # Use skip_special_tokens=True to avoid <bos>/<eos> being counted as words
+                        text_up_to_token = tokenizer.decode(
+                            tokens[batch_idx, :seq_idx+1].cpu().numpy(),
+                            skip_special_tokens=True
+                        )
+                        # Count words (split by whitespace), subtract 1 for 0-indexing
+                        word_index = len(text_up_to_token.split()) - 1
+                        if word_index < 0:
+                            word_index = 0
 
                         batch_samples[key]["distances_to_vertex"].append(float(dist))
                         batch_samples[key]["trigger_token_indices"].append(int(seq_idx))
+                        batch_samples[key]["trigger_word_indices"].append(int(word_index))
                         batch_samples[key]["trigger_words"].append(trigger_word)
 
                 # Write all accumulated samples to file
