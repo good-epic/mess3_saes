@@ -952,14 +952,10 @@ def main():
                 continue
 
             # Metadata structure matching what training produces
+            # Use **cluster_info to include all keys (like training branch does)
             all_metadata.append({
-                'n_clusters': n_clusters,
-                'cluster_id': cluster_id,
-                'arch_elbow_k': k,  # Use arch_elbow_k to match collect_vertex_samples_for_cluster
-                'category': category,
-                'latent_indices': latent_indices,
-                'n_latents': len(latent_indices),
-                'stage1_model_path': str(stage1_model_path),  # Store original path
+                **cluster_info,
+                'stage1_model_path': str(stage1_model_path),  # Add path to pre-trained model
             })
 
         print(f"Found {len(all_metadata)} pre-trained models from Stage 1")
