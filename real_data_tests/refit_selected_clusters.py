@@ -954,7 +954,7 @@ def main():
             all_metadata.append({
                 'n_clusters': n_clusters,
                 'cluster_id': cluster_id,
-                'k': k,
+                'arch_elbow_k': k,  # Use arch_elbow_k to match collect_vertex_samples_for_cluster
                 'category': category,
                 'latent_indices': latent_indices,
                 'n_latents': len(latent_indices),
