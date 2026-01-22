@@ -23,6 +23,7 @@ from real_data_utils import RealDataSampler, build_real_aanet_datasets
 from real_data_tests.real_pipeline import RealDataClusteringPipeline
 from aanet_pipeline.streaming_trainer import StreamingAAnetTrainer
 from mess3_gmg_analysis_utils import sae_encode_features
+from cluster_selection import delete_special_tokens
 
 
 def compute_cluster_activation_pca_ranks(
@@ -97,8 +98,11 @@ def compute_cluster_activation_pca_ranks(
                 # Encode with SAE
                 feature_acts, _, _ = sae_encode_features(sae, acts_flat)  # (batch*seq, d_sae)
 
+                # Exclude BOS tokens (position 0) - not meaningful for analysis
+                feature_acts = delete_special_tokens(feature_acts, batch_size, seq_len, device)
+
                 # Filter to only this cluster's latents
-                cluster_acts = feature_acts[:, latent_indices]  # (batch*seq, n_cluster_latents)
+                cluster_acts = feature_acts[:, latent_indices]  # (batch*seq-batch, n_cluster_latents)
 
                 # Only keep rows where at least one latent is active
                 active_mask = (cluster_acts.abs().sum(dim=1) > 1e-5)
@@ -643,6 +647,9 @@ def main():
                         acts_flat = acts.reshape(-1, acts.shape[-1])
                         feature_acts, _, _ = sae_encode_features(sae, acts_flat)
 
+                        # Exclude BOS tokens (position 0) - not meaningful for training
+                        feature_acts = delete_special_tokens(feature_acts, args.aanet_batch_size, args.activity_seq_len, args.device)
+
                         # 2. Distribute to clusters in this chunk
                         for cid, indices in cluster_indices_map.items():
                             if indices.numel() == 0: continue
@@ -759,6 +766,9 @@ def main():
                         acts = cache[hook_name]
                         acts_flat = acts.reshape(-1, acts.shape[-1])
                         feature_acts, _, _ = sae_encode_features(sae, acts_flat)
+
+                        # Exclude BOS tokens (position 0) - not meaningful for training
+                        feature_acts = delete_special_tokens(feature_acts, args.aanet_batch_size, args.activity_seq_len, args.device)
 
                     # 2. Train (Distribute to all clusters in this trainer)
                     step_losses = trainer.train_step(feature_acts)
@@ -944,6 +954,9 @@ def main():
                     acts = cache[hook_name]
                     acts_flat = acts.reshape(-1, acts.shape[-1])
                     feature_acts, _, _ = sae_encode_features(sae, acts_flat)
+
+                    # Exclude BOS tokens (position 0) - not meaningful for training
+                    feature_acts = delete_special_tokens(feature_acts, args.aanet_batch_size, args.activity_seq_len, args.device)
 
                 # 2. Train (Distribute to ALL trainers)
                 for k, trainer in trainers.items():

@@ -6,6 +6,32 @@ promising clusters based on AANet elbow analysis.
 """
 
 import numpy as np
+import torch
+
+
+def delete_special_tokens(feature_acts, batch_size, seq_len, device):
+    """
+    Remove special tokens (BOS at position 0) from flattened activation tensor.
+
+    When activations are flattened from (batch, seq_len, d_model) to (batch*seq_len, d_model),
+    the BOS positions are at indices 0, seq_len, 2*seq_len, etc. This function removes those rows.
+
+    Args:
+        feature_acts: Tensor of shape (batch_size * seq_len, d_sae)
+        batch_size: Number of sequences in the batch
+        seq_len: Length of each sequence
+        device: Torch device (cuda/cpu)
+
+    Returns:
+        Tensor of shape (batch_size * (seq_len - 1), d_sae) with BOS tokens removed.
+    """
+    # Create position indices for each position in the sequence
+    positions = torch.arange(seq_len, device=device)
+    # Repeat for each batch
+    positions = positions.repeat(batch_size)
+    # BOS is at position 0 - exclude it
+    keep_mask = positions > 0
+    return feature_acts[keep_mask]
 
 
 def calculate_elbow_score(x, y):

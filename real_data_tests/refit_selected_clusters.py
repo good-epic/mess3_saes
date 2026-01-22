@@ -61,7 +61,7 @@ from aanet_pipeline.training import TrainingConfig
 from aanet_pipeline.cluster_summary import AAnetDescriptor
 from aanet_pipeline.extrema import compute_diffusion_extrema, ExtremaConfig
 from mess3_gmg_analysis_utils import sae_encode_features
-from cluster_selection import select_promising_clusters
+from cluster_selection import select_promising_clusters, delete_special_tokens
 
 
 def parse_args():
@@ -291,6 +291,9 @@ def load_selected_clusters(csv_dir, n_clusters_list):
     return selected_clusters
 
 
+# delete_special_tokens imported from cluster_selection module
+
+
 def collect_warmup_data(sampler, model, sae, hook_name, cluster_indices, n_samples, batch_size, seq_len, device):
     """Collect samples for extrema initialization"""
     print(f"  Collecting {n_samples} warmup samples...")
@@ -306,6 +309,9 @@ def collect_warmup_data(sampler, model, sae, hook_name, cluster_indices, n_sampl
             acts = cache[hook_name]
             acts_flat = acts.reshape(-1, acts.shape[-1])
             feature_acts, _, _ = sae_encode_features(sae, acts_flat)
+
+            # Exclude BOS tokens (position 0) from training data
+            feature_acts = delete_special_tokens(feature_acts, tokens.shape[0], seq_len, device)
 
             # Get cluster-specific activations
             acts_c = feature_acts[:, cluster_indices]
@@ -462,6 +468,9 @@ def train_single_cluster(cluster_info, model, sae, sampler, args):
             acts = cache[hook_name]
             acts_flat = acts.reshape(-1, acts.shape[-1])
             feature_acts, _, _ = sae_encode_features(sae, acts_flat)
+
+            # Exclude BOS tokens (position 0) from training data
+            feature_acts = delete_special_tokens(feature_acts, tokens.shape[0], args.activity_seq_len, args.device)
 
         # Train step
         step_losses = trainer.train_step(feature_acts)
@@ -691,6 +700,11 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
                 for idx, coord in zip(active_indices.cpu().numpy(), embedding.cpu().numpy()):
                     batch_idx = idx // args.activity_seq_len
                     seq_idx = idx % args.activity_seq_len
+
+                    # Skip BOS token (position 0) - not meaningful for analysis
+                    if seq_idx == 0:
+                        continue
+
                     coord_record = {
                         "barycentric_coords": coord.tolist(),
                         "batch_idx": int(batch_idx),
@@ -725,6 +739,10 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
                         # Calculate batch and sequence position
                         batch_idx = idx // args.activity_seq_len
                         seq_idx = idx % args.activity_seq_len
+
+                        # Skip BOS token (position 0) - not meaningful for interpretation
+                        if seq_idx == 0:
+                            continue
 
                         # Create unique key for this (sequence, vertex) pair
                         key = (int(batch_idx), int(i))
