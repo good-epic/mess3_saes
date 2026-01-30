@@ -64,6 +64,62 @@ from mess3_gmg_analysis_utils import sae_encode_features
 from cluster_selection import select_promising_clusters, delete_special_tokens
 
 
+def parse_manual_cluster_ids(manual_str):
+    """Parse manual cluster IDs string into dict.
+
+    Format: 'n_clusters1:id1,id2,id3;n_clusters2:id4,id5'
+    Example: '512:23,45,67;768:100,200'
+
+    Returns: {n_clusters1: [id1, id2, id3], n_clusters2: [id4, id5]}
+    """
+    if not manual_str:
+        return None
+
+    result = {}
+    for group in manual_str.split(';'):
+        group = group.strip()
+        if not group:
+            continue
+        n_clusters_str, ids_str = group.split(':')
+        n_clusters = int(n_clusters_str.strip())
+        ids = [int(x.strip()) for x in ids_str.split(',')]
+        result[n_clusters] = ids
+    return result
+
+
+def parse_manual_k(manual_str):
+    """Parse manual k overrides string into nested dict.
+
+    Format: 'n_clusters1:cluster_id1=k1,cluster_id2=k2;n_clusters2:cluster_id3=k3'
+    Example: '512:261=3,504=4;768:100=5'
+
+    Returns: {n_clusters1: {cluster_id1: k1, cluster_id2: k2}, ...}
+    """
+    if not manual_str:
+        return None
+
+    result = {}
+    for group in manual_str.split(';'):
+        group = group.strip()
+        if not group:
+            continue
+        n_clusters_str, assignments_str = group.split(':')
+        n_clusters = int(n_clusters_str.strip())
+
+        cluster_k_map = {}
+        for assignment in assignments_str.split(','):
+            assignment = assignment.strip()
+            if not assignment:
+                continue
+            cluster_id_str, k_str = assignment.split('=')
+            cluster_id = int(cluster_id_str.strip())
+            k = int(k_str.strip())
+            cluster_k_map[cluster_id] = k
+
+        result[n_clusters] = cluster_k_map
+    return result
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Refit AANet models for selected clusters")
 
@@ -73,6 +129,16 @@ def parse_args():
     parser.add_argument("--csv_dir", type=str,
                        default="outputs/real_data_analysis_canonical",
                        help="Directory containing CSV files with AANet metrics")
+    parser.add_argument("--manual_cluster_ids", type=str, default=None,
+                       help="Manually specify cluster IDs instead of automatic selection. "
+                            "Format: 'n_clusters1:id1,id2,id3;n_clusters2:id4,id5' "
+                            "Example: '512:23,45,67;768:100,200'. "
+                            "When specified, bypasses automatic cluster selection criteria.")
+    parser.add_argument("--manual_k", type=str, default=None,
+                       help="Manually override k (number of archetypes) for specific clusters. "
+                            "Format: 'n_clusters1:cluster_id1=k1,cluster_id2=k2;n_clusters2:cluster_id3=k3' "
+                            "Example: '512:261=3,504=4;768:100=5'. "
+                            "Overrides the automatic arch_elbow_k detection for specified clusters.")
 
     # Output
     parser.add_argument("--save_dir", type=str, required=True,
@@ -194,9 +260,18 @@ def parse_args():
 # select_promising_clusters imported from cluster_selection module
 
 
-def load_selected_clusters(csv_dir, n_clusters_list):
+def load_selected_clusters(csv_dir, n_clusters_list, manual_cluster_ids=None, manual_k=None):
     """
     Load selected clusters using the same logic as analyze_aanet_results.py
+
+    Args:
+        csv_dir: Directory containing CSV files with AANet metrics
+        n_clusters_list: List of n_clusters values to process
+        manual_cluster_ids: Optional dict mapping n_clusters -> list of cluster_ids.
+                           If provided, bypasses automatic selection and uses these instead.
+                           Format: {512: [23, 45, 67], 768: [100, 200]}
+        manual_k: Optional dict mapping n_clusters -> {cluster_id: k} for k overrides.
+                  Format: {512: {261: 3, 504: 4}, 768: {100: 5}}
 
     Returns: List of dicts with cluster info:
         {
@@ -252,18 +327,39 @@ def load_selected_clusters(csv_dir, n_clusters_list):
 
         elbow_df = pd.DataFrame(elbow_results)
 
-        # Select clusters using same criteria
-        selected_ids, cat_stats = select_promising_clusters(elbow_df, n_clusters)
+        # Use manual cluster IDs if provided, otherwise auto-select
+        if manual_cluster_ids and n_clusters in manual_cluster_ids:
+            selected_ids = set(manual_cluster_ids[n_clusters])
+            # Validate that all specified cluster IDs exist in the data
+            available_ids = set(elbow_df['cluster_id'].tolist())
+            missing_ids = selected_ids - available_ids
+            if missing_ids:
+                print(f"  WARNING: Cluster IDs not found in data: {missing_ids}")
+                selected_ids = selected_ids & available_ids
 
-        print(f"  Selected {len(selected_ids)} clusters")
+            # Create placeholder category stats - all marked as "M" for manual
+            cat_stats = {
+                'A_strong_both': [],
+                'B_recon_outliers': [],
+                'C_arch_outliers': [],
+                'D_agreement': [],
+                'M_manual': list(selected_ids)
+            }
+            print(f"  Using {len(selected_ids)} manually specified clusters")
+        else:
+            # Select clusters using automatic criteria
+            selected_ids, cat_stats = select_promising_clusters(elbow_df, n_clusters)
+            print(f"  Auto-selected {len(selected_ids)} clusters")
 
         # Extract cluster info
         for cluster_id in selected_ids:
             row = elbow_df[elbow_df['cluster_id'] == cluster_id].iloc[0]
 
-            # Determine category (priority: A, D, B, C)
+            # Determine category (priority: M, A, D, B, C)
             category = None
-            if cluster_id in cat_stats['A_strong_both']:
+            if 'M_manual' in cat_stats and cluster_id in cat_stats['M_manual']:
+                category = 'M'
+            elif cluster_id in cat_stats['A_strong_both']:
                 category = 'A'
             elif cluster_id in cat_stats['D_agreement']:
                 category = 'D'
@@ -276,12 +372,24 @@ def load_selected_clusters(csv_dir, n_clusters_list):
             import ast
             latent_indices = ast.literal_eval(row['latent_indices'])
 
+            # Determine k to use: manual override or arch_elbow_k
+            arch_k = int(row['aanet_archetypal_loss_elbow_k'])
+            recon_k = int(row['aanet_recon_loss_elbow_k'])
+
+            # Check for manual k override
+            if manual_k and n_clusters in manual_k and cluster_id in manual_k[n_clusters]:
+                k_to_use = manual_k[n_clusters][cluster_id]
+                print(f"    Cluster {cluster_id}: using manual k={k_to_use} (arch_elbow={arch_k}, recon_elbow={recon_k})")
+            else:
+                k_to_use = arch_k
+
             selected_clusters.append({
                 'n_clusters': n_clusters,
                 'cluster_id': int(cluster_id),
                 'latent_indices': latent_indices,
-                'arch_elbow_k': int(row['aanet_archetypal_loss_elbow_k']),
-                'recon_elbow_k': int(row['aanet_recon_loss_elbow_k']),
+                'arch_elbow_k': k_to_use,  # This is the k that will be used
+                'original_arch_elbow_k': arch_k,  # Keep original for reference
+                'recon_elbow_k': recon_k,
                 'category': category,
                 'recon_elbow_strength': float(row['aanet_recon_loss_elbow_strength']),
                 'arch_elbow_strength': float(row['aanet_archetypal_loss_elbow_strength']),
@@ -881,11 +989,21 @@ def main():
     if args.hf_token:
         login(token=args.hf_token)
 
+    # Parse manual cluster IDs if provided
+    manual_cluster_ids = parse_manual_cluster_ids(args.manual_cluster_ids)
+    if manual_cluster_ids:
+        print(f"\nManual cluster IDs specified: {manual_cluster_ids}")
+
+    # Parse manual k overrides if provided
+    manual_k = parse_manual_k(args.manual_k)
+    if manual_k:
+        print(f"\nManual k overrides specified: {manual_k}")
+
     # Load selected clusters
     print("\n" + "="*80)
     print("LOADING SELECTED CLUSTERS")
     print("="*80)
-    selected_clusters = load_selected_clusters(args.csv_dir, n_clusters_list)
+    selected_clusters = load_selected_clusters(args.csv_dir, n_clusters_list, manual_cluster_ids, manual_k)
     print(f"\nTotal selected clusters: {len(selected_clusters)}")
 
     # Check if we found any clusters

@@ -10,14 +10,14 @@ from cluster_selection import calculate_elbow_score, select_promising_clusters
 
 # %% Selection parameters
 # These control the SD thresholds for cluster selection
-SD_STRONG = 1      # For categories A (strong both) and D (perfect agreement): mean + SD_STRONG * std
-SD_OUTLIER = 3     # For categories B (recon outliers) and C (arch outliers): mean + SD_OUTLIER * std
-DELTA_K_THRESHOLD = 1  # Maximum allowed |k_differential| for quality filter
+SD_STRONG = 0.5      # For categories A (strong both) and D (perfect agreement): mean + SD_STRONG * std
+SD_OUTLIER = 2     # For categories B (recon outliers) and C (arch outliers): mean + SD_OUTLIER * std
+DELTA_K_THRESHOLD = 2  # Maximum allowed |k_differential| for quality filter
 
 # %% Setup - Load data
 # Configure paths
 base_dir = Path(__file__).parent.parent / "outputs" / "real_data_analysis_canonical"
-n_clusters_list = [512, 768]
+n_clusters_list = [512]
 
 # NOTE: As of the latest updates, analyze_real_saes.py now outputs the full CSV
 # with all quality metrics (elbow metrics, monotonicity, pct_decrease, etc.)
@@ -626,6 +626,28 @@ selected_rows = all_elbow_df[
 total_latents = selected_rows['n_latents'].sum()
 print(f"\nEstimated latents to interpret: {total_latents:,}")
 print(f"Estimated cost at $0.003/latent: ${total_latents * 0.003:.2f}")
+
+# Print the actual selected cluster IDs
+print("\n" + "="*80)
+print("SELECTED CLUSTER IDs (for --manual_cluster_ids)")
+print("="*80)
+for n_clust in sorted(all_selected.keys()):
+    selected_ids = sorted(all_selected[n_clust])
+    cat_stats = all_category_stats[n_clust]
+
+    print(f"\nn_clusters={n_clust}: {len(selected_ids)} clusters")
+    print(f"  All IDs: {','.join(map(str, selected_ids))}")
+    print(f"  --manual_cluster_ids format: \"{n_clust}:{','.join(map(str, selected_ids))}\"")
+
+    # Also print by category
+    if cat_stats['A_strong_both']:
+        print(f"  Category A (Strong Both): {sorted(cat_stats['A_strong_both'])}")
+    if cat_stats['B_recon_outliers']:
+        print(f"  Category B (Recon Outliers): {sorted(cat_stats['B_recon_outliers'])}")
+    if cat_stats['C_arch_outliers']:
+        print(f"  Category C (Arch Outliers): {sorted(cat_stats['C_arch_outliers'])}")
+    if cat_stats['D_agreement']:
+        print(f"  Category D (Perfect Agreement): {sorted(cat_stats['D_agreement'])}")
 
 # %% Analysis 10b: Side-by-side visualization
 
