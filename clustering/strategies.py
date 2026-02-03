@@ -16,6 +16,12 @@ from subspace_clustering_utils import (
 )
 
 from .config import ClusteringConfig, SpectralParams, SubspaceParams, ENSCParams
+from .affinity_metrics import (
+    COOCCURRENCE_METRICS,
+    GEOMETRY_METRICS,
+    CooccurrenceStats,
+    build_affinity_matrix,
+)
 
 
 @dataclass(kw_only=True)
@@ -46,6 +52,7 @@ class ClusteringStrategy(ABC):
         site: str,
         site_dir: str,
         latent_activity_matrix: Optional[np.ndarray] = None,
+        cooccurrence_stats: Optional[CooccurrenceStats] = None,
         belief_seed_clusters: Optional[Dict[int, List[int]]] = None,
         component_order: Optional[List[str]] = None,
     ) -> ClusteringStrategyResult:
@@ -57,7 +64,8 @@ class ClusteringStrategy(ABC):
             config: Clustering configuration
             site: Site name
             site_dir: Directory for saving outputs
-            latent_activity_matrix: Activity matrix for phi similarity (spectral only)
+            latent_activity_matrix: Activity matrix for phi similarity (deprecated, use cooccurrence_stats)
+            cooccurrence_stats: Pre-computed co-occurrence statistics for co-occurrence metrics
             belief_seed_clusters: Seed clusters in active index space (subspace only)
             component_order: Ordered component names for belief seeding
 
@@ -78,6 +86,7 @@ class SpectralClusteringStrategy(ClusteringStrategy):
         site: str,
         site_dir: str,
         latent_activity_matrix: Optional[np.ndarray] = None,
+        cooccurrence_stats: Optional[CooccurrenceStats] = None,
         belief_seed_clusters: Optional[Dict[int, List[int]]] = None,
         component_order: Optional[List[str]] = None,
     ) -> ClusteringStrategyResult:
@@ -87,35 +96,50 @@ class SpectralClusteringStrategy(ClusteringStrategy):
         params: SpectralParams = config.spectral_params
         decoder_for_clustering = decoder_active.copy()
 
-        # Center decoder rows if requested
-        if params.center_decoder_rows and decoder_active.size > 0:
+        # Center decoder rows if requested (only relevant for geometry-based metrics)
+        if params.center_decoder_rows and decoder_active.size > 0 and params.sim_metric in GEOMETRY_METRICS:
             row_mean = decoder_for_clustering.mean(axis=0, keepdims=True)
             decoder_for_clustering = decoder_for_clustering - row_mean
             norms = np.linalg.norm(decoder_for_clustering, axis=1, keepdims=True)
             norms = np.where(norms == 0.0, 1.0, norms)
             decoder_for_clustering = decoder_for_clustering / norms
 
-        # Build similarity matrix
-        if params.sim_metric == "phi":
-            if latent_activity_matrix is None:
-                raise ValueError("Phi similarity requires latent activation matrix")
-            latent_active = latent_activity_matrix[:, active_indices]
-            sim_matrix = build_similarity_matrix(
-                decoder_for_clustering,
-                method="phi",
-                latent_acts=latent_active,
+        # Build affinity matrix
+        if params.sim_metric in COOCCURRENCE_METRICS:
+            # Co-occurrence based metrics
+            if cooccurrence_stats is None:
+                raise ValueError(f"Co-occurrence metric '{params.sim_metric}' requires cooccurrence_stats")
+
+            # Filter to active indices only
+            active_idx = active_indices.cpu().numpy() if isinstance(active_indices, torch.Tensor) else active_indices
+            cooc_stats_active = CooccurrenceStats(
+                N11=cooccurrence_stats.N11[np.ix_(active_idx, active_idx)],
+                N1=cooccurrence_stats.N1[active_idx],
+                n_samples=cooccurrence_stats.n_samples,
             )
-            sim_matrix = (sim_matrix + 1.0) / 2.0
-            np.fill_diagonal(sim_matrix, 1.0)
+
+            sim_matrix = build_affinity_matrix(
+                cooccurrence_stats=cooc_stats_active,
+                method=params.sim_metric,
+            )
+
+            # For phi coefficient which can be negative, shift to [0, 1]
+            if params.sim_metric == "phi":
+                sim_matrix = (sim_matrix + 1.0) / 2.0
+                np.fill_diagonal(sim_matrix, 1.0)
         else:
-            sim_matrix = build_similarity_matrix(decoder_for_clustering, method=params.sim_metric)
+            # Geometry-based metrics
+            sim_matrix = build_affinity_matrix(
+                decoder_directions=decoder_for_clustering,
+                method=params.sim_metric,
+            )
 
         # Run spectral clustering
         eig_plot = None
         if params.plot_eigengap:
             eig_plot = os.path.join(site_dir, "eigengap.png")
 
-        from training_and_analysis_utils import build_similarity_matrix, spectral_clustering_with_eigengap
+        from training_and_analysis_utils import spectral_clustering_with_eigengap
         cluster_labels, n_clusters = spectral_clustering_with_eigengap(
             sim_matrix,
             max_clusters=min(params.max_clusters, decoder_active.shape[0]),
@@ -205,6 +229,7 @@ class KSubspacesClusteringStrategy(ClusteringStrategy):
         site: str,
         site_dir: str,
         latent_activity_matrix: Optional[np.ndarray] = None,
+        cooccurrence_stats: Optional[CooccurrenceStats] = None,
         belief_seed_clusters: Optional[Dict[int, List[int]]] = None,
         component_order: Optional[List[str]] = None,
     ) -> ClusteringStrategyResult:
@@ -516,6 +541,7 @@ class ENSCClusteringStrategy(ClusteringStrategy):
         site: str,
         site_dir: str,
         latent_activity_matrix: Optional[np.ndarray] = None,
+        cooccurrence_stats: Optional[CooccurrenceStats] = None,
         belief_seed_clusters: Optional[Dict[int, List[int]]] = None,
         component_order: Optional[List[str]] = None,
     ) -> ClusteringStrategyResult:

@@ -9,9 +9,17 @@ and analyzing the resulting clusters. It supports:
 - Parameter search-friendly design
 """
 
-from .config import ClusteringConfig, SpectralParams, SubspaceParams, ENSCParams, GeometryFittingConfig
+from .config import ClusteringConfig, SpectralParams, SubspaceParams, ENSCParams, GeometryFittingConfig, CooccurrenceConfig
 from .results import ClusteringResult
 from .strategies import ClusteringStrategy, SpectralClusteringStrategy, KSubspacesClusteringStrategy, ENSCClusteringStrategy
+from .affinity_metrics import (
+    COOCCURRENCE_METRICS,
+    GEOMETRY_METRICS,
+    CooccurrenceStats,
+    collect_cooccurrence_stats,
+    cooccurrence_affinity_from_stats,
+    build_affinity_matrix,
+)
 try:
     from .pipeline import SiteClusteringPipeline
 except ImportError:
@@ -26,7 +34,15 @@ __all__ = [
     'SubspaceParams',
     'ENSCParams',
     'GeometryFittingConfig',
+    'CooccurrenceConfig',
     'ClusteringResult',
+    # Affinity metrics
+    'COOCCURRENCE_METRICS',
+    'GEOMETRY_METRICS',
+    'CooccurrenceStats',
+    'collect_cooccurrence_stats',
+    'cooccurrence_affinity_from_stats',
+    'build_affinity_matrix',
     'ClusteringStrategy',
     'SpectralClusteringStrategy',
     'KSubspacesClusteringStrategy',

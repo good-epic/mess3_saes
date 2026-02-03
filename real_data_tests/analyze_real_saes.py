@@ -265,6 +265,25 @@ def main():
     parser.add_argument("--activity_batches", type=int, default=1024, help="Number of batches for activity stats")
     parser.add_argument("--activity_seq_len", type=int, default=128, help="Sequence length for activity stats")
 
+    # Clustering similarity metric
+    parser.add_argument("--sim_metric", type=str, default="cosine",
+                        choices=["cosine", "euclidean", "jaccard", "dice", "overlap", "phi", "mutual_info"],
+                        help="Similarity metric for spectral clustering. Geometry-based: cosine, euclidean. Co-occurrence-based: jaccard, dice, overlap, phi, mutual_info")
+
+    # Co-occurrence statistics collection (for jaccard, dice, overlap, phi, mutual_info metrics)
+    parser.add_argument("--cooc_n_batches", type=int, default=1000,
+                        help="Number of batches for co-occurrence collection. Total tokens = n_batches * batch_size * seq_len")
+    parser.add_argument("--cooc_batch_size", type=int, default=32,
+                        help="Sequences per batch for co-occurrence collection")
+    parser.add_argument("--cooc_seq_len", type=int, default=256,
+                        help="Tokens per sequence for co-occurrence collection")
+    parser.add_argument("--cooc_activation_threshold", type=float, default=1e-6,
+                        help="Feature counts as firing if |activation| > threshold")
+    parser.add_argument("--cooc_skip_special_tokens", action="store_true", default=True,
+                        help="Skip BOS token (position 0) when collecting co-occurrence")
+    parser.add_argument("--cooc_cache_path", type=str, default=None,
+                        help="Path to save/load co-occurrence stats (avoids recomputation when trying different metrics)")
+
     # PCA rank estimation parameters
     parser.add_argument("--pca_num_cycles", type=int, default=80,
                        help="Number of data sampling cycles for PCA rank estimation. "
@@ -276,6 +295,8 @@ def main():
                             "Limits computational cost and memory usage. Default 100K is good for up to ~1000-D.")
     parser.add_argument("--pca_variance_threshold", type=float, default=0.95,
                        help="Variance threshold for PCA rank estimation (fraction of variance to explain)")
+    parser.add_argument("--skip_pca", action="store_true",
+                       help="Skip PCA rank estimation entirely (saves significant time)")
     parser.add_argument("--subspace_variance_threshold", type=float, default=0.95, help="Variance threshold for rank estimation")
     parser.add_argument("--subspace_gap_threshold", type=float, default=2.0, help="Eigengap threshold for rank estimation")
 
@@ -498,7 +519,9 @@ def main():
         # Check if we need to compute PCA
         has_pca = any("activation_pca_rank" in stats for stats in result.cluster_stats.values())
 
-        if not has_pca:
+        if args.skip_pca:
+            print(f"\nSkipping PCA rank estimation (--skip_pca flag set)")
+        elif not has_pca:
             # Clear memory before PCA computation
             torch.cuda.empty_cache()
             gc.collect()

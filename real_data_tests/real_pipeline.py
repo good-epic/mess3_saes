@@ -1,6 +1,7 @@
 """Main clustering pipeline orchestrator."""
 
 import os
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 import torch
@@ -17,6 +18,11 @@ from clustering.strategies import create_clustering_strategy, ClusteringStrategy
 from clustering.belief_seeding import BeliefSeeder, BeliefSeedingResult
 from clustering.analysis import ClusterAnalyzer
 from clustering.epdf_generator import EPDFGenerator
+from clustering.affinity_metrics import (
+    COOCCURRENCE_METRICS,
+    CooccurrenceStats,
+    collect_cooccurrence_stats,
+)
 
 # ... (imports)
 
@@ -75,6 +81,13 @@ class RealDataClusteringPipeline:
 
         decoder_dirs = sae.W_dec.detach().clone()
 
+        # Determine if we need co-occurrence stats
+        sim_metric = config.spectral_params.sim_metric if config.method == "spectral" else None
+        needs_cooccurrence = (
+            config.method == "spectral" and
+            sim_metric in COOCCURRENCE_METRICS
+        )
+
         # Collect activity statistics
         # If threshold is 0 or None, we skip sampling and assume all latents are active
         if not config.sampling_config.latent_activity_threshold:
@@ -84,6 +97,7 @@ class RealDataClusteringPipeline:
             latent_activity_matrix = None
             total_activity_samples = 0
         else:
+
             activity_stats = collect_real_activity_stats(
                 model,
                 sae,
@@ -94,13 +108,47 @@ class RealDataClusteringPipeline:
                 n_batches=config.sampling_config.activation_batches,
                 device=device,
                 activation_eps=config.sampling_config.latent_activation_eps,
-                collect_matrix=(config.method == "spectral" and config.spectral_params.sim_metric == "phi"),
+                collect_matrix=False,  # We'll collect co-occurrence stats separately if needed
             )
-            
+
             activity_rates = activity_stats["activity_rates"]
             mean_abs_activation = activity_stats["mean_abs_activation"]
-            latent_activity_matrix = activity_stats["latent_matrix"]
+            latent_activity_matrix = None  # Deprecated - use cooccurrence_stats instead
             total_activity_samples = int(activity_stats["total_samples"])
+
+        # Collect co-occurrence statistics if using a co-occurrence metric
+        cooccurrence_stats = None
+        if needs_cooccurrence:
+            cooc_config = config.spectral_params.cooccurrence_config
+
+            # Try to load from cache first
+            if cooc_config.cache_path and Path(cooc_config.cache_path).exists():
+                print(f"Loading cached co-occurrence stats from {cooc_config.cache_path}")
+                cooccurrence_stats = CooccurrenceStats.load(cooc_config.cache_path)
+                print(cooccurrence_stats.summary())
+            else:
+                print(f"Collecting co-occurrence statistics ({cooc_config.total_tokens:,} tokens)...")
+                print(f"  n_batches={cooc_config.n_batches}, batch_size={cooc_config.batch_size}, seq_len={cooc_config.seq_len}")
+
+                cooccurrence_stats = collect_cooccurrence_stats(
+                    model,
+                    sae,
+                    data_source,  # Must have sample_tokens_batch() method
+                    self.hook_name,
+                    sae_encode_fn=sae_encode_features,
+                    n_batches=cooc_config.n_batches,
+                    batch_size=cooc_config.batch_size,
+                    seq_len=cooc_config.seq_len,
+                    activation_threshold=cooc_config.activation_threshold,
+                    device=device,
+                    skip_special_tokens=cooc_config.skip_special_tokens,
+                    show_progress=True,
+                )
+                print(cooccurrence_stats.summary())
+
+                # Save to cache if path provided
+                if cooc_config.cache_path:
+                    cooccurrence_stats.save(cooc_config.cache_path)
 
         # Prepare activations
         # Activations are not required for core clustering on real data
@@ -209,6 +257,7 @@ class RealDataClusteringPipeline:
                 site,
                 site_dir,
                 latent_activity_matrix=latent_activity_matrix,
+                cooccurrence_stats=cooccurrence_stats,
                 belief_seed_clusters=belief_seed_result.seed_clusters_active if belief_seed_result and belief_seed_result.succeeded else None,
                 component_order=component_order,
             )

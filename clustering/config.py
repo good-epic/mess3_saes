@@ -5,13 +5,66 @@ from typing import Literal, Optional, List, Tuple
 
 
 @dataclass(kw_only=True)
+class CooccurrenceConfig:
+    """Configuration for streaming co-occurrence statistics collection.
+
+    Used when sim_metric is a co-occurrence-based metric (jaccard, dice,
+    overlap, phi, mutual_info). These metrics require collecting activation
+    statistics from a data stream.
+
+    Total tokens processed = n_batches * batch_size * seq_len
+
+    Example:
+        With defaults (n_batches=1000, batch_size=32, seq_len=256):
+        Total = 8.2M tokens
+        For 1% sparse features: ~82k observations per feature
+    """
+    n_batches: int = 1000           # Number of batches to process
+    batch_size: int = 32            # Sequences per batch
+    seq_len: int = 256              # Tokens per sequence
+    activation_threshold: float = 1e-6  # Feature fires if |activation| > threshold
+    skip_special_tokens: bool = True    # Skip BOS token (position 0)
+    cache_path: Optional[str] = None    # Path to save/load stats (avoids recomputation)
+
+    @property
+    def total_tokens(self) -> int:
+        """Total token positions that will be processed."""
+        tokens_per_batch = self.batch_size * self.seq_len
+        if self.skip_special_tokens:
+            tokens_per_batch = self.batch_size * (self.seq_len - 1)
+        return self.n_batches * tokens_per_batch
+
+
+@dataclass(kw_only=True)
 class SpectralParams:
-    """Parameters for spectral clustering."""
-    sim_metric: Literal["cosine", "euclidean", "phi"] = "cosine"
+    """Parameters for spectral clustering.
+
+    Similarity metrics fall into two categories:
+
+    Geometry-based (use decoder directions):
+        - cosine: Cosine similarity between decoder vectors
+        - euclidean: 1/(1+d) where d is Euclidean distance
+
+    Co-occurrence-based (require activation statistics):
+        - jaccard: Jaccard similarity |A∩B|/|A∪B|
+        - dice: Dice coefficient 2|A∩B|/(|A|+|B|)
+        - overlap: Overlap coefficient |A∩B|/min(|A|,|B|)
+        - phi: Phi coefficient (Pearson correlation for binary variables)
+        - mutual_info: Normalized mutual information
+
+    Co-occurrence metrics capture which features tend to fire together,
+    useful for finding functional clusters (vs geometric clusters).
+    """
+    sim_metric: Literal[
+        "cosine", "euclidean",           # Geometry-based
+        "jaccard", "dice", "overlap",    # Co-occurrence (set-based)
+        "phi", "mutual_info"             # Co-occurrence (correlation/information)
+    ] = "cosine"
     max_clusters: int = 12
     min_clusters: int = 2
     plot_eigengap: bool = False
     center_decoder_rows: bool = False
+    cooccurrence_config: CooccurrenceConfig = field(default_factory=CooccurrenceConfig)
 
 
 @dataclass(kw_only=True)
@@ -158,12 +211,23 @@ class ClusteringConfig:
     @classmethod
     def from_args(cls, args, site: str, selected_k: int | float | Tuple[float, float]) -> 'ClusteringConfig':
         """Create config from command-line arguments."""
+        # Co-occurrence config (for co-occurrence-based similarity metrics)
+        cooccurrence_config = CooccurrenceConfig(
+            n_batches=getattr(args, 'cooc_n_batches', 1000),
+            batch_size=getattr(args, 'cooc_batch_size', 32),
+            seq_len=getattr(args, 'cooc_seq_len', 256),
+            activation_threshold=getattr(args, 'cooc_activation_threshold', 1e-6),
+            skip_special_tokens=getattr(args, 'cooc_skip_special_tokens', True),
+            cache_path=getattr(args, 'cooc_cache_path', None),
+        )
+
         spectral_params = SpectralParams(
             sim_metric=args.sim_metric,
             max_clusters=args.max_clusters,
             min_clusters=args.min_clusters,
             plot_eigengap=args.plot_eigengap,
             center_decoder_rows=args.center_decoder_rows,
+            cooccurrence_config=cooccurrence_config,
         )
 
         subspace_params = SubspaceParams(

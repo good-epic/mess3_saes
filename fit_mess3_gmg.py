@@ -131,11 +131,27 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--force_lambda", type=float, default=None, help="Override elbow selection with manual lambda (for vanilla SAEs)")
     parser.add_argument("--force_banded_params", type=str, default=None, help="Override selection with manual params for banded SAEs (e.g. 'ls_0p005__la_0p005')")
     parser.add_argument("--clustering_method", type=str, default="k_subspaces", choices=["spectral", "k_subspaces", "ensc"], help="Clustering method for decoder directions")
-    parser.add_argument("--sim_metric", type=str, default="cosine", choices=["cosine", "euclidean", "phi"], help="Similarity metric for decoder clustering (spectral method only)")
+    parser.add_argument("--sim_metric", type=str, default="cosine",
+                        choices=["cosine", "euclidean", "jaccard", "dice", "overlap", "phi", "mutual_info"],
+                        help="Similarity metric for spectral clustering. Geometry-based: cosine, euclidean. Co-occurrence-based: jaccard, dice, overlap, phi, mutual_info")
     parser.add_argument("--max_clusters", type=int, default=12, help="Upper bound for eigengap clustering (spectral method only)")
     parser.add_argument("--min_clusters", type=int, default=2, help="Lower bound for eigengap clustering (spectral method only)")
     parser.add_argument("--plot_eigengap", action="store_true", help="Plot eigengap spectrum diagnostics (spectral method only)")
     parser.add_argument("--center_decoder_rows", action="store_true", help="Center and renormalize decoder rows before computing similarities (spectral method only)")
+
+    # Co-occurrence metric configuration (for jaccard, dice, overlap, phi, mutual_info)
+    parser.add_argument("--cooc_n_batches", type=int, default=1000,
+                        help="Number of batches for co-occurrence collection. Total tokens = n_batches * batch_size * seq_len")
+    parser.add_argument("--cooc_batch_size", type=int, default=32,
+                        help="Sequences per batch for co-occurrence collection")
+    parser.add_argument("--cooc_seq_len", type=int, default=256,
+                        help="Tokens per sequence for co-occurrence collection")
+    parser.add_argument("--cooc_activation_threshold", type=float, default=1e-6,
+                        help="Feature counts as firing if |activation| > threshold")
+    parser.add_argument("--cooc_skip_special_tokens", action="store_true", default=True,
+                        help="Skip BOS token (position 0) when collecting co-occurrence")
+    parser.add_argument("--cooc_cache_path", type=str, default=None,
+                        help="Path to save/load co-occurrence stats (avoids recomputation when trying different metrics)")
 
     # Subspace clustering controls
     parser.add_argument("--subspace_rank", type=int, default=None, help="Rank of each subspace for k_subspaces/ensc methods (if None, auto-detected per cluster)")
