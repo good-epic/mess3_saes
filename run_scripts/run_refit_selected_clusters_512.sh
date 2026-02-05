@@ -58,7 +58,7 @@ python -u real_data_tests/refit_selected_clusters.py \
     --min_vertex_ratio 0.1 \
     --vertex_search_batch_size 32 \
     --concurrent_aanets 5 \
-    --max_inputs_per_cluster 100 \
+    --max_inputs_per_cluster 10f0 \
     --vertex_save_interval 5000 \
     --manual_cluster_ids "512:321,202,464,292,261,504" \
     --manual_k "512:321=4,202=3,464=5,292=3,261=3,504=5"
