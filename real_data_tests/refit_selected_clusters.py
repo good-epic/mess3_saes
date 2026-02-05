@@ -865,7 +865,9 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
                                 "vertex_id": int(i),
                                 "distances_to_vertex": [],
                                 "full_text": full_text,
+                                "chunk_token_ids": sequence_tokens.tolist(),
                                 "trigger_token_indices": [],
+                                "trigger_token_ids": [],
                                 "trigger_word_indices": [],
                                 "trigger_words": [],
                             }
@@ -887,6 +889,7 @@ def collect_vertex_samples_for_cluster(cluster_metadata, model, sae, sampler, to
 
                         batch_samples[key]["distances_to_vertex"].append(float(dist))
                         batch_samples[key]["trigger_token_indices"].append(int(seq_idx))
+                        batch_samples[key]["trigger_token_ids"].append(int(trigger_token_id))
                         batch_samples[key]["trigger_word_indices"].append(int(word_index))
                         batch_samples[key]["trigger_words"].append(trigger_word)
 

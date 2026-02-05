@@ -27,7 +27,7 @@ import json
 import argparse
 import random
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import anthropic
 
 
@@ -90,7 +90,7 @@ def call_claude_api(prompt, model, api_key):
     # Map model names
     model_map = {
         'sonnet': 'claude-sonnet-4-5-20250929',
-        'haiku': 'claude-3-5-haiku-20241022',
+        'haiku': 'claude-haiku-4-5-20251001',
         'opus': 'claude-opus-4-5-20251101',
     }
     model_id = model_map.get(model, model)
@@ -155,15 +155,15 @@ def save_iteration_results(output_dir, cluster_key, iteration, sampled_examples,
             str(v_id): [
                 {
                     'sample_id': s.get('sample_id', f'sample_{i}'),
-                    'trigger_word': s['trigger_word'],
+                    'trigger_words': s.get('trigger_words', []),
                     'full_text': s['full_text'],
-                    'distance_to_vertex': s['distance_to_vertex']
+                    'distance_to_vertex': s.get('distances_to_vertex', [s.get('distance_to_vertex')])[0] if s.get('distances_to_vertex') else s.get('distance_to_vertex')
                 }
                 for i, s in enumerate(samples)
             ]
             for v_id, samples in sampled_examples.items()
         },
-        'timestamp': datetime.utcnow().isoformat() + 'Z'
+        'timestamp': datetime.now(timezone.utc).isoformat()
     }
     with open(samples_path, 'w') as f:
         json.dump(samples_data, f, indent=2)
@@ -195,14 +195,14 @@ def save_iteration_results(output_dir, cluster_key, iteration, sampled_examples,
         interp_data = {
             'error': error,
             'raw_text': response.content[0].text,
-            'timestamp': datetime.utcnow().isoformat() + 'Z'
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }
     else:
         interp_data = {
             **interpretation,
             'iteration': iteration,
             'model': response.model,
-            'timestamp': datetime.utcnow().isoformat() + 'Z',
+            'timestamp': datetime.now(timezone.utc).isoformat(),
             'tokens_used': {
                 'input': response.usage.input_tokens,
                 'output': response.usage.output_tokens
@@ -277,6 +277,144 @@ def update_aggregated_summary(output_dir, cluster_key, cluster_data, iteration, 
         f.write(summary)
 
     return summary_path
+
+
+def collect_iteration_results(output_dir, cluster_key, num_iterations):
+    """Collect all iteration results for a cluster."""
+    results = []
+    for iteration in range(num_iterations):
+        iter_dir = Path(output_dir) / f"iteration_{iteration:03d}" / cluster_key
+        interp_path = iter_dir / "interpretation.json"
+
+        if interp_path.exists():
+            with open(interp_path, 'r') as f:
+                data = json.load(f)
+                if 'error' not in data:
+                    results.append({
+                        'iteration': iteration,
+                        'state_space_hypothesis': data.get('state_space_hypothesis'),
+                        'vertex_labels': data.get('vertex_labels', []),
+                        'confidence': data.get('confidence'),
+                        'reasoning': data.get('reasoning', '')
+                    })
+    return results
+
+
+def format_synthesis_prompt(cluster_key, cluster_data, iteration_results):
+    """Format a prompt asking the model to synthesize all iteration results."""
+    k = cluster_data['k']
+    n_latents = cluster_data['n_latents']
+
+    prompt = f"""You previously analyzed a cluster of SAE latents multiple times, each time with different randomly sampled examples near each vertex of a {k}-vertex simplex.
+
+CLUSTER INFO:
+- Cluster: {cluster_key}
+- Number of vertices (k): {k}
+- Number of latents in cluster: {n_latents}
+
+Below are the interpretations from {len(iteration_results)} independent analyses. Each iteration saw different examples but was analyzing the same underlying structure.
+
+"""
+
+    for result in iteration_results:
+        prompt += f"ITERATION {result['iteration']}:\n"
+        prompt += f"  State space hypothesis: {result['state_space_hypothesis']}\n"
+        prompt += f"  Vertex labels: {result['vertex_labels']}\n"
+        prompt += f"  Confidence: {result['confidence']}\n"
+        prompt += f"  Reasoning: {result['reasoning'][:500]}{'...' if len(result['reasoning']) > 500 else ''}\n\n"
+
+    prompt += """YOUR TASK:
+Synthesize these multiple interpretations into a single, consolidated interpretation. Consider:
+1. Which interpretations are consistent across iterations?
+2. Where there is disagreement, what is the most likely explanation?
+3. What is your overall confidence given the consistency (or lack thereof) across iterations?
+
+Note that we are trying to find simplices being leveraged by the model to represent the current belief state across a state space. The examples provided are ones where
+one token has activated near a vertex of the simplex. We are hoping that the model is tracking its current belief state in this simplex, and want to use the near-vertex
+examples to understand what pure state is represented by each vertex. It should lower our confidence if similar concepts are inferred between iterations but are assigned
+to different vertices.
+
+OUTPUT FORMAT (JSON only, no markdown):
+{
+  "consolidated_state_space": "Your best guess for what belief state or decision space this simplex represents",
+  "consolidated_vertex_labels": ["Label for vertex 0", "Label for vertex 1", ...],
+  "confidence": "high|medium|low",
+  "consistency_assessment": "How consistent were the iterations? What patterns did you notice?",
+  "reasoning": "Brief explanation of how you arrived at this consolidated interpretation"
+}"""
+
+    return prompt
+
+
+def run_synthesis(output_dir, cluster_key, cluster_data, num_iterations, model, api_key):
+    """Run the final synthesis step for a cluster."""
+    print(f"\n  Running synthesis across {num_iterations} iterations...")
+
+    # Collect all iteration results
+    iteration_results = collect_iteration_results(output_dir, cluster_key, num_iterations)
+
+    if len(iteration_results) < 2:
+        print(f"    Skipping synthesis: only {len(iteration_results)} successful iterations (need at least 2)")
+        return None
+
+    print(f"    Found {len(iteration_results)} successful iterations")
+
+    # Format synthesis prompt
+    synthesis_prompt = format_synthesis_prompt(cluster_key, cluster_data, iteration_results)
+    print(f"    Synthesis prompt length: {len(synthesis_prompt)} chars")
+
+    # Call API
+    print(f"    Calling Claude API ({model}) for synthesis...")
+    try:
+        response = call_claude_api(synthesis_prompt, model, api_key)
+        print(f"    Response received: {response.usage.input_tokens} in / {response.usage.output_tokens} out")
+
+        # Parse response
+        text_content = response.content[0].text.strip()
+        if text_content.startswith('```'):
+            lines = text_content.split('\n')
+            if lines[0].startswith('```'):
+                lines = lines[1:]
+            if lines[-1].startswith('```'):
+                lines = lines[:-1]
+            text_content = '\n'.join(lines)
+
+        synthesis = json.loads(text_content)
+        print(f"    Synthesis complete!")
+        print(f"      Consolidated state space: {synthesis.get('consolidated_state_space', 'N/A')[:80]}...")
+        print(f"      Confidence: {synthesis.get('confidence', 'N/A')}")
+
+    except Exception as e:
+        print(f"    ERROR in synthesis: {e}")
+        synthesis = {'error': str(e)}
+
+    # Save synthesis results
+    synthesis_dir = Path(output_dir) / "synthesis"
+    synthesis_dir.mkdir(parents=True, exist_ok=True)
+
+    synthesis_path = synthesis_dir / f"{cluster_key}_synthesis.json"
+    synthesis_data = {
+        'cluster_key': cluster_key,
+        'k': cluster_data['k'],
+        'n_latents': cluster_data['n_latents'],
+        'num_iterations_used': len(iteration_results),
+        'iteration_summaries': iteration_results,
+        'synthesis': synthesis,
+        'model': model,
+        'timestamp': datetime.now(timezone.utc).isoformat()
+    }
+
+    with open(synthesis_path, 'w') as f:
+        json.dump(synthesis_data, f, indent=2)
+
+    print(f"    Saved synthesis to {synthesis_path}")
+
+    # Also save the prompt for reference
+    prompt_path = synthesis_dir / f"{cluster_key}_synthesis_prompt.txt"
+    with open(prompt_path, 'w') as f:
+        f.write(synthesis_prompt)
+
+    return synthesis
 
 
 def process_cluster_iteration(cluster_key, cluster_data, iteration, template,
@@ -430,6 +568,13 @@ def main():
                 args.samples_per_vertex, args.model, api_key, args.output_dir, rng
             )
 
+        # Run synthesis if we have multiple iterations
+        if args.num_iterations > 1:
+            run_synthesis(
+                args.output_dir, cluster_key, cluster_data,
+                args.num_iterations, args.model, api_key
+            )
+
     # Final summary
     print("\n" + "="*80)
     print("INTERPRETATION COMPLETE")
@@ -439,6 +584,8 @@ def main():
     print(f"Model: {args.model}")
     print(f"Output directory: {args.output_dir}")
     print(f"\nAggregated summaries: {args.output_dir}/aggregated_summaries/")
+    if args.num_iterations > 1:
+        print(f"Synthesis results: {args.output_dir}/synthesis/")
 
 
 if __name__ == '__main__':

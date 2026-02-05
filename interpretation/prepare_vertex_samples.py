@@ -34,29 +34,51 @@ def load_manifest(manifest_path):
 
 
 def load_vertex_samples(samples_path, max_samples_per_vertex=None):
-    """Load vertex samples from JSONL file."""
+    """Load vertex samples from JSONL file.
+
+    Returns:
+        Tuple of (samples_by_vertex dict or None, trigger_stats dict, total_count)
+        trigger_stats contains counts of problematic trigger words (empty, newline, tab)
+    """
     if not os.path.exists(samples_path):
         print(f"  WARNING: Samples file not found: {samples_path}")
-        return None
+        return None, {'empty': 0, 'newline': 0, 'tab': 0}, 0
 
     samples_by_vertex = defaultdict(list)
+    trigger_stats = {'empty': 0, 'newline': 0, 'tab': 0}
+    total_count = 0
 
     with open(samples_path, 'r') as f:
         for line in f:
             sample = json.loads(line)
             vertex_id = sample['vertex_id']
             samples_by_vertex[vertex_id].append(sample)
+            total_count += 1
+
+            # Check for problematic trigger_words
+            trigger_words = sample.get('trigger_words', [])
+            for tw in trigger_words:
+                if tw == '':
+                    trigger_stats['empty'] += 1
+                elif tw == '\n':
+                    trigger_stats['newline'] += 1
+                elif tw == '\t':
+                    trigger_stats['tab'] += 1
 
     # Limit samples if requested
     if max_samples_per_vertex:
         for vertex_id in samples_by_vertex:
             samples_by_vertex[vertex_id] = samples_by_vertex[vertex_id][:max_samples_per_vertex]
 
-    return dict(samples_by_vertex)
+    return dict(samples_by_vertex), trigger_stats, total_count
 
 
-def prepare_cluster_samples(cluster_metadata, vertex_collection_results, max_samples_per_vertex):
-    """Prepare samples for one cluster."""
+def prepare_cluster_samples(cluster_metadata, vertex_collection_results, max_samples_per_vertex, min_vertices_with_samples):
+    """Prepare samples for one cluster.
+
+    Returns:
+        Tuple of (prepared_dict or None, trigger_stats dict, total_count, skip_reason or None)
+    """
     cluster_id = cluster_metadata['cluster_id']
     n_clusters = cluster_metadata['n_clusters']
     k = cluster_metadata.get('arch_elbow_k', cluster_metadata.get('k'))
@@ -91,18 +113,31 @@ def prepare_cluster_samples(cluster_metadata, vertex_collection_results, max_sam
     else:
         # Samples weren't collected for this cluster
         print(f"  No vertex samples collected for this cluster")
-        return None
+        return None, {'empty': 0, 'newline': 0, 'tab': 0}, 0, "no_samples_file"
 
-    samples_by_vertex = load_vertex_samples(samples_path, max_samples_per_vertex)
+    samples_by_vertex, trigger_stats, total_count = load_vertex_samples(samples_path, max_samples_per_vertex)
 
     if samples_by_vertex is None:
-        return None
+        return None, {'empty': 0, 'newline': 0, 'tab': 0}, 0, "samples_file_not_found"
+
+    # Count vertices with samples
+    vertices_with_samples = sum(1 for v in samples_by_vertex.values() if len(v) > 0)
 
     # Count samples
     total_samples = sum(len(samples) for samples in samples_by_vertex.values())
-    print(f"  Loaded {total_samples} samples across {len(samples_by_vertex)} vertices")
+    print(f"  Loaded {total_samples} samples across {vertices_with_samples} vertices (k={k})")
     for vertex_id, samples in sorted(samples_by_vertex.items()):
         print(f"    Vertex {vertex_id}: {len(samples)} samples")
+
+    # Report problematic trigger words if any
+    problematic = trigger_stats['empty'] + trigger_stats['newline'] + trigger_stats['tab']
+    if problematic > 0:
+        print(f"  Trigger word issues: {trigger_stats['empty']} empty, {trigger_stats['newline']} newline, {trigger_stats['tab']} tab")
+
+    # Check minimum vertices requirement
+    if vertices_with_samples < min_vertices_with_samples:
+        print(f"  Skipping: only {vertices_with_samples} vertices have samples (need at least {min_vertices_with_samples})")
+        return None, trigger_stats, total_count, "insufficient_vertices"
 
     # Get category from collection result or cluster metadata
     category = cluster_metadata.get('category', 'unknown')
@@ -121,7 +156,7 @@ def prepare_cluster_samples(cluster_metadata, vertex_collection_results, max_sam
         'total_samples_available': total_samples,
     }
 
-    return prepared
+    return prepared, trigger_stats, total_count, None
 
 
 def main():
@@ -132,6 +167,8 @@ def main():
                         help='Directory to save prepared samples')
     parser.add_argument('--max_samples_per_vertex', type=int, default=None,
                         help='Maximum samples to keep per vertex (default: all)')
+    parser.add_argument('--min_vertices_with_samples', type=int, default=2,
+                        help='Minimum number of vertices that must have samples (default: 2)')
 
     args = parser.parse_args()
 
@@ -149,13 +186,25 @@ def main():
 
     # Process each cluster
     prepared_count = 0
-    skipped_count = 0
+    skip_reasons = defaultdict(int)
+
+    # Track global trigger word statistics
+    global_trigger_stats = {'empty': 0, 'newline': 0, 'tab': 0}
+    global_total_count = 0
 
     for cluster_metadata in manifest['clusters']:
-        prepared = prepare_cluster_samples(cluster_metadata, vertex_collection_results, args.max_samples_per_vertex)
+        prepared, trigger_stats, total_count, skip_reason = prepare_cluster_samples(
+            cluster_metadata, vertex_collection_results,
+            args.max_samples_per_vertex, args.min_vertices_with_samples
+        )
+
+        # Accumulate trigger stats
+        for key in global_trigger_stats:
+            global_trigger_stats[key] += trigger_stats[key]
+        global_total_count += total_count
 
         if prepared is None:
-            skipped_count += 1
+            skip_reasons[skip_reason] += 1
             continue
 
         # Save prepared samples
@@ -174,8 +223,35 @@ def main():
     print("PREPARATION COMPLETE")
     print("="*80)
     print(f"Prepared: {prepared_count} clusters")
-    print(f"Skipped: {skipped_count} clusters (no vertex samples)")
+
+    total_skipped = sum(skip_reasons.values())
+    if total_skipped > 0:
+        print(f"Skipped: {total_skipped} clusters")
+        for reason, count in sorted(skip_reasons.items()):
+            print(f"  - {reason}: {count}")
+
     print(f"Output directory: {args.output_dir}")
+
+    # Report global trigger word statistics
+    print("\n" + "-"*80)
+    print("TRIGGER WORD STATISTICS")
+    print("-"*80)
+    if global_total_count > 0:
+        print(f"Total samples processed: {global_total_count}")
+
+        # Calculate total trigger words (samples can have multiple trigger words)
+        total_trigger_words = sum(global_trigger_stats.values())
+
+        for category, count in global_trigger_stats.items():
+            if count > 0:
+                print(f"  {category}: {count}")
+
+        if global_trigger_stats['empty'] > 0:
+            print("\nWARNING: Non-zero empty trigger_words count suggests special tokens may not have been filtered correctly")
+        if global_trigger_stats['newline'] > 0 or global_trigger_stats['tab'] > 0:
+            print("NOTE: Newline/tab trigger words may be legitimate but are worth reviewing")
+    else:
+        print("No samples processed")
 
 
 if __name__ == '__main__':
