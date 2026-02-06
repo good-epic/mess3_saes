@@ -25,12 +25,10 @@
 export PYTHONPATH=.
 
 # MODE 1: Load Stage 1 models + collect vertex samples (DEFAULT)
-#    --vertex_skip_docs 1_200_000 \
-#    --max_inputs_per_cluster 10_000_000 \
 python -u real_data_tests/refit_selected_clusters.py \
     --skip_training \
     --stage1_models_dir "/workspace/outputs/real_data_analysis_canonical" \
-    --vertex_skip_docs 0 \
+    --vertex_skip_docs 1_200_000 \
     --n_clusters_list "512,768" \
     --csv_dir "/workspace/outputs/real_data_analysis_canonical" \
     --save_dir "/workspace/outputs/selected_clusters_canonical" \
@@ -58,8 +56,8 @@ python -u real_data_tests/refit_selected_clusters.py \
     --min_vertex_ratio 0.1 \
     --vertex_search_batch_size 32 \
     --concurrent_aanets 5 \
-    --max_inputs_per_cluster 100 \
-    --vertex_save_interval 5000 \
+    --max_inputs_per_cluster 10_000_000 \
+    --vertex_save_interval 5000
     --manual_cluster_ids "512:321,202,464,292,261,504;768:455,484,210,704,409,91" \
     --manual_k "512:321=4,202=3,464=5,292=3,261=3,504=5;768:455=4,484=3,210=5,704=5,409=3,91=3"
 
