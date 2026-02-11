@@ -8,8 +8,8 @@ import torch
 import numpy as np
 from transformer_lens import HookedTransformer
 from sae_lens import SAE
-from clustering.config import ClusteringConfig
-from clustering.config import GeometryFittingConfig, SubspaceParams, SamplingConfig
+from clustering.config import ClusteringConfig, CooccurrenceConfig
+from clustering.config import GeometryFittingConfig, SubspaceParams, SpectralParams, SamplingConfig
 from aanet_pipeline.extrema import compute_diffusion_extrema, ExtremaConfig
 from aanet_pipeline.training import train_aanet_model, TrainingConfig
 from aanet_pipeline.cluster_summary import AAnetDescriptor
@@ -265,10 +265,15 @@ def main():
     parser.add_argument("--activity_batches", type=int, default=1024, help="Number of batches for activity stats")
     parser.add_argument("--activity_seq_len", type=int, default=128, help="Sequence length for activity stats")
 
-    # Clustering similarity metric
+    # Clustering method and similarity metric
+    parser.add_argument("--method", type=str, default="k_subspaces",
+                        choices=["k_subspaces", "spectral"],
+                        help="Clustering method. k_subspaces uses decoder geometry. "
+                             "spectral uses an affinity matrix (from --sim_metric).")
     parser.add_argument("--sim_metric", type=str, default="cosine",
-                        choices=["cosine", "euclidean", "jaccard", "dice", "overlap", "phi", "mutual_info"],
-                        help="Similarity metric for spectral clustering. Geometry-based: cosine, euclidean. Co-occurrence-based: jaccard, dice, overlap, phi, mutual_info")
+                        choices=["cosine", "euclidean", "jaccard", "dice", "overlap", "phi", "mutual_info", "ami"],
+                        help="Similarity metric for spectral clustering. Geometry-based: cosine, euclidean. "
+                             "Co-occurrence-based: jaccard, dice, overlap, phi (|phi|), mutual_info, ami (|PMI|)")
 
     # Co-occurrence statistics collection (for jaccard, dice, overlap, phi, mutual_info metrics)
     parser.add_argument("--cooc_n_batches", type=int, default=1000,
@@ -297,6 +302,9 @@ def main():
                        help="Variance threshold for PCA rank estimation (fraction of variance to explain)")
     parser.add_argument("--skip_pca", action="store_true",
                        help="Skip PCA rank estimation entirely (saves significant time)")
+    parser.add_argument("--clustering_only", action="store_true",
+                       help="Only run clustering (and PCA if enabled), skip AANet fitting. "
+                            "Useful for comparing clustering methods before committing to expensive AANet training.")
     parser.add_argument("--subspace_variance_threshold", type=float, default=0.95, help="Variance threshold for rank estimation")
     parser.add_argument("--subspace_gap_threshold", type=float, default=2.0, help="Eigengap threshold for rank estimation")
 
@@ -441,10 +449,25 @@ def main():
     for n_clusters in args.n_clusters_list:
         print(f"\n--- Running Analysis for n_clusters={n_clusters} ---")
         
+        # Build co-occurrence config (used when method=spectral with cooc metrics)
+        cooc_config = CooccurrenceConfig(
+            n_batches=args.cooc_n_batches,
+            batch_size=args.cooc_batch_size,
+            seq_len=args.cooc_seq_len,
+            activation_threshold=args.cooc_activation_threshold,
+            skip_special_tokens=args.cooc_skip_special_tokens,
+            cache_path=args.cooc_cache_path,
+        )
+
         clustering_config = ClusteringConfig(
             site=site,
-            method="k_subspaces",
+            method=args.method,
             selected_k=0,
+            spectral_params=SpectralParams(
+                sim_metric=args.sim_metric,
+                n_clusters=n_clusters,
+                cooccurrence_config=cooc_config,
+            ),
             subspace_params=SubspaceParams(
                 n_clusters=n_clusters,
                 variance_threshold=args.subspace_variance_threshold,
@@ -455,7 +478,7 @@ def main():
                 activation_batches=args.activity_batches,
                 sample_sequences=args.activity_batch_size,
                 sample_seq_len=args.activity_seq_len,
-                max_activations=args.total_samples, # Retained as it was not explicitly removed by the instruction
+                max_activations=args.total_samples,
             ),
             geometry_fitting_config=GeometryFittingConfig(
                 enabled=True,
@@ -503,6 +526,7 @@ def main():
                 data_source=sampler,
                 site_dir=output_dir,
                 component_beliefs_flat=None,
+                device=args.device,
             )
             # Save clustering result
             import pickle
@@ -555,6 +579,10 @@ def main():
             print(f"Added PCA ranks to clustering result and saved to {clustering_pkl_path}")
         else:
             print(f"Note: PCA ranks already present in cluster_stats, skipping computation")
+
+        if args.clustering_only:
+            print(f"\n--clustering_only set, skipping AANet fitting for n_clusters={n_clusters}")
+            continue
 
         print(f"Running AAnet fitting for n_clusters={n_clusters}")
         

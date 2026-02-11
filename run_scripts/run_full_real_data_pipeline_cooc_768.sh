@@ -56,6 +56,7 @@ python -u real_data_tests/analyze_real_saes.py \
     --shuffle_buffer_size 50000 \
     --max_doc_tokens 3000 \
     --aanet_prefetch_size 1024 \
+    --method "spectral" \
     --sim_metric "phi" \
     --cooc_n_batches 1000 \
     --cooc_batch_size 32 \
@@ -128,6 +129,7 @@ python -u real_data_tests/analyze_real_saes.py \
     --shuffle_buffer_size 50000 \
     --max_doc_tokens 3000 \
     --aanet_prefetch_size 1024 \
+    --method "spectral" \
     --sim_metric "mutual_info" \
     --cooc_n_batches 1000 \
     --cooc_batch_size 32 \

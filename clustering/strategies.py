@@ -122,11 +122,7 @@ class SpectralClusteringStrategy(ClusteringStrategy):
                 cooccurrence_stats=cooc_stats_active,
                 method=params.sim_metric,
             )
-
-            # For phi coefficient which can be negative, shift to [0, 1]
-            if params.sim_metric == "phi":
-                sim_matrix = (sim_matrix + 1.0) / 2.0
-                np.fill_diagonal(sim_matrix, 1.0)
+            # phi now uses |phi| in affinity_metrics.py, so no shift needed
         else:
             # Geometry-based metrics
             sim_matrix = build_affinity_matrix(
@@ -135,20 +131,36 @@ class SpectralClusteringStrategy(ClusteringStrategy):
             )
 
         # Run spectral clustering
-        eig_plot = None
-        if params.plot_eigengap:
-            eig_plot = os.path.join(site_dir, "eigengap.png")
+        if params.n_clusters is not None:
+            # Forced n_clusters: use sklearn SpectralClustering directly
+            from sklearn.cluster import SpectralClustering
+            n_clusters = min(params.n_clusters, decoder_active.shape[0])
+            print(f"Spectral clustering with forced n_clusters={n_clusters}")
+            sc = SpectralClustering(
+                n_clusters=n_clusters,
+                affinity='precomputed',
+                random_state=config.seed,
+                assign_labels='kmeans',
+                n_init=10,
+            )
+            cluster_labels = sc.fit_predict(sim_matrix)
+            cluster_labels = np.asarray(cluster_labels, dtype=int)
+        else:
+            # Auto-detect n_clusters via eigengap
+            eig_plot = None
+            if params.plot_eigengap:
+                eig_plot = os.path.join(site_dir, "eigengap.png")
 
-        from training_and_analysis_utils import spectral_clustering_with_eigengap
-        cluster_labels, n_clusters = spectral_clustering_with_eigengap(
-            sim_matrix,
-            max_clusters=min(params.max_clusters, decoder_active.shape[0]),
-            min_clusters=params.min_clusters,
-            random_state=config.seed,
-            plot=params.plot_eigengap,
-            plot_path=eig_plot,
-        )
-        cluster_labels = np.asarray(cluster_labels, dtype=int)
+            from training_and_analysis_utils import spectral_clustering_with_eigengap
+            cluster_labels, n_clusters = spectral_clustering_with_eigengap(
+                sim_matrix,
+                max_clusters=min(params.max_clusters, decoder_active.shape[0]),
+                min_clusters=params.min_clusters,
+                random_state=config.seed,
+                plot=params.plot_eigengap,
+                plot_path=eig_plot,
+            )
+            cluster_labels = np.asarray(cluster_labels, dtype=int)
 
         # Compute soft weights from eigenvector distances to cluster centers
         soft_weights = self._compute_spectral_soft_weights(

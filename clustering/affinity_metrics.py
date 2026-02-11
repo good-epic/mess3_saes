@@ -26,7 +26,7 @@ AffinityMetric = Literal[
 ]
 
 # Metrics that require co-occurrence statistics
-COOCCURRENCE_METRICS = {"jaccard", "dice", "overlap", "phi", "mutual_info"}
+COOCCURRENCE_METRICS = {"jaccard", "dice", "overlap", "phi", "mutual_info", "ami"}
 
 # Metrics that use decoder geometry
 GEOMETRY_METRICS = {"cosine", "euclidean"}
@@ -300,6 +300,22 @@ def cooccurrence_affinity_from_stats(
         # Normalized mutual information
         S = _normalized_mutual_info_from_counts(N11, N1, N, eps)
 
+    elif method == "ami":
+        # Absolute Mutual Information (|PMI|)
+        # AMI(i,j) = |log(P(i,j) / (P(i) * P(j)))|
+        # Like |phi|, treats anti-correlation as strong association.
+        P11 = N11 / (N + eps)
+        P1_i = N1[:, None] / (N + eps)
+        P1_j = N1[None, :] / (N + eps)
+        pmi = np.log(P11 / (P1_i * P1_j + eps) + eps)
+        S = np.abs(pmi)
+        # Normalize to [0, 1] by dividing by max (excluding diagonal)
+        np.fill_diagonal(S, 0.0)
+        max_val = S.max()
+        if max_val > 0:
+            S = S / max_val
+        np.fill_diagonal(S, 1.0)
+
     else:
         raise ValueError(f"Unknown co-occurrence method: {method}")
 
@@ -309,7 +325,11 @@ def cooccurrence_affinity_from_stats(
 
     # Clip to valid range
     if method == "phi":
-        np.clip(S, -1.0, 1.0, out=S)
+        # Use |phi| so anti-correlation counts as strong association.
+        # Belief-state features at different simplex vertices are mutually exclusive,
+        # producing strong negative phi — we want those grouped together.
+        S = np.abs(S)
+        np.clip(S, 0.0, 1.0, out=S)
     else:
         np.clip(S, 0.0, 1.0, out=S)
 

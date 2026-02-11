@@ -147,6 +147,11 @@ def parse_args():
                        help="Skip Stage 1 (AANet training), load pre-trained models and only run Stage 2 (vertex collection). Requires --stage1_models_dir.")
     parser.add_argument("--stage1_models_dir", type=str, default=None,
                        help="Directory containing Stage 1 AANet models (e.g., outputs/real_data_analysis_canonical/clusters_N/). Required when --skip_training is set. Models should be named aanet_cluster_{cid}_k{k}.pt")
+    parser.add_argument("--stage1_subfolder_pattern", type=str, default="clusters_{n_clusters}",
+                       help="Subfolder pattern under stage1_models_dir where AANet .pt files live. "
+                            "Use {n_clusters} as placeholder. "
+                            "Default: 'clusters_{n_clusters}'. "
+                            "Example for cooc: 'mutual_info_{n_clusters}/clusters_{n_clusters}'")
 
     # Model & SAE
     parser.add_argument("--model_name", type=str, default="gemma-2-9b")
@@ -1095,7 +1100,8 @@ def main():
             latent_indices = cluster_info['latent_indices']
 
             # Check if model exists in Stage 1 output
-            stage1_model_path = Path(args.stage1_models_dir) / f"clusters_{n_clusters}" / f"aanet_cluster_{cluster_id}_k{k}.pt"
+            subfolder = args.stage1_subfolder_pattern.format(n_clusters=n_clusters)
+            stage1_model_path = Path(args.stage1_models_dir) / subfolder / f"aanet_cluster_{cluster_id}_k{k}.pt"
 
             if not stage1_model_path.exists():
                 print(f"\nWARNING: Model not found for cluster {cluster_id} k={k}")

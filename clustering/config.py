@@ -58,8 +58,10 @@ class SpectralParams:
     sim_metric: Literal[
         "cosine", "euclidean",           # Geometry-based
         "jaccard", "dice", "overlap",    # Co-occurrence (set-based)
-        "phi", "mutual_info"             # Co-occurrence (correlation/information)
+        "phi", "mutual_info",            # Co-occurrence (correlation/information)
+        "ami"                            # Co-occurrence (absolute pointwise MI)
     ] = "cosine"
+    n_clusters: Optional[int] = None  # None = auto (eigengap), set to force exact count
     max_clusters: int = 12
     min_clusters: int = 2
     plot_eigengap: bool = False

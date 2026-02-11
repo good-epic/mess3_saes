@@ -16,7 +16,11 @@ DELTA_K_THRESHOLD = 2  # Maximum allowed |k_differential| for quality filter
 
 # %% Setup - Load data
 # Configure paths
-base_dir = Path(__file__).parent.parent / "outputs" / "real_data_analysis_canonical"
+# base_dir = Path(__file__).parent.parent / "outputs" / "real_data_analysis_canonical"
+#base_dir = Path(__file__).parent.parent / "outputs" / "real_data_cooc" / "phi_512"
+#base_dir = Path(__file__).parent.parent / "outputs" / "real_data_cooc" / "phi_768"
+base_dir = Path(__file__).parent.parent / "outputs" / "real_data_cooc" / "mutual_info_512"
+#base_dir = Path(__file__).parent.parent / "outputs" / "real_data_cooc" / "mutual_info_768"
 n_clusters_list = [512]
 
 # NOTE: As of the latest updates, analyze_real_saes.py now outputs the full CSV
