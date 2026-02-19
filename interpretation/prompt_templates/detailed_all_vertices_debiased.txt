@@ -1,0 +1,76 @@
+You are analyzing activation patterns from clusters of latents from a sparse autoencoder (SAE) trained on the
+residual stream at layer 20 in Gemma-2-9B.
+
+CONTEXT:
+We identified clusters of SAE features geometrically, combining two versions of k-subspace clustering to cluster the
+decoder vectors for each latent. For each cluster, we ran samples from the FineWeb dataset. For examples where any latent
+from the cluster fired, we projected the latent vector back into residual space only considering the latents from the
+cluster of interest, zeroing out all latents from other clusters. This gave us a cluster-example specific
+representation. We used these cluster-example projections as training examples to fit an Archetypal Analysis Network
+(AANet). This is an autoencoder that projects cluster activations onto a (k-1)-dimension probability simplex with k
+vertices at the bottleneck before trying to recreate the input vector.
+
+SIMPLEX GEOMETRY:
+- Points on a k-vertex simplex can be expressed as coordinates summing to 1
+- Vertices represent "pure" or "extreme" activation patterns for the cluster
+- Interior points are weighted mixtures (convex combinations) of vertices
+- Example: On a 3-vertex simplex, point (0.7, 0.2, 0.1) means the activation is mostly like vertex 0,
+  with some similarity to vertex 1 and a little to vertex 2
+
+WHY THIS MATTERS:
+The simplex structure means the cluster's activation patterns decompose into a small number of archetypal patterns
+(vertices), and every activation is a mixture of these. We want to understand what distinguishes each archetype.
+
+YOUR TASK:
+We will provide you with text examples where the cluster's activations project very close to a particular vertex.
+These are cases where the cluster's activation pattern strongly resembles one specific archetype. We will provide
+examples for each vertex. Our goal is to determine:
+1. What distinguishes the text examples at each vertex from those at other vertices
+2. What dimension of variation the simplex captures overall
+3. Confidence in this interpretation
+
+ANALYSIS GUIDELINES:
+- Look for concrete patterns across multiple samples per vertex
+- Consider all possibilities. The vertices could distinguish:
+  - Syntactic features: part of speech, clause type, grammatical role, sentence position
+  - Semantic categories: entity types, topic domains, concrete vs. abstract, animate vs. inanimate
+  - Discourse structure: paragraph openings, transitions, conclusions, dialogue vs. narration
+  - Register or style: formal vs. informal, technical vs. conversational, literary vs. expository
+  - Factual content: geographic regions, time periods, domains of knowledge
+  - Pragmatic function: assertions, questions, commands, hedging
+  - Any other dimension -- these are just examples, not an exhaustive list
+- Ensure vertex labels form a coherent set of contrasts along a single dimension
+- Think about what intermediate points would mean (e.g., "partly narrative, partly expository")
+- Be specific: "past tense action verbs" not "temporal stuff"
+- In each example, the word(s) where the cluster's latents actually fired are wrapped in <trigger>...</trigger>
+  tags. Focus your interpretation on THESE specific words and their immediate context. Do not interpret the
+  overall topic of the passage — interpret what is happening at the trigger word(s), using the surrounding text
+  only for context.
+
+EXAMPLES OF GOOD INTERPRETATIONS:
+- Dimension: "Verb tense at trigger position"
+  Vertices: ["Past tense/completed actions", "Present tense/ongoing", "Future tense/planned"]
+
+- Dimension: "Named entity type"
+  Vertices: ["Person names", "Organization/institution names", "Geographic locations", "Dates/time expressions"]
+
+- Dimension: "Discourse function of sentence"
+  Vertices: ["Introducing new information/topic", "Elaborating on previous claim", "Contrasting or qualifying"]
+
+- Dimension: "Text register"
+  Vertices: ["Technical/scientific prose", "Conversational/informal", "Narrative/storytelling", "Legal/bureaucratic"]
+
+OUTPUT REQUIREMENTS:
+- Output ONLY valid JSON (no markdown, no code fences, no extra text)
+- Include all required fields
+- Be concise but specific in labels
+
+OUTPUT FORMAT:
+{
+  "dimension_hypothesis": "What dimension of variation this simplex captures",
+  "vertex_labels": ["Label for vertex 0", "Label for vertex 1", ...],
+  "confidence": "high|medium|low",
+  "reasoning": "Brief explanation with specific evidence from samples"
+}
+
+SAMPLES BELOW:

@@ -66,16 +66,43 @@ def sample_vertex_examples(vertex_samples, n_samples, rng):
         return rng.sample(vertex_samples, n_samples)
 
 
+def tag_trigger_words(sample):
+    """Insert <trigger>...</trigger> tags around trigger words in the sample text.
+
+    Uses trigger_word_indices to locate words by splitting full_text on whitespace,
+    then wraps the corresponding words in tags.
+    """
+    full_text = sample.get('full_text', '')
+    word_indices = sample.get('trigger_word_indices', [])
+
+    if not word_indices:
+        return full_text
+
+    words = full_text.split()
+    indices_set = set(word_indices)
+
+    for i in indices_set:
+        if 0 <= i < len(words):
+            words[i] = f"<trigger>{words[i]}</trigger>"
+
+    return ' '.join(words)
+
+
 def format_prompt_with_samples(template, cluster_data, sampled_examples):
-    """Format the prompt template with sampled examples."""
-    # Build the samples section
+    """Format the prompt template with sampled examples.
+
+    Each example is shown individually with trigger words tagged inline
+    using <trigger>...</trigger> markers so the interpreter knows exactly
+    which word(s) to focus on.
+    """
     samples_text = ""
     for vertex_id in sorted(sampled_examples.keys()):
         samples = sampled_examples[vertex_id]
-        # Extract just the full_text for each sample
-        texts = [s['full_text'] for s in samples]
-        # Format as Python list
-        samples_text += f"Vertex {vertex_id}: {json.dumps(texts, indent=2)}\n\n"
+        samples_text += f"=== Vertex {vertex_id} ===\n\n"
+
+        for i, sample in enumerate(samples):
+            tagged_text = tag_trigger_words(sample)
+            samples_text += f"Example {i+1}:\n{tagged_text}\n\n"
 
     # Combine template with samples
     full_prompt = template.strip() + "\n\n" + samples_text.strip()
@@ -109,6 +136,8 @@ def call_claude_api(prompt, model, api_key):
 def parse_interpretation(response):
     """Parse the Claude API response and extract structured interpretation."""
     # Get the text content
+    if not response.content:
+        return None, f"Empty response (stop_reason={response.stop_reason})"
     text_content = response.content[0].text
 
     # Try to parse as JSON
@@ -126,9 +155,10 @@ def parse_interpretation(response):
 
         interpretation = json.loads(text_content)
 
-        # Validate required fields
-        required = ['state_space_hypothesis', 'vertex_labels', 'confidence', 'reasoning']
-        for field in required:
+        # Validate required fields (accept either key name for hypothesis)
+        if 'state_space_hypothesis' not in interpretation and 'dimension_hypothesis' not in interpretation:
+            return None, "Missing required field: state_space_hypothesis or dimension_hypothesis"
+        for field in ['vertex_labels', 'confidence', 'reasoning']:
             if field not in interpretation:
                 return None, f"Missing required field: {field}"
 
@@ -267,7 +297,8 @@ def update_aggregated_summary(output_dir, cluster_key, cluster_data, iteration, 
                 if isinstance(current_vertex, int) and current_vertex < len(interpretation['vertex_labels']):
                     new_lines.insert(-1, f"  Iteration {iteration}: \"{interpretation['vertex_labels'][current_vertex]}\"")
                 elif current_vertex == 'state_space':
-                    new_lines.insert(-1, f"  Iteration {iteration}: \"{interpretation['state_space_hypothesis']}\"")
+                    hypothesis = interpretation.get('state_space_hypothesis', interpretation.get('dimension_hypothesis', 'N/A'))
+                    new_lines.insert(-1, f"  Iteration {iteration}: \"{hypothesis}\"")
                 current_vertex = None
 
         summary = '\n'.join(new_lines)
@@ -292,7 +323,7 @@ def collect_iteration_results(output_dir, cluster_key, num_iterations):
                 if 'error' not in data:
                     results.append({
                         'iteration': iteration,
-                        'state_space_hypothesis': data.get('state_space_hypothesis'),
+                        'state_space_hypothesis': data.get('state_space_hypothesis', data.get('dimension_hypothesis')),
                         'vertex_labels': data.get('vertex_labels', []),
                         'confidence': data.get('confidence'),
                         'reasoning': data.get('reasoning', '')
@@ -301,47 +332,66 @@ def collect_iteration_results(output_dir, cluster_key, num_iterations):
 
 
 def format_synthesis_prompt(cluster_key, cluster_data, iteration_results):
-    """Format a prompt asking the model to synthesize all iteration results."""
+    """Format a prompt asking the model to synthesize all iteration results.
+
+    Presents data organized by vertex (not by iteration) so that cross-iteration
+    consistency for each vertex is immediately visible.
+    """
     k = cluster_data['k']
     n_latents = cluster_data['n_latents']
+    n_iters = len(iteration_results)
 
-    prompt = f"""You previously analyzed a cluster of SAE latents multiple times, each time with different randomly sampled examples near each vertex of a {k}-vertex simplex.
+    prompt = f"""You previously analyzed a cluster of SAE latents {n_iters} times, each time with different randomly sampled examples near each vertex of a {k}-vertex simplex.
 
 CLUSTER INFO:
 - Cluster: {cluster_key}
 - Number of vertices (k): {k}
 - Number of latents in cluster: {n_latents}
+- Number of independent analyses: {n_iters}
 
-Below are the interpretations from {len(iteration_results)} independent analyses. Each iteration saw different examples but was analyzing the same underlying structure.
+Below are the labels assigned to each vertex across all iterations. Each iteration saw different randomly sampled examples but was analyzing the same underlying structure. The vertex numbering is fixed -- vertex 0 is always the same geometric direction in the simplex.
 
 """
 
+    # Present by vertex so consistency (or lack thereof) is obvious
+    for v in range(k):
+        prompt += f"VERTEX {v} — labels across iterations:\n"
+        for result in iteration_results:
+            labels = result.get('vertex_labels', [])
+            label = labels[v] if v < len(labels) else "(missing)"
+            prompt += f"  Iteration {result['iteration']}: \"{label}\"\n"
+        prompt += "\n"
+
+    # Also show overall hypotheses
+    prompt += "OVERALL HYPOTHESES across iterations:\n"
     for result in iteration_results:
-        prompt += f"ITERATION {result['iteration']}:\n"
-        prompt += f"  State space hypothesis: {result['state_space_hypothesis']}\n"
-        prompt += f"  Vertex labels: {result['vertex_labels']}\n"
-        prompt += f"  Confidence: {result['confidence']}\n"
-        prompt += f"  Reasoning: {result['reasoning'][:500]}{'...' if len(result['reasoning']) > 500 else ''}\n\n"
+        hypothesis = result.get('state_space_hypothesis', result.get('dimension_hypothesis', '(missing)'))
+        prompt += f"  Iteration {result['iteration']} ({result['confidence']}): \"{hypothesis}\"\n"
+    prompt += "\n"
 
-    prompt += """YOUR TASK:
-Synthesize these multiple interpretations into a single, consolidated interpretation. Consider:
-1. Which interpretations are consistent across iterations?
-2. Where there is disagreement, what is the most likely explanation?
-3. What is your overall confidence given the consistency (or lack thereof) across iterations?
+    prompt += f"""YOUR TASK:
+Synthesize these {n_iters} interpretations into a single consolidated interpretation.
 
-Note that we are trying to find simplices being leveraged by the model to represent the current belief state across a state space. The examples provided are ones where
-one token has activated near a vertex of the simplex. We are hoping that the model is tracking its current belief state in this simplex, and want to use the near-vertex
-examples to understand what pure state is represented by each vertex. It should lower our confidence if similar concepts are inferred between iterations but are assigned
-to different vertices.
+CRITICAL: Each vertex has a fixed geometric identity. If vertex 0 is called "factual" in some iterations
+and "speculative" in others, that is NOT consistent -- it means the signal is ambiguous or absent for that
+vertex. A real signal should produce the same label for the same vertex across iterations, since the vertex
+corresponds to a fixed direction in activation space. Do not count a concept as consistent just because it
+appears somewhere across iterations; it must appear at the SAME vertex.
+
+Consider:
+1. For each vertex, are the labels consistent across iterations? Or does the same concept drift between vertices?
+2. Do the vertices form a coherent set of contrasts (e.g., all temporal, all about entity type)?
+3. How confident are you, given the vertex-level consistency?
 
 OUTPUT FORMAT (JSON only, no markdown):
-{
-  "consolidated_state_space": "Your best guess for what belief state or decision space this simplex represents",
+{{
+  "consolidated_hypothesis": "What dimension of variation this simplex captures",
   "consolidated_vertex_labels": ["Label for vertex 0", "Label for vertex 1", ...],
   "confidence": "high|medium|low",
-  "consistency_assessment": "How consistent were the iterations? What patterns did you notice?",
+  "per_vertex_consistency": ["consistent|mixed|inconsistent for vertex 0", ...],
+  "consistency_assessment": "How consistent were the iterations? Did concepts stay at the same vertices or drift?",
   "reasoning": "Brief explanation of how you arrived at this consolidated interpretation"
-}"""
+}}"""
 
     return prompt
 
@@ -381,7 +431,7 @@ def run_synthesis(output_dir, cluster_key, cluster_data, num_iterations, model, 
 
         synthesis = json.loads(text_content)
         print(f"    Synthesis complete!")
-        print(f"      Consolidated state space: {synthesis.get('consolidated_state_space', 'N/A')[:80]}...")
+        print(f"      Consolidated hypothesis: {synthesis.get('consolidated_hypothesis', synthesis.get('consolidated_state_space', 'N/A'))[:80]}...")
         print(f"      Confidence: {synthesis.get('confidence', 'N/A')}")
 
     except Exception as e:
@@ -446,22 +496,25 @@ def process_cluster_iteration(cluster_key, cluster_data, iteration, template,
             print(f"    ERROR parsing response: {error}")
         else:
             print(f"    Successfully parsed interpretation")
-            print(f"      State space: {interpretation['state_space_hypothesis'][:80]}...")
+            hypothesis = interpretation.get('state_space_hypothesis', interpretation.get('dimension_hypothesis', 'N/A'))
+            print(f"      Hypothesis: {hypothesis[:80]}...")
             print(f"      Confidence: {interpretation['confidence']}")
 
     except Exception as e:
         print(f"    ERROR calling API: {e}")
         # Create dummy response for error handling
+        _model = model
+        _error_text = str(e)
         class DummyResponse:
             id = "error"
-            model = model
+            model = _model
             role = "assistant"
-            content = [type('obj', (object,), {'type': 'text', 'text': str(e)})]
+            content = [type('obj', (object,), {'type': 'text', 'text': _error_text})]
             stop_reason = "error"
             usage = type('obj', (object,), {'input_tokens': 0, 'output_tokens': 0})
         response = DummyResponse()
         interpretation = None
-        error = str(e)
+        error = _error_text
 
     # Save results
     save_iteration_results(output_dir, cluster_key, iteration, sampled_examples,

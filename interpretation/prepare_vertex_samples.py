@@ -20,6 +20,43 @@ from pathlib import Path
 from collections import defaultdict
 
 
+WHITESPACE_CHARS = {'', '\n', '\t', '\r', ' ', '\r\n'}
+
+
+def is_whitespace_sample(sample):
+    """Check if a sample fired on whitespace (all trigger words are whitespace)."""
+    trigger_words = sample.get('trigger_words', [])
+    if not trigger_words:
+        return True
+    return all(tw.strip() == '' for tw in trigger_words)
+
+
+def filter_whitespace_from_prepared(prepared, min_samples_per_vertex=1):
+    """Create a copy of prepared data with whitespace-triggered samples removed.
+
+    Returns filtered prepared dict, or None if too few vertices remain.
+    """
+    filtered_vertices = {}
+    dropped_counts = {}
+
+    for vertex_id_str, samples in prepared['vertices'].items():
+        kept = [s for s in samples if not is_whitespace_sample(s)]
+        n_dropped = len(samples) - len(kept)
+        if n_dropped > 0:
+            dropped_counts[vertex_id_str] = n_dropped
+        if len(kept) >= min_samples_per_vertex:
+            filtered_vertices[vertex_id_str] = kept
+
+    total_filtered = sum(len(s) for s in filtered_vertices.values())
+
+    filtered = dict(prepared)
+    filtered['vertices'] = filtered_vertices
+    filtered['total_samples_available'] = total_filtered
+    filtered['whitespace_filtered'] = True
+
+    return filtered, dropped_counts
+
+
 def load_manifest(manifest_path):
     """Load the manifest from the AANet training run."""
     print(f"Loading manifest from {manifest_path}")
@@ -73,7 +110,7 @@ def load_vertex_samples(samples_path, max_samples_per_vertex=None):
     return dict(samples_by_vertex), trigger_stats, total_count
 
 
-def prepare_cluster_samples(cluster_metadata, vertex_collection_results, max_samples_per_vertex, min_vertices_with_samples):
+def prepare_cluster_samples(cluster_metadata, vertex_collection_results, max_samples_per_vertex, min_vertices_with_samples, min_samples_per_vertex=1):
     """Prepare samples for one cluster.
 
     Returns:
@@ -119,6 +156,14 @@ def prepare_cluster_samples(cluster_metadata, vertex_collection_results, max_sam
 
     if samples_by_vertex is None:
         return None, {'empty': 0, 'newline': 0, 'tab': 0}, 0, "samples_file_not_found"
+
+    # Filter out vertices below minimum sample count
+    if min_samples_per_vertex > 1:
+        dropped = {vid: len(s) for vid, s in samples_by_vertex.items() if len(s) < min_samples_per_vertex}
+        if dropped:
+            for vid, count in sorted(dropped.items()):
+                print(f"    Dropping vertex {vid}: only {count} samples (need >= {min_samples_per_vertex})")
+            samples_by_vertex = {vid: s for vid, s in samples_by_vertex.items() if len(s) >= min_samples_per_vertex}
 
     # Count vertices with samples
     vertices_with_samples = sum(1 for v in samples_by_vertex.values() if len(v) > 0)
@@ -169,11 +214,15 @@ def main():
                         help='Maximum samples to keep per vertex (default: all)')
     parser.add_argument('--min_vertices_with_samples', type=int, default=2,
                         help='Minimum number of vertices that must have samples (default: 2)')
+    parser.add_argument('--min_samples_per_vertex', type=int, default=1,
+                        help='Minimum samples a vertex must have to be included (default: 1, i.e. no filtering)')
 
     args = parser.parse_args()
 
-    # Create output directory
+    # Create output directories (full + whitespace-filtered)
+    filtered_output_dir = args.output_dir.rstrip('/') + '_no_whitespace'
     os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(filtered_output_dir, exist_ok=True)
 
     # Load manifest
     manifest = load_manifest(args.manifest)
@@ -186,16 +235,19 @@ def main():
 
     # Process each cluster
     prepared_count = 0
+    filtered_count = 0
     skip_reasons = defaultdict(int)
 
     # Track global trigger word statistics
     global_trigger_stats = {'empty': 0, 'newline': 0, 'tab': 0}
     global_total_count = 0
+    global_whitespace_dropped = 0
 
     for cluster_metadata in manifest['clusters']:
         prepared, trigger_stats, total_count, skip_reason = prepare_cluster_samples(
             cluster_metadata, vertex_collection_results,
-            args.max_samples_per_vertex, args.min_vertices_with_samples
+            args.max_samples_per_vertex, args.min_vertices_with_samples,
+            args.min_samples_per_vertex
         )
 
         # Accumulate trigger stats
@@ -207,30 +259,50 @@ def main():
             skip_reasons[skip_reason] += 1
             continue
 
-        # Save prepared samples
         cluster_id = prepared['cluster_id']
         n_clusters = prepared['n_clusters']
-        output_path = os.path.join(args.output_dir, f"cluster_{n_clusters}_{cluster_id}.json")
+        filename = f"cluster_{n_clusters}_{cluster_id}.json"
 
+        # Save full version
+        output_path = os.path.join(args.output_dir, filename)
         with open(output_path, 'w') as f:
             json.dump(prepared, f, indent=2)
-
         print(f"  Saved to {output_path}")
         prepared_count += 1
+
+        # Save whitespace-filtered version
+        filtered, dropped_counts = filter_whitespace_from_prepared(
+            prepared, min_samples_per_vertex=args.min_samples_per_vertex
+        )
+        n_dropped = sum(dropped_counts.values())
+        global_whitespace_dropped += n_dropped
+
+        if dropped_counts:
+            print(f"  Whitespace filtering: dropped {n_dropped} samples across {len(dropped_counts)} vertices")
+
+        n_filtered_vertices = len(filtered['vertices'])
+        if n_filtered_vertices >= args.min_vertices_with_samples:
+            filtered_path = os.path.join(filtered_output_dir, filename)
+            with open(filtered_path, 'w') as f:
+                json.dump(filtered, f, indent=2)
+            print(f"  Saved filtered to {filtered_path} ({n_filtered_vertices} vertices, {filtered['total_samples_available']} samples)")
+            filtered_count += 1
+        else:
+            print(f"  Skipping filtered: only {n_filtered_vertices} vertices remain after whitespace removal (need {args.min_vertices_with_samples})")
 
     # Summary
     print("\n" + "="*80)
     print("PREPARATION COMPLETE")
     print("="*80)
-    print(f"Prepared: {prepared_count} clusters")
+    print(f"Full version:     {prepared_count} clusters -> {args.output_dir}")
+    print(f"Filtered version: {filtered_count} clusters -> {filtered_output_dir}")
+    print(f"Whitespace samples dropped: {global_whitespace_dropped}")
 
     total_skipped = sum(skip_reasons.values())
     if total_skipped > 0:
-        print(f"Skipped: {total_skipped} clusters")
+        print(f"Skipped (both versions): {total_skipped} clusters")
         for reason, count in sorted(skip_reasons.items()):
             print(f"  - {reason}: {count}")
-
-    print(f"Output directory: {args.output_dir}")
 
     # Report global trigger word statistics
     print("\n" + "-"*80)

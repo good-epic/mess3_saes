@@ -5,7 +5,7 @@ represent the current belief state across a state space.
 
 CONTEXT:
 We identified clusters of SAE features geometrically, combining two versions of k-subspace clustering to cluster the
-decoder vectors for each latent. For each cluster, we ran samples from the Pile dataset. For examples where any latent
+decoder vectors for each latent. For each cluster, we ran samples from the FineWeb dataset. For examples where any latent
 from the cluster fired, we projected the latent vector back into residual space only considering the latents from the
 cluster of interest, zeroing out all latents from other clusters. This gave us a cluster-example specific
 representation. We used these cluster-example projections as training examples to fit an Archetypal Analysis Network
@@ -42,9 +42,10 @@ ANALYSIS GUIDELINES:
 - Think about what a mixture would mean (e.g., "uncertain between past and future", or "uncertain between truthful
   and lying")
 - Be specific: "past tense verbs" not "temporal stuff"
-- At the beginning of each example we will share the words (and their position in the text) where the vertex in
-  question was active. Remember not to try to interpret the whole example. Interpret the word(s) where the vertex
-  was active, using the rest of the test to better understand the context and meaning of the given word(s)
+- In each example, the word(s) where the cluster's latents actually fired are wrapped in <trigger>...</trigger>
+  tags. Focus your interpretation on THESE specific words and their immediate context. Do not interpret the
+  overall topic of the passage — interpret what is happening at the trigger word(s), using the surrounding text
+  only for context.
 
 EXAMPLES OF GOOD INTERPRETATIONS:
 - State space: "Temporal reference for verb tense"

@@ -39,9 +39,10 @@ ANALYSIS GUIDELINES:
 - The kind of state or class the latents represent are not limited to the above examples
 - Be specific: "past tense verbs" not "temporal stuff"
 - Provide two proposals for the latent represented by the vertex
-- At the beginning of each example we will share the words (and their position in the text) where the vertex in
-  question was active. Remember not to try to interpret the whole example. Interpret the word(s) where the vertex
-  was active, using the rest of the test to better understand the context and meaning of the given word(s)
+- In each example, the word(s) where the cluster's latents actually fired are wrapped in <trigger>...</trigger>
+  tags. Focus your interpretation on THESE specific words and their immediate context. Do not interpret the
+  overall topic of the passage — interpret what is happening at the trigger word(s), using the surrounding text
+  only for context.
 
 EXAMPLES OF GOOD INTERPRETATIONS:
 - "Past tense/completed actions"
