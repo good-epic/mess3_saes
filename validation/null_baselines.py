@@ -683,7 +683,7 @@ def parse_args():
     # Buffer building args
     parser.add_argument("--model_name", type=str, default="gemma-2-9b")
     parser.add_argument("--sae_release", type=str, default="gemma-scope-9b-pt-res-canonical")
-    parser.add_argument("--sae_id", type=str, default="layer_20/width_16k/canonical")  # formerly "layer_20/width_16k/average_l0_68"
+    parser.add_argument("--sae_id", type=str, default="layer_20/width_16k/canonical")  # same SAE as "layer_20/width_16k/average_l0_68" (l0=68); sae_lens v6 renamed the ID in the canonical release
     parser.add_argument("--buffer_size", type=int, default=100_000,
                         help="Number of active token positions to collect")
     parser.add_argument("--batch_size", type=int, default=32,

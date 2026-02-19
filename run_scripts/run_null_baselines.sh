@@ -58,7 +58,7 @@ export PYTHONPATH=.
 python -u validation/null_baselines.py \
     --model_name "gemma-2-9b" \
     --sae_release "gemma-scope-9b-pt-res-canonical" \
-    --sae_id "layer_20/width_16k/canonical" \  # formerly "layer_20/width_16k/average_l0_68"
+    --sae_id "layer_20/width_16k/canonical" \  # same SAE as "layer_20/width_16k/average_l0_68" (l0=68); sae_lens v6 renamed the ID
     --buffer_size 100000 \
     --batch_size 32 \
     --seq_len 256 \
