@@ -325,12 +325,14 @@ def main():
 
     # Load model
     print(f"Loading model: {args.model_name}")
+    if args.hf_token:
+        import huggingface_hub
+        huggingface_hub.login(token=args.hf_token, add_to_git_credential=False)
     from transformer_lens import HookedTransformer
     model = HookedTransformer.from_pretrained_no_processing(
         args.model_name,
         device=args.device,
         cache_dir=args.cache_dir,
-        token=args.hf_token,
         dtype=torch.float16,
     )
     tokenizer = model.tokenizer
