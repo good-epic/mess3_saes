@@ -55,19 +55,20 @@ export PYTHONPATH=.
 # ============================================================
 # BOTH: Build buffer + run baselines (default)
 # ============================================================
+# sae_id note: "layer_20/width_16k/canonical" is the same SAE as "layer_20/width_16k/average_l0_68"
+# (l0=68); sae_lens v6 renamed the ID in the canonical release
 python -u validation/null_baselines.py \
     --model_name "gemma-2-9b" \
     --sae_release "gemma-scope-9b-pt-res-canonical" \
-    # sae_id: same SAE as "layer_20/width_16k/average_l0_68" (l0=68); sae_lens v6 renamed the ID in the canonical release
     --sae_id "layer_20/width_16k/canonical" \
     --buffer_size 100000 \
     --batch_size 32 \
     --seq_len 256 \
-    --csv_dir "outputs/real_data_analysis_canonical" \
+    --csv_dir "/workspace/outputs/real_data_analysis_canonical" \
     --n_baselines 20 \
     --max_steps 3000 \
     --train_batch_size 128 \
-    --output_dir "outputs/validation/null_baselines" \
+    --output_dir "/workspace/outputs/validation/null_baselines" \
     --device "cuda" \
     --cache_dir "/workspace/hf_cache" \
     --hf_token ${HF_TOKEN} \
