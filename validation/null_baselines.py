@@ -40,8 +40,9 @@ from pathlib import Path
 from tqdm import tqdm
 from datetime import datetime, timezone
 
-# Add project root to path
+# Add project root and AAnet/ to path (AAnet_torch uses absolute imports internally)
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "AAnet"))
 
 from AAnet.AAnet_torch.models.AAnet_vanilla import AAnet_vanilla
 
