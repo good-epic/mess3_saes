@@ -30,7 +30,7 @@ export PYTHONPATH=.
 python -u real_data_tests/refit_selected_clusters.py \
     --skip_training \
     --stage1_models_dir "/workspace/outputs/real_data_analysis_canonical" \
-    --vertex_skip_docs 0 \
+    --vertex_skip_docs 1_000_000 \
     --n_clusters_list "768" \
     --csv_dir "/workspace/outputs/real_data_analysis_canonical" \
     --save_dir "/workspace/outputs/selected_clusters_canonical" \
@@ -58,10 +58,10 @@ python -u real_data_tests/refit_selected_clusters.py \
     --min_vertex_ratio 0.1 \
     --vertex_search_batch_size 32 \
     --concurrent_aanets 5 \
-    --max_inputs_per_cluster 100f \
+    --max_inputs_per_cluster 2_000_000 \
     --vertex_save_interval 5000 \
-    --manual_cluster_ids "768:455,484,210,704,409,91" \
-    --manual_k "768:455=4,484=3,210=5,704=5,409=3,91=3"
+    --manual_cluster_ids "768:24,43,49,60,75,91,114,125,139,140,153,193,228,257,306,328,329,342,409,417,418,419,450,455,499,570,581,586,596,672,678,704,733,748" \
+    --manual_k "768:24=4,43=3,49=4,60=3,75=4,91=3,114=5,125=4,139=5,140=5,153=5,193=3,228=4,257=4,306=5,328=5,329=4,342=4,409=3,417=4,418=3,419=5,450=4,455=4,499=4,570=4,581=3,586=3,596=3,672=3,678=3,704=4,733=5,748=4"
 
 
 # MODE 2: Retrain at elbow k + collect (ALTERNATIVE - uncomment to use)

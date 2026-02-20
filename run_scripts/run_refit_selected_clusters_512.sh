@@ -31,7 +31,7 @@ python -u real_data_tests/refit_selected_clusters.py \
     --skip_training \
     --stage1_models_dir "/workspace/outputs/real_data_analysis_canonical" \
     --n_clusters_list "512" \
-    --vertex_skip_docs 0 \
+    --vertex_skip_docs 1_000_000 \
     --csv_dir "/workspace/outputs/real_data_analysis_canonical" \
     --save_dir "/workspace/outputs/selected_clusters_canonical" \
     --model_name "gemma-2-9b" \
@@ -58,10 +58,10 @@ python -u real_data_tests/refit_selected_clusters.py \
     --min_vertex_ratio 0.1 \
     --vertex_search_batch_size 32 \
     --concurrent_aanets 5 \
-    --max_inputs_per_cluster 10f0 \
+    --max_inputs_per_cluster 2_000_000 \
     --vertex_save_interval 5000 \
-    --manual_cluster_ids "512:321,202,464,292,261,504" \
-    --manual_k "512:321=4,202=3,464=5,292=3,261=3,504=5"
+    --manual_cluster_ids "512:3,12,14,17,22,24,30,40,43,44,63,67,77,82,85,95,97,103,149,181,197,202,222,229,254,260,261,273,292,295,321,366,372,395,443,455,461,471,484,503" \
+    --manual_k "512:3=6,12=4,14=7,17=4,22=4,24=5,30=6,40=6,43=3,44=4,63=4,67=5,77=4,82=6,85=5,95=5,97=6,103=5,149=4,181=6,197=5,202=3,222=3,229=6,254=5,260=5,261=3,273=6,292=4,295=5,321=4,366=4,372=3,395=4,443=5,455=5,461=5,471=5,484=3,503=5"
 
 # MODE 2: Retrain at elbow k + collect (ALTERNATIVE - uncomment to use)
 # Use this if you want different hyperparameters or fine-tuning
