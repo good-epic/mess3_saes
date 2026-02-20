@@ -45,7 +45,7 @@ python -u real_data_tests/refit_selected_clusters.py \
     --dataset_split "train" \
     --activity_batch_size 32 \
     --activity_seq_len 256 \
-    --seed 42 \
+    --seed 4343 \
     --aanet_prefetch_size 1024 \
     --shuffle_buffer_size 50000 \
     --max_doc_tokens 3000 \
