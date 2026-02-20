@@ -31,7 +31,7 @@ python -u real_data_tests/refit_selected_clusters.py \
     --skip_training \
     --stage1_models_dir "/workspace/outputs/real_data_analysis_canonical" \
     --n_clusters_list "512" \
-    --vertex_skip_docs 1_500_000 \
+    --vertex_skip_docs 1_000_000 \
     --csv_dir "/workspace/outputs/real_data_analysis_canonical" \
     --save_dir "/workspace/outputs/selected_clusters_canonical" \
     --model_name "gemma-2-9b" \

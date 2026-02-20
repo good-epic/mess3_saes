@@ -30,7 +30,7 @@ export PYTHONPATH=.
 python -u real_data_tests/refit_selected_clusters.py \
     --skip_training \
     --stage1_models_dir "/workspace/outputs/real_data_analysis_canonical" \
-    --vertex_skip_docs 1_000_000 \
+    --vertex_skip_docs 1_500_000 \
     --n_clusters_list "768" \
     --csv_dir "/workspace/outputs/real_data_analysis_canonical" \
     --save_dir "/workspace/outputs/selected_clusters_canonical" \
