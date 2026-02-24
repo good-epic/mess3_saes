@@ -355,6 +355,7 @@ def main():
     parser.add_argument("--extrema_pca", type=float, default=None, help="PCA components (int > 1) or variance (float < 1) for extrema graph.")
     parser.add_argument("--extrema_seed", type=int, default=0, help="Seed for extrema subsampling.")
     parser.add_argument("--resume_from", type=str, default=None, help="Directory to resume analysis from. Skips clustering if results exist.")
+    parser.add_argument("--cluster_labels_file", type=str, default=None, help="Path to a .npy file containing external cluster labels (shape: sae_width, dtype int, -1 for unassigned). If provided, skips co-occurrence collection and clustering entirely.")
 
     args = parser.parse_args()
 
@@ -507,8 +508,8 @@ def main():
         clustering_pkl_path = os.path.join(output_dir, "clustering_result.pkl")
         result = None
         
-        # Try to load existing clustering result if resuming
-        if args.resume_from and os.path.exists(clustering_pkl_path):
+        # Try to load existing clustering result if resuming (skipped when using external labels)
+        if not args.cluster_labels_file and args.resume_from and os.path.exists(clustering_pkl_path):
             print(f"Loading existing clustering result from {clustering_pkl_path}")
             try:
                 import pickle
@@ -519,7 +520,23 @@ def main():
                 print(f"Failed to load clustering result: {e}. Re-running clustering.")
                 result = None
 
-        if result is None:
+        if args.cluster_labels_file:
+            # Bypass co-occurrence collection and clustering — use external labels directly
+            from types import SimpleNamespace
+            print(f"Loading external cluster labels from {args.cluster_labels_file}")
+            labels = np.load(args.cluster_labels_file)
+            n_c = int(np.max(labels[labels != -1])) + 1
+            assert n_c == n_clusters, (
+                f"Labels file encodes {n_c} clusters but --n_clusters_list specifies {n_clusters}"
+            )
+            print(f"  Loaded {n_c} clusters, {int((labels != -1).sum())} assigned latents")
+            result = SimpleNamespace(
+                cluster_labels=labels,
+                n_clusters=n_c,
+                cluster_stats={cid: {} for cid in range(n_c)},
+                subspace_diagnostics=None,
+            )
+        elif result is None:
             result = pipeline.run(
                 model=model,
                 cache={},

@@ -368,6 +368,167 @@ def extract_features_512_292(rows, nlp):
     return df, feature_cols, primary_feature
 
 
+def extract_features_512_181(rows, nlp):
+    """512_181: Grammatical function — function words (V0) / content words (V1) / auxiliaries+determiners (V2)."""
+    records = []
+    for row in rows:
+        tw = row["trigger_word"]
+        ctx = get_trigger_context(row["full_text"], row["trigger_word_idx"])
+        feats = extract_common_features(tw, ctx, nlp)
+
+        pos = feats.get("pos_tag", "UNK")
+        if pos in ("AUX", "PART"):
+            feats["gram_function"] = "auxiliary"
+        elif pos in ("DET",):
+            feats["gram_function"] = "auxiliary"  # grouped with aux per synthesis
+        elif pos in ("ADP", "CCONJ", "SCONJ", "PRON", "INTJ"):
+            feats["gram_function"] = "function"
+        elif pos in ("NOUN", "PROPN", "VERB", "ADJ", "ADV", "NUM"):
+            feats["gram_function"] = "content"
+        else:
+            feats["gram_function"] = "other"
+
+        feats["is_aux_or_det"] = pos in ("AUX", "PART", "DET")
+        feats["is_conj"] = pos in ("CCONJ", "SCONJ")
+        feats["vertex_id"] = row["vertex_id"]
+        records.append(feats)
+
+    df = pd.DataFrame(records)
+    feature_cols = [
+        "is_function_word", "is_noun", "is_verb", "is_adj", "is_adp",
+        "is_det", "is_aux_or_det", "is_conj", "word_length",
+    ]
+    primary_feature = "gram_function"
+    return df, feature_cols, primary_feature
+
+
+def extract_features_768_140(rows, nlp):
+    """768_140: Noun phrase type — proper nouns (V0) / temporal expressions (V1) / common nouns (V2)."""
+    TEMPORAL_NER = {"DATE", "TIME", "ORDINAL", "CARDINAL"}
+
+    records = []
+    for row in rows:
+        tw = row["trigger_word"]
+        ctx = get_trigger_context(row["full_text"], row["trigger_word_idx"])
+        feats = extract_common_features(tw, ctx, nlp)
+
+        ner = feats.get("ner_type", "NONE")
+        pos = feats.get("pos_tag", "UNK")
+
+        feats["is_temporal_ner"] = ner in TEMPORAL_NER
+        feats["is_org_or_person_ner"] = ner in ("ORG", "PERSON", "GPE", "PRODUCT", "FAC", "NORP")
+
+        if feats["is_proper_noun"] or feats["is_org_or_person_ner"]:
+            feats["noun_type"] = "proper"
+        elif feats["is_temporal_ner"] or feats.get("is_numeric", False) or feats.get("has_digits", False):
+            feats["noun_type"] = "temporal"
+        elif pos == "NOUN":
+            feats["noun_type"] = "common"
+        else:
+            feats["noun_type"] = "other"
+
+        feats["vertex_id"] = row["vertex_id"]
+        records.append(feats)
+
+    df = pd.DataFrame(records)
+    feature_cols = [
+        "is_proper_noun", "is_named_entity", "is_temporal_ner", "is_org_or_person_ner",
+        "starts_uppercase", "has_digits", "is_numeric", "is_noun", "word_length",
+    ]
+    primary_feature = "noun_type"
+    return df, feature_cols, primary_feature
+
+
+def extract_features_512_67(rows, nlp):
+    """512_67: Punctuation/symbols (V0) / conjunctions+connectives (V1) / mixed (V2)."""
+    records = []
+    for row in rows:
+        tw = row["trigger_word"]
+        ctx = get_trigger_context(row["full_text"], row["trigger_word_idx"])
+        feats = extract_common_features(tw, ctx, nlp)
+
+        pos = feats.get("pos_tag", "UNK")
+        feats["is_conj"] = pos in ("CCONJ", "SCONJ")
+        feats["is_punct_token"] = pos == "PUNCT" or (
+            not feats.get("is_all_alpha", True) and len(tw.strip()) <= 2
+        )
+
+        if feats["is_punct_token"] or feats.get("contains_punctuation", False) and not feats.get("is_all_alpha", True):
+            feats["token_class"] = "punctuation"
+        elif feats["is_conj"] or tw.lower() in ("and", "but", "or", "nor", "so", "yet",
+                                                  "although", "because", "while", "however",
+                                                  "therefore", "thus", "moreover", "also"):
+            feats["token_class"] = "conjunction"
+        else:
+            feats["token_class"] = "other"
+
+        feats["vertex_id"] = row["vertex_id"]
+        records.append(feats)
+
+    df = pd.DataFrame(records)
+    feature_cols = [
+        "contains_punctuation", "is_all_alpha", "is_conj", "is_punct_token",
+        "is_function_word", "word_length",
+    ]
+    primary_feature = "token_class"
+    return df, feature_cols, primary_feature
+
+
+INFORMAL_MARKERS = {
+    "yeah", "yep", "nope", "gonna", "wanna", "gotta", "kinda", "sorta",
+    "lol", "omg", "btw", "imo", "tbh", "idk", "dunno", "nah", "hey",
+    "ok", "okay", "wow", "ugh", "hmm", "haha", "hehe", "yay",
+}
+
+FORMAL_TECHNICAL_MARKERS = {
+    "therefore", "furthermore", "moreover", "nevertheless", "subsequently",
+    "consequently", "notwithstanding", "aforementioned", "pursuant",
+    "implementation", "algorithm", "methodology", "hypothesis", "parameter",
+    "coefficient", "theorem", "equation", "configuration", "infrastructure",
+    "prototype", "specification", "documentation", "authentication",
+}
+
+
+def extract_features_768_596(rows, nlp):
+    """768_596: Register — informal/conversational (V0) / formal-technical (V1) / neutral (V2)."""
+    import re
+
+    records = []
+    for row in rows:
+        tw = row["trigger_word"]
+        ctx = get_trigger_context(row["full_text"], row["trigger_word_idx"])
+        feats = extract_common_features(tw, ctx, nlp)
+
+        tw_lower = tw.strip().lower()
+        ctx_words = ctx.split()
+
+        feats["is_informal_marker"] = tw_lower in INFORMAL_MARKERS
+        feats["is_formal_marker"] = tw_lower in FORMAL_TECHNICAL_MARKERS
+        feats["has_contraction"] = "'" in tw and tw_lower not in ("'s", "'t")
+        feats["context_has_contraction"] = any("'" in w for w in ctx_words)
+
+        if ctx_words:
+            feats["context_avg_word_length"] = sum(len(w) for w in ctx_words) / len(ctx_words)
+            unique_words = len(set(w.lower() for w in ctx_words))
+            feats["context_type_token_ratio"] = unique_words / len(ctx_words)
+        else:
+            feats["context_avg_word_length"] = 0.0
+            feats["context_type_token_ratio"] = 0.0
+
+        feats["vertex_id"] = row["vertex_id"]
+        records.append(feats)
+
+    df = pd.DataFrame(records)
+    feature_cols = [
+        "is_informal_marker", "is_formal_marker", "has_contraction",
+        "context_has_contraction", "context_avg_word_length",
+        "context_type_token_ratio", "word_length", "is_all_alpha",
+        "starts_uppercase",
+    ]
+    primary_feature = "is_formal_marker"
+    return df, feature_cols, primary_feature
+
+
 # =============================================================================
 # Classification
 # =============================================================================
@@ -597,6 +758,24 @@ def build_contingency_feature(df, cluster_key):
                 {True: "has digits", False: "no digits"}
             ), "digit content"
 
+    elif cluster_key == "512_181":
+        if "gram_function" in df.columns:
+            return df["gram_function"], "grammatical function"
+
+    elif cluster_key == "768_140":
+        if "noun_type" in df.columns:
+            return df["noun_type"], "noun type"
+
+    elif cluster_key == "512_67":
+        if "token_class" in df.columns:
+            return df["token_class"], "token class"
+
+    elif cluster_key == "768_596":
+        if "is_formal_marker" in df.columns:
+            return df["is_formal_marker"].map(
+                {True: "formal marker", False: "not formal marker"}
+            ), "formal marker"
+
     return None, None
 
 
@@ -683,6 +862,11 @@ CLUSTER_EXTRACTORS = {
     "768_484": ("Structured data vs narrative prose", extract_features_768_484),
     "512_504": ("Function words vs content nouns vs prepositions", extract_features_512_504),
     "512_292": ("Procedural instructions vs deliberative processes", extract_features_512_292),
+    # Broad search clusters
+    "512_181": ("Grammatical function: function / content / auxiliary words", extract_features_512_181),
+    "768_140": ("Noun phrase type: proper / temporal / common nouns", extract_features_768_140),
+    "512_67":  ("Token class: punctuation / conjunction / other", extract_features_512_67),
+    "768_596": ("Register: informal / formal-technical / neutral", extract_features_768_596),
 }
 
 

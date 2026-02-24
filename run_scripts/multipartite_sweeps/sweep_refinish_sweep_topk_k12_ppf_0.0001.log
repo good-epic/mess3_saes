@@ -1,0 +1,116 @@
+This is METAFONT, Version 2.71828182 (preloaded base=mf 2025.7.8)  23 FEB 2026 17:12
+**sweep_refinish_sweep_topk_k12_ppf_0.0001.sh sweep_refinish_sweep_topk_k12_ppf
+_0.0005.sh sweep_refinish_sweep_topk_k12_ppf_0.001.sh sweep_refinish_sweep_topk
+_k16_ppf_0.0001.sh sweep_refinish_sweep_topk_k16_ppf_0.0005.sh sweep_refinish_s
+weep_topk_k16_ppf_0.001.sh sweep_refinish_sweep_topk_k8_ppf_0.0001.sh sweep_ref
+inish_sweep_topk_k8_ppf_0.0005.sh sweep_refinish_sweep_topk_k8_ppf_0.001.sh swe
+ep_refinish_sweep_vanilla_l0.01_ppf_0.0001.sh sweep_refinish_sweep_vanilla_l0.0
+1_ppf_0.0005.sh sweep_refinish_sweep_vanilla_l0.01_ppf_0.001.sh sweep_refinish_
+sweep_vanilla_l0.09_ppf_0.001.sh multipartite_sweeps/
+(sweep_refinish_sweep_topk_k12_ppf_0.0001.sh
+>> #!
+>> usr
+! Not implemented: (unknown numeric)/(unknown numeric).
+<to be read again> 
+                   /
+l.1 #!/usr/
+           bin/bash
+? 
+! Interruption.
+l.1 #!/usr/
+           bin/bash
+? q()
+OK, entering batchmode...
+>> usr
+>> bin
+! Not implemented: (unknown numeric)/(unknown numeric).
+<to be read again> 
+                   /
+l.1 #!/usr/bin/
+               bash
+I'm afraid I don't know how to apply that operation to that
+combination of types. Continue, and I'll return the second
+argument (see above) as the result of the operation.
+
+>> bin
+>> bash#Auto
+! Not implemented: (unknown numeric)/(unknown numeric).
+<to be read again> 
+                   -
+l.3 # Auto-
+           generated on 2025-10-16T20:57:19.099010Z to resume sweep_topk_k12...
+I'm afraid I don't know how to apply that operation to that
+combination of types. Continue, and I'll return the second
+argument (see above) as the result of the operation.
+
+>> -16T20-generated.on2025+bash#Auto-10
+! Isolated expression.
+<to be read again> 
+                   :
+l.3 # Auto-generated on 2025-10-16T20:
+                                      57:19.099010Z to resume sweep_topk_k12...
+I couldn't find an `=' or `:=' after the
+expression that is shown above this error message,
+so I guess I'll just ignore it and carry on.
+
+! Extra tokens will be flushed.
+<to be read again> 
+                   :
+l.3 # Auto-generated on 2025-10-16T20:
+                                      57:19.099010Z to resume sweep_topk_k12...
+I've just read as much of that statement as I could fathom,
+so a semicolon should have been next. It's very puzzling...
+but I'll try to get myself back together, by ignoring
+everything up to the next `;'. Please insert a semicolon
+now in front of anything that you don't want me to delete.
+(See Chapter 27 of The METAFONTbook for an example.)
+
+! Missing `=' has been inserted.
+<to be read again> 
+                   in
+l.29   for dedup in
+                    "${DEDUP_THRESHOLDS[@]}"; do
+The next thing in this loop should have been `=' or `:='.
+But don't worry; I'll pretend that an equals sign
+was present, and I'll look for the values next.
+
+! Missing `:' has been inserted.
+<to be read again> 
+                   "${DEDUP_THRESHOLDS[@]}"
+l.29   for dedup in "${DEDUP_THRESHOLDS[@]}"
+                                            ; do
+The next thing in this loop should have been a `:'.
+So I'll pretend that a colon was present;
+everything from here to `endfor' will be iterated.
+
+! Enormous number has been reduced.
+l.78           --max_activations 50000
+                                       \
+I can't handle numbers bigger than about 4095.99998;
+so I've changed your constant to that maximum amount.
+
+! Enormous number has been reduced.
+l.87           --geo_sinkhorn_max_iter 5000
+                                            \
+I can't handle numbers bigger than about 4095.99998;
+so I've changed your constant to that maximum amount.
+
+)
+Runaway loop?
+"${DEDUP_THRESHOLDS[@]}";do.for.latent_act.in"${LATENT_ACTS[@]}";do.for ETC.
+! File ended while scanning the text of a for loop.
+<inserted text> 
+                endfor
+<*> sweep_refinish_sweep_topk_k12_ppf_0.0001.sh
+                                                sweep_refinish_sweep_topk_k1...
+I suspect you have forgotten an `endfor',
+causing me to read past where you wanted me to stop.
+I'll try to recover; but if the error is serious,
+you'd better type `E' or `X' now and fix your file.
+
+! Emergency stop.
+<*> ...lla_l0.09_ppf_0.001.sh multipartite_sweeps/
+                                                  
+*** (job aborted, no legal end found)
+
+

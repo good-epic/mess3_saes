@@ -11,7 +11,7 @@ from pathlib import Path
 import pandas as pd
 
 # Configuration
-OUTPUT_DIR = Path("outputs/selected_clusters_canonical")
+OUTPUT_DIR = Path("outputs/selected_clusters_broad_2")
 CSV_DIR = Path("outputs/real_data_analysis_canonical")
 MANIFEST_PATH = OUTPUT_DIR / "manifest.json"
 
