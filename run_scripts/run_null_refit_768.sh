@@ -20,7 +20,7 @@ python -u real_data_tests/refit_selected_clusters.py \
     --csv_dir "/workspace/outputs/null_clusters" \
     --save_dir "/workspace/outputs/null_clusters_selected" \
     --model_name "gemma-2-9b" \
-    --sae_release "gemma-scope-9b-pt-res" \
+    --sae_release "gemma-scope-9b-pt-res-canonical" \
     --sae_id "layer_20/width_16k/canonical" \
     --device "cuda" \
     --cache_dir "/workspace/hf_cache" \
