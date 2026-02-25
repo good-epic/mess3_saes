@@ -21,7 +21,7 @@ Usage:
         --n_clusters_list 128,256,512,768 \
         --save_dir /workspace/outputs/selected_clusters_canonical \
         --model_name gemma-2-9b \
-        --sae_release gemma-scope-9b-pt-res-canonical \
+        --sae_release gemma-scope-9b-pt-res \
         --sae_id layer_20/width_16k/average_l0_68 \
         --aanet_streaming_steps 3000 \
         --device cuda
@@ -31,7 +31,7 @@ Usage:
         --n_clusters_list 128,256,512,768 \
         --save_dir /workspace/outputs/selected_clusters_canonical \
         --model_name gemma-2-9b \
-        --sae_release gemma-scope-9b-pt-res-canonical \
+        --sae_release gemma-scope-9b-pt-res \
         --sae_id layer_20/width_16k/average_l0_68 \
         --aanet_streaming_steps 3000 \
         --collect_vertex_samples \
@@ -155,7 +155,7 @@ def parse_args():
 
     # Model & SAE
     parser.add_argument("--model_name", type=str, default="gemma-2-9b")
-    parser.add_argument("--sae_release", type=str, default="gemma-scope-9b-pt-res-canonical")
+    parser.add_argument("--sae_release", type=str, default="gemma-scope-9b-pt-res")
     parser.add_argument("--sae_id", type=str, default="layer_20/width_16k/average_l0_68")
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--cache_dir", type=str, default="/workspace/hf_cache")

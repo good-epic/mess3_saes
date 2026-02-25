@@ -20,8 +20,8 @@ export PYTHONPATH=.
 #
 # python -u validation/null_baselines.py --build_buffer \
 #     --model_name "gemma-2-9b" \
-#     --sae_release "gemma-scope-9b-pt-res-canonical" \
-#     --sae_id "layer_20/width_16k/canonical" \
+#     --sae_release "gemma-scope-9b-pt-res" \
+#     --sae_id "layer_20/width_16k/average_l0_68" \
 #     --buffer_size 100000 \
 #     --batch_size 32 \
 #     --seq_len 256 \
@@ -55,12 +55,12 @@ export PYTHONPATH=.
 # ============================================================
 # BOTH: Build buffer + run baselines (default)
 # ============================================================
-# sae_id note: "layer_20/width_16k/canonical" is the same SAE as "layer_20/width_16k/average_l0_68"
+# sae_id: using average_l0_68 to match the real data pipeline (not the canonical checkpoint)
 # (l0=68); sae_lens v6 renamed the ID in the canonical release
 python -u validation/null_baselines.py \
     --model_name "gemma-2-9b" \
-    --sae_release "gemma-scope-9b-pt-res-canonical" \
-    --sae_id "layer_20/width_16k/canonical" \
+    --sae_release "gemma-scope-9b-pt-res" \
+    --sae_id "layer_20/width_16k/average_l0_68" \
     --buffer_size 100000 \
     --batch_size 32 \
     --seq_len 256 \

@@ -56,8 +56,8 @@ python -u real_data_tests/analyze_real_saes.py \
     --n_clusters_list 512 \
     --output_dir "${NULL_DIR}" \
     --model_name "gemma-2-9b" \
-    --sae_release "gemma-scope-9b-pt-res-canonical" \
-    --sae_id "layer_20/width_16k/canonical" \
+    --sae_release "gemma-scope-9b-pt-res" \
+    --sae_id "layer_20/width_16k/average_l0_68" \
     --latent_activity_threshold 0 \
     --activity_batch_size 32 \
     --activity_batches 4096 \
@@ -78,6 +78,7 @@ python -u real_data_tests/analyze_real_saes.py \
     --aanet_warmup_steps 100 \
     --aanet_warmup_cluster_chunk_size 16 \
     --aanet_sequential_k \
+    --aanet_k_max 4 \
     --aanet_lr 0.0025 \
     --aanet_weight_decay 1e-5 \
     --aanet_layer_widths 64 32 \
