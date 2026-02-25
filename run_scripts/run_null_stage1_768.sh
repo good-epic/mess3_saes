@@ -78,7 +78,7 @@ python -u real_data_tests/analyze_real_saes.py \
     --aanet_warmup_steps 100 \
     --aanet_warmup_cluster_chunk_size 16 \
     --aanet_sequential_k \
-    --aanet_k_max 4 \
+    --aanet_k_max 5 \
     --aanet_lr 0.0025 \
     --aanet_weight_decay 1e-5 \
     --aanet_layer_widths 64 32 \
