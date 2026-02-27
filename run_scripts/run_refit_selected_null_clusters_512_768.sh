@@ -30,7 +30,7 @@ export PYTHONPATH=.
 python -u real_data_tests/refit_selected_clusters.py \
     --skip_training \
     --stage1_models_dir "/workspace/outputs/null_clusters" \
-    --n_clusters_list "512" \
+    --n_clusters_list "512,768" \
     --vertex_skip_docs 1_000_000 \
     --csv_dir "/workspace/outputs/null_clusters" \
     --save_dir "/workspace/outputs/selected_null_clusters" \
