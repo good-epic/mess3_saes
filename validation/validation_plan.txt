@@ -1,0 +1,295 @@
+  Phase 1: Quick wins — validate we're not fooling ourselves                                                                                                                                                                                                                                                 
+                                                                               
+  1a. Null baselines for geometry                                                                                                                                                                                                                                                                            
+  Pick random subsets of SAE latents (matching cluster sizes: 4, 5, 10, 18, 20, 22) and fit AANets. Compare reconstruction quality to the real clusters. If random groups fit just as well, the geometric clustering isn't finding real structure. If real clusters fit dramatically better, that's the      
+  foundation everything else builds on.
+
+  1b. Top predicted tokens by vertex (qualitative)
+  For the three strongest clusters (512_292, 512_464, 768_484), collect the model's top-k next-token predictions at each trigger position. Group by vertex and eyeball: do V0's top tokens look like common nouns and V1's like proper nouns (for 512_464)? This is fast, cheap, and tells you immediately if
+   the interpretations are on track before investing in heavier validation.
+
+  1c. Feature regression on strongest clusters (quantitative)
+  Run automated feature extraction on trigger words and regress against barycentric coordinates:
+  - 512_464 (common vs proper nouns): POS tagger + NER on trigger words. Binary "is proper noun" should correlate strongly with V1 coordinate.
+  - 768_484 (structured vs prose): Numeric token ratio, punctuation density, list-indicator presence near trigger.
+  - 512_292 (procedural vs deliberative): Imperative verb presence, programming keyword density, institutional/investigative vocabulary.
+
+  Even 2 of these working cleanly kills the "LLM confabulation" objection.
+
+  Phase 2: Deeper observational — the simplex captures real variation
+
+  2a. KL divergence across the simplex
+  For each cluster, bin examples by barycentric position. Compute average predicted next-token distribution per bin. Measure KL divergence between vertices. Key tests:
+  - KL(V0 ‖ V1) >> KL(random split within same vertex)
+  - KL increases monotonically with simplex distance
+  - Plot KL as a function of distance across the simplex — should be smooth, not noisy
+
+
+Three distributions for pairwise KL                       
+                                                                                                                                                                                                                                                                                                                        
+  1. Same-vertex pairs — from existing near-vertex samples (vertex_samples.jsonl)
+  2. Cross-vertex pairs — from existing near-vertex samples, one from each of two different vertices
+  3. Random simplex pairs — from a new data collection run that samples uniformly across the simplex
+
+  ---
+  New data collection: within-simplex sampling (collect_simplex_samples.py)
+
+  Separate script (not integrated into refit). For each cluster:
+  - Loads the pre-trained AANet model
+  - Streams documents through model + SAE + AANet to get barycentric coordinates
+  - Accepts any active token regardless of barycentric position, subject to position-bucket
+    stratification: reads trigger_token_indices from the already-saved vertex_samples.jsonl
+    (no model inference on those), computes the token-position distribution across 10 decile
+    buckets, and uses those counts as targets — so the within-simplex samples have the same
+    token-position distribution as the near-vertex examples, controlling for position bias
+  - Saves output per record: full_text, chunk_token_ids, trigger_token_ids/indices,
+    barycentric_coords, latent_acts (no vertex_id)
+
+  Run per cluster on RunPod (needs model + SAE + AANet loaded). Output goes to
+  outputs/simplex_samples/. Separate runs needed for real priority clusters and null clusters
+  (see run script plan below).
+
+  ---
+  KL divergence analysis (GPU, after new data collection)
+
+  For each cluster:
+  1. Run forward passes on near-vertex samples + simplex samples → store individual next-token distributions
+  2. Sample M random pairs from each category, compute pairwise KL(P_i ‖ P_j)
+  3. Collect full distributions → means, z-scores, histograms
+
+  ---
+  Design questions before coding
+
+  1. Vocabulary truncation for KL stability: full 256K-token KL is dominated by near-zero entries. Proposal: compute KL over union of top-K (e.g. top-1000) from each pair. Or use JS divergence (symmetric, bounded [0, log 2]). Preference?
+  2. How many simplex samples per cluster? Need enough for stable pair distributions — e.g. 1000 samples → ~500K random pairs. Is that the right scale or do you want more/fewer?
+  3. Output: per-cluster JSON with raw KL vectors + summary stats + histogram plots?
+  4. Which clusters to run on? Priority clusters only, or all clusters we have prepared samples for?
+
+
+  2b. Individual latents vs simplex coordinate
+  Show that the simplex adds explanatory power beyond individual latents:
+  - Do individual latents fire across multiple vertices? (They should — otherwise each latent = one vertex and the simplex is trivial)
+  - Does the barycentric coordinate predict text features (from 1c) better than any single latent's activation?
+  - This justifies why the collective/geometric view matters
+
+  Phase 3: Causal — steering confirms the simplex is functional
+
+  3a. Residual stream patching
+  For each strong cluster:
+  1. Take examples naturally near V0
+  2. Subtract the cluster's contribution from the residual stream at layer 20
+  3. Use the AANet decoder to generate a replacement from a target barycentric coordinate (e.g., pure V1)
+  4. Add back, continue forward pass, get logits
+  5. Measure distribution shift
+
+  3b. Targeted metrics for each cluster (broad_2 priority clusters)
+
+  HIGH CONFIDENCE:
+
+  Auto-interpretation protocol (primary test for broad/complex clusters):
+    For each steering direction (e.g. V0→V1), generate N continuation samples before and after
+    the patch. Present paired before/after samples to an LLM (blind to which direction was applied)
+    and ask it to identify what changed. Score: does the LLM correctly identify the shift direction?
+    Repeat across all K*(K-1) vertex pairs. This is the gold standard for clusters where the
+    semantic content is too rich to reduce to a single token-level metric.
+
+  - 768_596 (register: informal ↔ formal ↔ neutral/structural)
+    Primary test: LLM auto-interpretation of steered continuations (see protocol above).
+    Supporting metrics: shift in POS tag distribution of next-token predictions (personal pronouns,
+    contractions, exclamations vs. technical/institutional vocabulary, formal punctuation).
+
+  - 512_17 (discourse function: instructional ↔ promotional/service ↔ navigational/referential)
+    Primary test: LLM auto-interpretation of steered continuations (see protocol above).
+    Supporting metrics: distributional shift in imperative/modal verbs ("click", "should", "need to")
+    vs. service/offering nouns ("services", "provides", "offers") vs. navigation tokens
+    (URLs, "contact", "settings", structural labels).
+
+  - 512_261 (register/formality: informal/general ↔ technical/specialized ↔ structural/procedural)
+    Primary test: LLM auto-interpretation of steered continuations (see protocol above).
+    Note: weaker signal than 768_596; treat as corroborating evidence.
+
+  - 768_140 (reference type: proper nouns ↔ temporal expressions ↔ common nouns)
+    Primary test: NER tag distributions on next-token predictions — directly measurable and
+    highly distinctive. V0→V1 should shift probability mass from ORG/PERSON/PRODUCT tokens
+    to date/time tokens (month names, ordinals, year numbers); V1→V2 from temporal to generic nouns.
+    Supporting: LLM auto-interpretation.
+
+  - 512_181 (part of speech: function words/connectives ↔ content words ↔ auxiliaries/determiners)
+    Primary test: POS tag distributions on next-token predictions — most direct test for a
+    purely grammatical cluster.
+    Note: next-token POS distributions are noisy in general since many tokens are plausible
+    at any position. Treat as supporting evidence rather than a strong causal claim.
+
+  - 768_581 (publication type: popular/consumer media ↔ academic/scholarly ↔ technical metadata)
+    V0→V1: decrease narrative/casual vocabulary, increase academic citation tokens
+            (author names, journal terms, "et al.", volume/issue numbers)
+    V1→V0: decrease formal citation tokens, increase colloquial/consumer media vocabulary
+    V2→V1: decrease DOI/URL/identifier tokens, increase structured bibliographic tokens
+    Test: citation-style token distributions are highly distinctive and measurable.
+
+  - 512_229 (specificity gradient: general ↔ specific temporal/proper noun ↔ dense technical)
+    V0→V2: increase technical terminology probability, decrease function word and common article tokens
+    V1→V0: decrease date/time/proper noun tokens, increase indefinite articles and general vocabulary
+
+  3c. Controls
+  - Steer by the same magnitude in a random direction in residual space — should produce smaller or incoherent shifts
+  - Steer along the simplex vs perpendicular to it — simplex direction should matter more
+
+  Phase 4: Refit and broaden
+
+  4a. Refit with reduced k
+  Refit AANets with k=2 for the clusters where only 2 vertices were consistent. The cleaner simplex may improve all the above metrics. Also try k=2 on the all-mixed clusters (512_261, 768_210) — maybe a 2-way split works where 3+ didn't.
+
+  4b. Funnel statistics
+  Report the full pipeline: "Started with N clusters from geometric clustering, X% had clean AANet fits, Y% had interpretable vertices, Z% passed quantitative validation." Makes it systematic, not cherry-picked.
+
+  ---
+  Priority clusters for deep validation: 512_292, 512_464, 768_484 (high confidence, consistent across both whitespace variants).
+
+  Suggested execution order: 1a → 1b → 1c → 2a → 3a → 2b → 4a → 4b, since each step informs whether the next is worth doing. If null baselines fail at 1a, we rethink the geometry. If feature regression fails at 1c, we rethink the interpretations. If steering fails at 3a, we still have a solid
+  observational paper.
+
+------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------
+
+
+  Run script execution plan (current implementation, broad_2 clusters)
+
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │ CURRENTLY RUNNING (RunPod)                                                  │
+  │   run_null_stage1_512.sh  /  run_null_stage1_768.sh                         │
+  │   (1a) Generate null cluster labels matching real size distribution, then   │
+  │   train AANets on null clusters for n=512 and n=768. Produces               │
+  │   consolidated_metrics_n{N}.csv + per-cluster AANet .pt models.             │
+  └───────────────────┬─────────────────────────────────────────────────────────┘
+                      │
+                      ▼
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │ MANUAL STEP: review elbow plots, select k for null clusters                 │
+  │   Use plot_elbow_browser.py locally on downloaded CSVs.                     │
+  │   Fill --manual_cluster_ids / --manual_k in the refit scripts below.        │
+  └───────────────────┬─────────────────────────────────────────────────────────┘
+                      │
+                      ▼
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │ RunPod  run_null_refit_512.sh  /  run_null_refit_768.sh                     │
+  │   (1a) For null clusters with good elbow shapes, run Stage 3 to collect     │
+  │   near-vertex samples with the chosen k. Mirrors                            │
+  │   run_refit_selected_clusters_512/768.sh but points at null_clusters/ dir.  │
+  │   After this, review vertex samples to decide which null clusters are worth │
+  │   carrying forward for interpretation and comparison.                       │
+  └──────────┬────────────────────────────────────────────────────────────┬─────┘
+             │                                                            │
+             ▼                                                            │
+  ┌──────────────────────────────────────────────────┐                   │
+  │ MANUAL STEP: review null vertex samples,          │                   │
+  │ select null clusters to carry forward.            │                   │
+  │ Fill --manual_cluster_ids / --manual_k in         │                   │
+  │ run_null_collect_simplex_samples.sh.              │                   │
+  └──────────────────┬───────────────────────────────┘                   │
+                     │                                                    │
+                     ▼                                                    │
+  ┌──────────────────────────────────────────────────┐                   │
+  │ RunPod  run_null_collect_simplex_samples.sh       │                   │
+  │   (2a / 2Ba) Stream documents through model +    │                   │
+  │   SAE + AANet for selected null clusters.         │                   │
+  │   Accepts any active token regardless of          │                   │
+  │   barycentric position; stratifies by token-      │                   │
+  │   position bucket (distribution read from saved   │                   │
+  │   null vertex_samples.jsonl, no model re-run).    │                   │
+  │   --manual_cluster_ids / --manual_k filled in     │                   │
+  │   after null refit. Points source_dir at          │                   │
+  │   null_clusters/ output dir.                      │                   │
+  │   Output: outputs/simplex_samples/ (null entries) │                   │
+  └──────────────────┬───────────────────────────────┘                   │
+                     │                                                    │
+                     │        ┌───────────────────────────────────────────┘
+                     │        │  NOTE: run_collect_simplex_samples.sh (real
+                     │        │  clusters) can run independently — real AANet
+                     │        │  models already exist in selected_clusters_broad_2.
+                     │        │  Does not need to wait for null refit.
+                     │        ▼
+                     │  ┌─────────────────────────────────────────────────────┐
+                     │  │ RunPod  run_collect_simplex_samples.sh              │
+                     │  │   (2a / 2Ba) Same process as above for real         │
+                     │  │   priority clusters (broad_2). Reads position        │
+                     │  │   distribution from existing vertex_samples.jsonl.  │
+                     │  │   Points source_dir at selected_clusters_broad_2.   │
+                     │  │   Output: outputs/simplex_samples/ (real entries)   │
+                     │  └──────────────────┬──────────────────────────────────┘
+                     │                     │
+                     └──────────┬──────────┘
+                                │  (both real + null simplex samples needed)
+                                ▼
+          ┌─────────────────────────────────────────────────────┐
+          │ RunPod  run_kl_divergence.sh  +  Local run_latent_spatial_simplex.sh
+          │   run_kl_divergence.sh (2a): pairwise KL between    │
+          │   same-vertex, cross-vertex, and random simplex      │
+          │   pairs for real vs null clusters.                   │
+          │   run_latent_spatial_simplex.sh (2Ba, CPU): reads    │
+          │   simplex_samples.jsonl, computes activation-        │
+          │   weighted centroid + spatial variance per latent,   │
+          │   renders KDE heatmaps + centroid scatter plots.     │
+          │   Output: outputs/validation/latent_spatial/         │
+          └─────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │ INDEPENDENT — can run now on RunPod                                         │
+  │ RunPod  run_latent_vs_barycentric.sh                                        │
+  │   (2Bb) Run existing vertex samples (prepared_samples_broad_2_no_whitespace)│
+  │   through Gemma-2-9b + SAE + refitted AANet. Compare CV R² / balanced       │
+  │   accuracy of best single cluster latent vs. full barycentric coordinate    │
+  │   for: (1) vertex membership, (2) linguistic feature from 1c, (3) next-     │
+  │   token log-prob for top-50 highest-variance tokens. Wilcoxon paired test.  │
+  │   Output: /workspace/outputs/validation/latent_vs_barycentric/              │
+  └─────────────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │ INDEPENDENT — can run locally now                                           │
+  │ Local (CPU)  run_feature_regression_broad_2.sh                              │
+  │   (1c) Extract spacy features from trigger words; regress against           │
+  │   barycentric coords for priority clusters. Checks whether vertex           │
+  │   coordinates correlate with interpretable linguistic categories.           │
+  └─────────────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │ INDEPENDENT — needs GPU                                                     │
+  │ RunPod  run_top_tokens_broad_2.sh                                           │
+  │   (1b) Run vertex samples through model; collect top-k next-token           │
+  │   predictions per vertex. Qualitative check that vertex identities match    │
+  │   interpretations.                                                          │
+  └─────────────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │ INDEPENDENT — needs GPU                                                     │
+  │ RunPod  run_causal_steering.sh                                              │
+  │   (3a) For each near-vertex example, subtract the cluster's current AANet  │
+  │   reconstruction from the layer-20 residual at the trigger position and    │
+  │   add back a scaled version of the target vertex's reconstruction           │
+  │   (Option B: AANet subspace only). Records the full next-token distribution │
+  │   and greedy continuation (steered and unsteered) at scales [0, 1, 5, 20]. │
+  │                                                                             │
+  │   Steering math (per trigger T, target vertex v, scale s):                 │
+  │     acts_c = sae_encode_features(sae, resid_T)[cluster_indices]             │
+  │     X_c = acts_c @ W_c                                                     │
+  │     X_recon_curr, _, Z_curr = aanet(X_c)                                   │
+  │     Z_target = one_hot(v, k) @ aanet.archetypal_simplex                    │
+  │     X_recon_target = aanet.decode(Z_target)                                │
+  │     delta = -X_recon_curr + s * X_recon_target                             │
+  │     hook: resid[:, T, :] += delta  (applied at blocks.20.hook_resid_post   │
+  │           on every generation step; delta is identical each step since      │
+  │           position T only attends to earlier tokens)                        │
+  │                                                                             │
+  │   Outputs per cluster (cluster_{key}/):                                    │
+  │     steering_results.jsonl — one record per (example × target_vertex):     │
+  │       record_id, cluster_key, source_vertex, target_vertex,                │
+  │       trigger_token_index, source_barycentric_coords, original_text,       │
+  │       document_continuation, unsteered_continuation, steered_continuations │
+  │     logprobs.npz — float16 arrays:                                         │
+  │       "ex{N}_V{src}_pre" — pre-patch logprobs (vocab_size,)                │
+  │       "{record_id}_s{scale}" — post-patch logprobs (vocab_size,)           │
+  │                                                                             │
+  │   Runs on all 13 priority clusters. Max 100 examples/vertex.               │
+  │   Output: /workspace/outputs/validation/causal_steering/                   │
+  └─────────────────────────────────────────────────────────────────────────────┘

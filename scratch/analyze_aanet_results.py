@@ -19,9 +19,10 @@ DELTA_K_THRESHOLD = 2  # Maximum allowed |k_differential| for quality filter
 # base_dir = Path(__file__).parent.parent / "outputs" / "real_data_analysis_canonical"
 #base_dir = Path(__file__).parent.parent / "outputs" / "real_data_cooc" / "phi_512"
 #base_dir = Path(__file__).parent.parent / "outputs" / "real_data_cooc" / "phi_768"
-base_dir = Path(__file__).parent.parent / "outputs" / "real_data_cooc" / "mutual_info_512"
+#base_dir = Path(__file__).parent.parent / "outputs" / "real_data_cooc" / "mutual_info_512"
 #base_dir = Path(__file__).parent.parent / "outputs" / "real_data_cooc" / "mutual_info_768"
-n_clusters_list = [512]
+base_dir = Path(__file__).parent.parent / "outputs" / "null_clusters" 
+n_clusters_list = [768]
 
 # NOTE: As of the latest updates, analyze_real_saes.py now outputs the full CSV
 # with all quality metrics (elbow metrics, monotonicity, pct_decrease, etc.)
@@ -49,7 +50,7 @@ plt.rcParams['savefig.dpi'] = 150
 
 # Choose which n_clusters to analyze (can change this)
 primary_n_clusters = 768
-df = all_metrics[n]
+df = all_metrics[primary_n_clusters]
 
 print(f"\nAnalyzing n_clusters={primary_n_clusters}")
 print(f"Shape: {df.shape}")
@@ -63,46 +64,52 @@ df_k2 = df[df['aanet_k'] == 2].copy()
 
 # Check what data is available
 print("Data availability check:")
-print(f"  decoder_dir_rank non-null: {df_k2['decoder_dir_rank'].notna().sum()} / {len(df_k2)}")
+has_decoder_rank = 'decoder_dir_rank' in df_k2.columns
+if has_decoder_rank:
+    print(f"  decoder_dir_rank non-null: {df_k2['decoder_dir_rank'].notna().sum()} / {len(df_k2)}")
+else:
+    print("  decoder_dir_rank: NOT PRESENT in this dataset (skipping)")
 print(f"  activation_pca_rank non-null: {df_k2['activation_pca_rank'].notna().sum()} / {len(df_k2)}")
 
-# Plot decoder rank distribution
-fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+if has_decoder_rank:
+    # Plot decoder rank distribution
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
-# Histogram
-ax = axes[0]
-ax.hist(df_k2['decoder_dir_rank'], bins=30, alpha=0.7, edgecolor='black')
-ax.set_xlabel('Decoder Direction Rank')
-ax.set_ylabel('Number of Clusters')
-ax.set_title(f'Decoder Direction Rank Distribution (n_clusters={n})')
-ax.grid(True, alpha=0.3)
+    # Histogram
+    ax = axes[0]
+    ax.hist(df_k2['decoder_dir_rank'], bins=30, alpha=0.7, edgecolor='black')
+    ax.set_xlabel('Decoder Direction Rank')
+    ax.set_ylabel('Number of Clusters')
+    ax.set_title(f'Decoder Direction Rank Distribution (n_clusters={n})')
+    ax.grid(True, alpha=0.3)
 
-# Scatter: decoder rank vs number of latents in cluster
-ax = axes[1]
-scatter = ax.scatter(
-    df_k2['n_latents'],
-    df_k2['decoder_dir_rank'],
-    alpha=0.6,
-    s=30,
-    c=df_k2['n_latents'],
-    cmap='viridis'
-)
-ax.set_xlabel('Number of Latents in Cluster')
-ax.set_ylabel('Decoder Direction Rank')
-ax.set_title('Decoder Rank vs Cluster Size')
-plt.colorbar(scatter, ax=ax, label='Cluster Size')
+    # Scatter: decoder rank vs number of latents in cluster
+    ax = axes[1]
+    scatter = ax.scatter(
+        df_k2['n_latents'],
+        df_k2['decoder_dir_rank'],
+        alpha=0.6,
+        s=30,
+        c=df_k2['n_latents'],
+        cmap='viridis'
+    )
+    ax.set_xlabel('Number of Latents in Cluster')
+    ax.set_ylabel('Decoder Direction Rank')
+    ax.set_title('Decoder Rank vs Cluster Size')
+    plt.colorbar(scatter, ax=ax, label='Cluster Size')
 
-plt.tight_layout()
-plt.show()
+    plt.tight_layout()
+    plt.show()
 
-print(f"\nDecoder rank stats:")
-print(df_k2['decoder_dir_rank'].describe())
+    print(f"\nDecoder rank stats:")
+    print(df_k2['decoder_dir_rank'].describe())
 
 # %% Analysis 1b: Geometric Rank vs PCA Rank
 # Compare the decoder direction rank (geometric) with the activation PCA rank
-valid_rank_data = df_k2.dropna(subset=['decoder_dir_rank', 'activation_pca_rank'])
+rank_cols = ['decoder_dir_rank', 'activation_pca_rank'] if has_decoder_rank else ['activation_pca_rank']
+valid_rank_data = df_k2.dropna(subset=rank_cols)
 
-if len(valid_rank_data) > 0:
+if has_decoder_rank and len(valid_rank_data) > 0:
     fig, ax = plt.subplots(1, 1, figsize=(10, 8))
 
     scatter = ax.scatter(
@@ -134,6 +141,8 @@ if len(valid_rank_data) > 0:
     print(f"Clusters plotted: {len(valid_rank_data)}")
     print(f"\nPCA rank stats:")
     print(valid_rank_data['activation_pca_rank'].describe())
+elif not has_decoder_rank:
+    print("Skipping geometric rank vs PCA rank plot (decoder_dir_rank not in dataset)")
 else:
     print("No valid data for geometric rank vs PCA rank plot (both columns have NaN)")
 

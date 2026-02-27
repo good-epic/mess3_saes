@@ -364,6 +364,7 @@ def plot_epdfs_to_directory(
     mode: str = "transparency",
     marker_size: int = 5,
     base_opacity: float = 0.6,
+    legend_outside: bool = False,
 ) -> None:
     """Plot EPDFs and save to directory.
 
@@ -402,6 +403,7 @@ def plot_epdfs_to_directory(
             grid_size=grid_size,
             marker_size=marker_size,
             base_opacity=base_opacity,
+            legend_outside=legend_outside,
         )
         all_path = os.path.join(output_dir, "all_latents.png")
         fig_all.savefig(all_path, dpi=150, bbox_inches='tight')
@@ -418,6 +420,7 @@ def plot_epdfs_to_directory(
                 grid_size=grid_size,
                 marker_size=marker_size,
                 base_opacity=base_opacity,
+                legend_outside=legend_outside,
             )
             latent_path = os.path.join(output_dir, f"latent_{latent_idx}.png")
             fig_latent.savefig(latent_path, dpi=150, bbox_inches='tight')
@@ -977,6 +980,7 @@ def plot_mp_epdfs(
     title: str | None = None,
     mode: str = "transparency",
     grid_size: int = 100,
+    legend_outside: bool = False,
 ):
     """Plot multipartite EPDFs as per-component KDE visualizations using matplotlib.
 
@@ -1169,8 +1173,8 @@ def plot_mp_epdfs(
         ax.set_yticks([])
         ax.set_title(comp_name, fontsize=10)
 
-        # Add legend only to first subplot
-        if comp_idx == 0 and len(epdfs) > 0:
+        # Add legend only to first subplot (skipped when legend_outside=True)
+        if not legend_outside and comp_idx == 0 and len(epdfs) > 0:
             ax.legend(loc='upper left', fontsize=8, framealpha=0.7)
 
     # Hide unused subplots
@@ -1178,6 +1182,29 @@ def plot_mp_epdfs(
         row_idx = idx // cols
         col_idx = idx % cols
         axes[row_idx, col_idx].axis('off')
+
+    # Place legend outside axes when requested (suited for single-panel with many latents)
+    if legend_outside and len(epdfs) > 0:
+        all_handles, all_labels = [], []
+        seen_labels: set[str] = set()
+        for ax_row in axes:
+            for ax_ in ax_row:
+                for h, l in zip(*ax_.get_legend_handles_labels()):
+                    if l not in seen_labels:
+                        all_handles.append(h)
+                        all_labels.append(l)
+                        seen_labels.add(l)
+        if all_handles:
+            ncol = 2 if len(all_handles) > 12 else 1
+            fig.legend(
+                all_handles, all_labels,
+                loc='upper left',
+                bbox_to_anchor=(1.02, 1),
+                ncol=ncol,
+                fontsize=8,
+                framealpha=0.7,
+                borderaxespad=0,
+            )
 
     # Set overall title
     fig.suptitle(title or "Multipartite Latent EPDFs", fontsize=12)

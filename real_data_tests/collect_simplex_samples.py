@@ -392,7 +392,8 @@ def collect_for_cluster(
                 embedding = aanet.euclidean_to_barycentric(embedding)
 
                 # Process each active (batch_idx, seq_idx) position
-                for idx, bary in zip(active_indices.cpu().numpy(), embedding.cpu().numpy()):
+                acts_c_active_np = acts_c_active.cpu().numpy()
+                for local_idx, (idx, bary) in enumerate(zip(active_indices.cpu().numpy(), embedding.cpu().numpy())):
                     batch_idx = int(idx // args.activity_seq_len)
                     seq_idx = int(idx % args.activity_seq_len)
 
@@ -425,6 +426,7 @@ def collect_for_cluster(
 
                     record = {
                         "barycentric_coords": bary.tolist(),
+                        "latent_acts": acts_c_active_np[local_idx].tolist(),
                         "position_bucket": bucket,
                         "full_text": full_text,
                         "chunk_token_ids": sequence_tokens.tolist(),
@@ -457,6 +459,8 @@ def collect_for_cluster(
         "n_clusters": n_clusters,
         "cluster_id": cluster_id,
         "k": k,
+        "n_latents": len(latent_indices),
+        "latent_indices": latent_indices,
         "is_control": is_control,
         "n_collected": total_collected,
         "bucket_counts": bucket_counts,
