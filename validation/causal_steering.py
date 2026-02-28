@@ -122,17 +122,23 @@ def get_latent_indices(csv_dir, n_clusters, cluster_id):
     return ast.literal_eval(rows.iloc[0]["latent_indices"])
 
 
-def get_k(csv_dir, n_clusters, cluster_id):
-    """Get elbow k for a cluster from the consolidated metrics CSV."""
-    import pandas as pd
-    csv_path = Path(csv_dir) / f"clusters_{n_clusters}" / f"consolidated_metrics_n{n_clusters}.csv"
-    if not csv_path.exists():
+def get_k_from_source_dir(source_dir, n_clusters, cluster_id):
+    """Infer selected k from the vertex_samples filename in source_dir.
+
+    The selected k is encoded in the filename as cluster_{id}_k{k}_category*.
+    This is authoritative — the CSV elbow_k may differ from the manually chosen k.
+    """
+    pattern = str(
+        Path(source_dir) / f"n{n_clusters}"
+        / f"cluster_{cluster_id}_k*_category*_vertex_samples.jsonl"
+    )
+    matches = glob.glob(pattern)
+    if not matches:
         return None
-    df = pd.read_csv(csv_path)
-    rows = df[df["cluster_id"] == cluster_id]
-    if rows.empty:
-        return None
-    return int(rows.iloc[0]["aanet_recon_loss_elbow_k"])
+    name = Path(matches[0]).name  # e.g. cluster_17_k3_categoryM_vertex_samples.jsonl
+    import re
+    m = re.search(r"_k(\d+)_", name)
+    return int(m.group(1)) if m else None
 
 
 # =============================================================================
@@ -465,10 +471,10 @@ def run_cluster(
     print(f"\n{'=' * 60}")
     print(f"Cluster {cluster_key}")
 
-    # Get k and latent indices from CSV
-    k = get_k(csv_dir, n_clusters, cluster_id)
+    # Get k from vertex samples filename (authoritative — may differ from CSV elbow_k)
+    k = get_k_from_source_dir(source_dir, n_clusters, cluster_id)
     if k is None:
-        print(f"  Cannot determine k, skipping")
+        print(f"  Cannot determine k (no vertex_samples.jsonl found in {source_dir}), skipping")
         return
 
     latent_indices = get_latent_indices(csv_dir, n_clusters, cluster_id)
