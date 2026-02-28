@@ -42,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "AAnet"))
 
 from transformer_lens import HookedTransformer
+from transformer_lens.past_key_value_caching import HookedTransformerKeyValueCache
 from sae_lens import SAE
 from huggingface_hub import login
 from mess3_gmg_analysis_utils import sae_encode_features
@@ -209,29 +210,11 @@ def load_vertex_samples(source_dir, n_clusters, cluster_id, k, max_examples_per_
 STEERING_TYPES = ("type1", "type2", "type3")
 
 
-def make_patch_hook(trigger_idx, delta, steering_type="type1", k_sustain=16):
-    """Return hook that adds delta to residual at the appropriate position range.
-
-    Args:
-        trigger_idx:   position of the trigger token in the context
-        delta:         (d_model,) float32 steering vector
-        steering_type: one of "type1", "type2", "type3"
-        k_sustain:     number of generated positions to sustain for type2
-    """
+def make_patch_hook(trigger_idx, delta):
+    """Return hook that adds delta to the residual at trigger_idx (for logprobs)."""
     def hook_fn(act, hook):
-        seq_len = act.shape[1]
-        if seq_len <= trigger_idx:
-            return act
-        last_pos = seq_len - 1
-        if steering_type == "type1":
-            end_pos = trigger_idx
-        elif steering_type == "type2":
-            end_pos = min(last_pos, trigger_idx + k_sustain)
-        else:  # type3
-            end_pos = last_pos
-        act[:, trigger_idx:end_pos + 1, :] = (
-            act[:, trigger_idx:end_pos + 1, :] + delta.to(act.dtype)
-        )
+        if act.shape[1] > trigger_idx:
+            act[:, trigger_idx, :] = act[:, trigger_idx, :] + delta.to(act.dtype)
         return act
     return hook_fn
 
@@ -265,37 +248,77 @@ def run_patched_forward(model, tokens, hook_name, hook_fn, trigger_idx):
         return lp.half().cpu()
 
 
-def greedy_generate(model, hook_name, hook_fn, context_tokens, n_tokens, device):
-    """Greedy generation with optional hook applied at each step.
+def greedy_generate(model, hook_name, trigger_idx, delta, steering_type,
+                     k_sustain, context_tokens, n_tokens, device):
+    """KV-cached greedy generation with steering hook.
+
+    Prefill processes the full context once (with hook at trigger_idx for all
+    steering types). Each subsequent generation step processes one token only,
+    with the hook applied according to steering_type and step index:
+      type1 — hook only during prefill; generation runs hook-free (delta is
+               baked into the cached K/V at trigger_idx for layers 21-41)
+      type2 — hook during prefill + first k_sustain generation steps
+      type3 — hook during prefill + every generation step
+
+    The generation hook patches act[:, 0, :] — the single new token position.
 
     Args:
-        context_tokens: (ctx_len,) long tensor — starting context
-        hook_fn: if None, generate without hook
-        n_tokens: number of tokens to generate
+        trigger_idx:   position of trigger token in context
+        delta:         (d_model,) float32 steering vector; pass None for unsteered
+        steering_type: "type1", "type2", or "type3"; ignored if delta is None
+        k_sustain:     steps to sustain hook for type2
+        context_tokens: (ctx_len,) long tensor
+        n_tokens:      number of tokens to generate
 
     Returns:
         list of generated token ids (ints)
     """
-    generated = []
-    current = context_tokens.clone().to(device)
+    context_tokens = context_tokens.to(device)
+
+    def prefill_hook(act, hook):
+        act[:, trigger_idx, :] = act[:, trigger_idx, :] + delta.to(act.dtype)
+        return act
+
+    def gen_hook(act, hook):
+        act[:, 0, :] = act[:, 0, :] + delta.to(act.dtype)
+        return act
+
+    kv_cache = HookedTransformerKeyValueCache.init_cache(
+        model.cfg, device, batch_size=1
+    )
 
     with torch.no_grad():
-        for _ in range(n_tokens):
-            if hook_fn is not None:
-                logits = model.run_with_hooks(
-                    current.unsqueeze(0),
-                    fwd_hooks=[(hook_name, hook_fn)],
-                    return_type="logits",
-                )
-            else:
-                logits = model(current.unsqueeze(0))
+        # Prefill: full context, hook at trigger_idx if steered
+        prefill_hooks = [(hook_name, prefill_hook)] if delta is not None else []
+        logits = model.run_with_hooks(
+            context_tokens.unsqueeze(0),
+            fwd_hooks=prefill_hooks,
+            past_kv_cache=kv_cache,
+            return_type="logits",
+        )
+        next_token = int(logits[0, -1, :].argmax())
+        generated = []
 
-            next_token = int(logits[0, -1, :].argmax().item())
+        for step in range(n_tokens):
+            # Determine generation hook for this step
+            if delta is None or steering_type == "type1":
+                step_hooks = []
+            elif steering_type == "type2":
+                step_hooks = [(hook_name, gen_hook)] if step < k_sustain else []
+            else:  # type3
+                step_hooks = [(hook_name, gen_hook)]
+
+            token_tensor = torch.tensor(
+                [[next_token]], device=device, dtype=torch.long
+            )
+            logits = model.run_with_hooks(
+                token_tensor,
+                fwd_hooks=step_hooks,
+                past_kv_cache=kv_cache,
+                return_type="logits",
+            )
             generated.append(next_token)
-            current = torch.cat([
-                current,
-                torch.tensor([next_token], device=device, dtype=torch.long),
-            ])
+            next_token = int(logits[0, -1, :].argmax())
 
     return generated
 
@@ -383,7 +406,7 @@ def process_example(
     # --- Unsteered generation (context = tokens up to and including trigger) ---
     context_tokens = chunk_tokens[:trigger_idx + 1]
     unsteered_ids = greedy_generate(
-        model, hook_name, None, context_tokens, n_gen_tokens, device
+        model, hook_name, trigger_idx, None, "type1", 0, context_tokens, n_gen_tokens, device
     )
     unsteered_continuation = tokenizer.decode(unsteered_ids, skip_special_tokens=True)
 
@@ -415,7 +438,7 @@ def process_example(
 
             # Post-patch logprobs use type1 (patch T only in the static context;
             # generation type doesn't apply here).
-            hook_fn_t1 = make_patch_hook(trigger_idx, delta, "type1")
+            hook_fn_t1 = make_patch_hook(trigger_idx, delta)
             post_lp = run_patched_forward(
                 model, chunk_tokens, hook_name, hook_fn_t1, trigger_idx
             )
@@ -424,9 +447,9 @@ def process_example(
 
             # Generation for all three steering types
             for stype in STEERING_TYPES:
-                hook_fn = make_patch_hook(trigger_idx, delta, stype, k_sustain)
                 gen_ids = greedy_generate(
-                    model, hook_name, hook_fn, context_tokens, n_gen_tokens, device
+                    model, hook_name, trigger_idx, delta, stype, k_sustain,
+                    context_tokens, n_gen_tokens, device,
                 )
                 steered_continuations[stype][str(scale)] = tokenizer.decode(
                     gen_ids, skip_special_tokens=True
