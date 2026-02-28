@@ -92,13 +92,10 @@ def parse_args():
 # File finding helpers (inlined from collect_simplex_samples.py)
 # =============================================================================
 
-def find_model_path(source_dir, n_clusters, cluster_id, k):
-    """Find refitted .pt model for a cluster in source_dir."""
-    pattern = str(
-        Path(source_dir) / f"n{n_clusters}" / f"cluster_{cluster_id}_k{k}_category*.pt"
-    )
-    matches = glob.glob(pattern)
-    return Path(matches[0]) if matches else None
+def find_model_path(csv_dir, n_clusters, cluster_id, k):
+    """Find AANet .pt model in csv_dir (stage-1 naming: aanet_cluster_{id}_k{k}.pt)."""
+    path = Path(csv_dir) / f"clusters_{n_clusters}" / f"aanet_cluster_{cluster_id}_k{k}.pt"
+    return path if path.exists() else None
 
 
 def find_vertex_samples_path(source_dir, n_clusters, cluster_id, k):
@@ -481,9 +478,9 @@ def run_cluster(
     print(f"  k={k}, n_latents={len(latent_indices)}")
 
     # Find and load AANet
-    model_path = find_model_path(source_dir, n_clusters, cluster_id, k)
+    model_path = find_model_path(csv_dir, n_clusters, cluster_id, k)
     if model_path is None:
-        print(f"  AANet model not found in {source_dir}, skipping")
+        print(f"  AANet model not found in {csv_dir}, skipping")
         return
 
     d_model = sae.W_dec.shape[1]

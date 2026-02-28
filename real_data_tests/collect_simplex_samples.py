@@ -210,21 +210,14 @@ def compute_bucket_targets(vertex_samples_path, n_simplex_samples, n_buckets, se
 # Find files for a cluster in source_dir
 # =============================================================================
 
-def find_model_path(source_dir, n_clusters, cluster_id, k):
-    """Find refitted .pt model for a priority cluster in source_dir."""
-    pattern = str(Path(source_dir) / f"n{n_clusters}" / f"cluster_{cluster_id}_k{k}_category*.pt")
-    matches = glob.glob(pattern)
-    if matches:
-        return Path(matches[0])
-    return None
-
-
-def find_control_model_path(csv_dir, n_clusters, cluster_id, k):
-    """Find Stage 1 .pt model for a control cluster in csv_dir."""
+def find_model_path(csv_dir, n_clusters, cluster_id, k):
+    """Find AANet .pt model in csv_dir (stage-1 naming: aanet_cluster_{id}_k{k}.pt)."""
     path = Path(csv_dir) / f"clusters_{n_clusters}" / f"aanet_cluster_{cluster_id}_k{k}.pt"
-    if path.exists():
-        return path
-    return None
+    return path if path.exists() else None
+
+
+# Alias kept for control-cluster call sites
+find_control_model_path = find_model_path
 
 
 def find_vertex_samples_path(source_dir, n_clusters, cluster_id, k):
@@ -558,10 +551,7 @@ def main():
                 print(f"WARNING: Cannot determine k for cluster {n_clusters}_{cluster_id}, skipping")
                 continue
 
-            model_path = find_model_path(args.source_dir, n_clusters, cluster_id, k)
-            if model_path is None:
-                # Fallback to Stage 1 model
-                model_path = find_control_model_path(args.csv_dir, n_clusters, cluster_id, k)
+            model_path = find_model_path(args.csv_dir, n_clusters, cluster_id, k)
             if model_path is None:
                 print(f"WARNING: No model found for cluster {n_clusters}_{cluster_id} k={k}, skipping")
                 continue
