@@ -20,7 +20,7 @@ set -e
 
 export PYTHONPATH=.
 
-PREPARED_SAMPLES_DIR="outputs/interpretations/prepared_samples_broad_2"
+PREPARED_SAMPLES_DIR="/workspace/outputs/interpretations/prepared_samples_broad_2"
 SOURCE_DIR="/workspace/outputs/selected_clusters_broad_2"
 CSV_DIR="/workspace/outputs/real_data_analysis_canonical"
 OUTPUT_DIR="/workspace/outputs/validation/latent_vs_barycentric"

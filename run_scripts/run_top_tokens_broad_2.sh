@@ -8,10 +8,10 @@ export PYTHONPATH=.
 
 NEW_CLUSTERS="512_181,768_140,512_67,768_596"
 
-echo "Running top tokens by vertex on broad_2 clusters (no whitespace)..."
+echo "Running top tokens by vertex on broad_2 clusters..."
 python -u validation/top_tokens_by_vertex.py \
-    --prepared_samples_dir outputs/interpretations/prepared_samples_broad_2_no_whitespace \
-    --output_dir outputs/validation/top_tokens_broad_2_no_whitespace \
+    --prepared_samples_dir outputs/interpretations/prepared_samples_broad_2 \
+    --output_dir outputs/validation/top_tokens_broad_2 \
     --clusters "${NEW_CLUSTERS}" \
     --model_name "gemma-2-9b" \
     --device "cuda" \
@@ -22,4 +22,4 @@ python -u validation/top_tokens_by_vertex.py \
     --batch_size 16
 
 echo ""
-echo "Done. Results in outputs/validation/top_tokens_broad_2_no_whitespace/"
+echo "Done. Results in outputs/validation/top_tokens_broad_2/"
