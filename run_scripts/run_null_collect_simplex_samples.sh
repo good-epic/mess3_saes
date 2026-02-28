@@ -18,10 +18,10 @@ set -e
 export PYTHONPATH=.
 
 # TODO: fill in after null refit + vertex sample review
-CLUSTERS_512="512:75,138,203,222,268,336,345"
-CLUSTERS_768="768:113,310,548,559,646,689"
-MANUAL_K_512="512:75=3,138=3,203=3,222=4,268=3,336=3,345=3"
-MANUAL_K_768="768:113=3,310=3,548=3,559=3,646=3,689=4"
+CLUSTERS_512="512:138,345"
+CLUSTERS_768="768:310"
+MANUAL_K_512="512:138=3,345=3"
+MANUAL_K_768="768:310=3"
 
 NULL_DIR="/workspace/outputs/null_clusters"
 
@@ -36,7 +36,7 @@ python -u real_data_tests/collect_simplex_samples.py \
     --n_clusters_list "512" \
     --source_dir "/workspace/outputs/selected_null_clusters" \
     --csv_dir "${NULL_DIR}" \
-    --save_dir "/workspace/outputs/simplex_samples" \
+    --save_dir "/workspace/outputs/null_simplex_samples" \
     --manual_cluster_ids "${CLUSTERS_512}" \
     --manual_k "${MANUAL_K_512}" \
     --n_random_controls 0 \
@@ -70,7 +70,7 @@ python -u real_data_tests/collect_simplex_samples.py \
     --n_clusters_list "768" \
     --source_dir "/workspace/outputs/selected_null_clusters" \
     --csv_dir "${NULL_DIR}" \
-    --save_dir "/workspace/outputs/simplex_samples" \
+    --save_dir "/workspace/outputs/null_simplex_samples" \
     --manual_cluster_ids "${CLUSTERS_768}" \
     --manual_k "${MANUAL_K_768}" \
     --n_random_controls 0 \
