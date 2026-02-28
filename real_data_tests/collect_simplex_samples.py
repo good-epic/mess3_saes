@@ -484,12 +484,13 @@ def main():
         login(token=args.hf_token)
 
     # Load model
+    if args.hf_token:
+        login(token=args.hf_token)
     print(f"\nLoading Model: {args.model_name}")
     model = HookedTransformer.from_pretrained_no_processing(
         args.model_name,
         device=args.device,
         cache_dir=args.cache_dir,
-        token=args.hf_token,
         dtype=torch.float16,
     )
     model.eval()

@@ -525,7 +525,6 @@ def main():
         args.model_name,
         device=args.device,
         cache_dir=args.cache_dir,
-        token=args.hf_token,
         dtype=torch.float16,
     )
     model.eval()
