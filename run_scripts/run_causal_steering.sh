@@ -56,7 +56,7 @@ python -u validation/causal_steering.py \
     --device "cuda" \
     --cache_dir "/workspace/hf_cache" \
     --hf_token "${HF_TOKEN}" \
-    --k_sustain 16 \
+    --k_sustain 12 \
     --aanet_layer_widths 64 32 \
     --aanet_simplex_scale 1.0 \
     --aanet_noise 0.05
