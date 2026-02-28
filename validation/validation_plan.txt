@@ -207,7 +207,7 @@ Three distributions for pairwise KL
                      │        ┌───────────────────────────────────────────┘
                      │        │  NOTE: run_collect_simplex_samples.sh (real
                      │        │  clusters) can run independently — real AANet
-                     │        │  models already exist in selected_clusters_broad_2.
+                     │        │  models read from real_data_analysis_canonical.
                      │        │  Does not need to wait for null refit.
                      │        ▼
                      │  ┌─────────────────────────────────────────────────────┐
@@ -268,7 +268,7 @@ Three distributions for pairwise KL
   │   reconstruction from the layer-20 residual at the trigger position and    │
   │   add back a scaled version of the target vertex's reconstruction           │
   │   (Option B: AANet subspace only). Records the full next-token distribution │
-  │   and greedy continuation (steered and unsteered) at scales [0, 1, 5, 20]. │
+  │   and greedy continuation at scales [0, 1, 5, 20].                         │
   │                                                                             │
   │   Steering math (per trigger T, target vertex v, scale s):                 │
   │     acts_c = sae_encode_features(sae, resid_T)[cluster_indices]             │
@@ -277,19 +277,55 @@ Three distributions for pairwise KL
   │     Z_target = one_hot(v, k) @ aanet.archetypal_simplex                    │
   │     X_recon_target = aanet.decode(Z_target)                                │
   │     delta = -X_recon_curr + s * X_recon_target                             │
-  │     hook: resid[:, T, :] += delta  (applied at blocks.20.hook_resid_post   │
-  │           on every generation step; delta is identical each step since      │
-  │           position T only attends to earlier tokens)                        │
+  │                                                                             │
+  │   Three steering types applied at blocks.20.hook_resid_post each step:     │
+  │     type1 — patch only position T (delta persists via attention KV cache)  │
+  │     type2 — patch T and next k_sustain=16 generated positions, then stop   │
+  │     type3 — patch T and every generated position for all 128 tokens        │
+  │   Logprobs (static context, no generation) use type1 only.                 │
   │                                                                             │
   │   Outputs per cluster (cluster_{key}/):                                    │
   │     steering_results.jsonl — one record per (example × target_vertex):     │
   │       record_id, cluster_key, source_vertex, target_vertex,                │
   │       trigger_token_index, source_barycentric_coords, original_text,       │
-  │       document_continuation, unsteered_continuation, steered_continuations │
+  │       document_continuation, unsteered_continuation, k_sustain,            │
+  │       steered_continuations: {type1: {scale: text}, type2: ..., type3: ...}│
   │     logprobs.npz — float16 arrays:                                         │
   │       "ex{N}_V{src}_pre" — pre-patch logprobs (vocab_size,)                │
   │       "{record_id}_s{scale}" — post-patch logprobs (vocab_size,)           │
   │                                                                             │
   │   Runs on all 13 priority clusters. Max 100 examples/vertex.               │
+  │   AANet models read from csv_dir (real_data_analysis_canonical), not       │
+  │   selected_clusters_broad_2.                                                │
   │   Output: /workspace/outputs/validation/causal_steering/                   │
+  └──────────────────────────────────────┬──────────────────────────────────────┘
+                                         │
+                                         ▼
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │ RunPod  run_causal_steering_autointerp.sh                                   │
+  │   (3b) Classify steered and unsteered continuations from 3a into vertex    │
+  │   categories using Qwen-2.5-72B-Instruct-AWQ via vLLM.                    │
+  │                                                                             │
+  │   Two test types per cluster:                                               │
+  │     baseline — 30 unsteered continuations per vertex (classification        │
+  │                ceiling; uses existing near-vertex samples)                  │
+  │     steered  — 30 continuations per (src→tgt direction × scale × type),   │
+  │                all 3 steering types × 4 scales × K*(K-1) directions        │
+  │                                                                             │
+  │   Grounding: consolidated_vertex_labels + consolidated_hypothesis from      │
+  │   existing frontier-model synthesis JSONs (sonnet_broad_2_no_whitespace).  │
+  │   Exemplars: 5 per vertex, ~80-token windows centered on trigger token     │
+  │   (>>>TOKEN<<<), from prepared_samples_broad_2_no_whitespace.              │
+  │                                                                             │
+  │   Scoring per (direction, scale, steering_type):                           │
+  │     shift_rate = mean label_shift_score                                    │
+  │       1.0 if classified as V_target                                        │
+  │       0.5 if classified as Between and includes V_target                   │
+  │       0.0 otherwise                                                        │
+  │                                                                             │
+  │   Single vLLM batch across all 13 clusters. Requires synthesis JSONs and   │
+  │   prepared_samples (already local, no RunPod upload needed for these).     │
+  │   Output: /workspace/outputs/validation/causal_steering_autointerp/        │
+  │     all_results.json — combined metrics across all clusters                │
+  │     cluster_{key}_autointerp.json — per-cluster cases + metrics            │
   └─────────────────────────────────────────────────────────────────────────────┘

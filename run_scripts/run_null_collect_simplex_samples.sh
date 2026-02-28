@@ -34,7 +34,7 @@ echo ""
 echo "Processing null 512 clusters..."
 python -u real_data_tests/collect_simplex_samples.py \
     --n_clusters_list "512" \
-    --source_dir "${NULL_DIR}" \
+    --source_dir "/workspace/outputs/selected_null_clusters" \
     --csv_dir "${NULL_DIR}" \
     --save_dir "/workspace/outputs/simplex_samples" \
     --manual_cluster_ids "${CLUSTERS_512}" \
@@ -68,7 +68,7 @@ echo ""
 echo "Processing null 768 clusters..."
 python -u real_data_tests/collect_simplex_samples.py \
     --n_clusters_list "768" \
-    --source_dir "${NULL_DIR}" \
+    --source_dir "/workspace/outputs/selected_null_clusters" \
     --csv_dir "${NULL_DIR}" \
     --save_dir "/workspace/outputs/simplex_samples" \
     --manual_cluster_ids "${CLUSTERS_768}" \
