@@ -35,7 +35,7 @@ python -u validation/kl_divergence_simplex.py \
     --vertex_samples_dir "${VERTEX_SAMPLES_DIR}" \
     --simplex_samples_dir "${SIMPLEX_DIR}" \
     --output_dir "/workspace/outputs/validation/kl_divergence_broad_2" \
-    --batch_size 256 \
+    --batch_size 16 \
     --n_pairs_per_sample 20 \
     --max_samples_per_vertex 200 \
     --max_simplex_samples 5000 \

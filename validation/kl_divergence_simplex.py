@@ -832,6 +832,7 @@ def main():
             traceback.print_exc()
 
     # Save combined summary across all clusters
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     summary_path = Path(args.output_dir) / "kl_divergence_summary.json"
     with open(summary_path, 'w') as f:
         json.dump({"priority": all_summaries, "controls": control_summaries}, f, indent=2)
