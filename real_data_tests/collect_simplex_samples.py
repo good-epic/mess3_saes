@@ -44,6 +44,7 @@ from sae_lens import SAE
 from huggingface_hub import login
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "AAnet"))
 
 from real_data_utils import RealDataSampler
 from mess3_gmg_analysis_utils import sae_encode_features

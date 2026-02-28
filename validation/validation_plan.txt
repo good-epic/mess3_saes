@@ -233,7 +233,7 @@ Three distributions for pairwise KL
           │   renders KDE heatmaps + centroid scatter plots.     │
           │   Output: outputs/validation/latent_spatial/         │
           └─────────────────────────────────────────────────────┘
-
+    
   ┌─────────────────────────────────────────────────────────────────────────────┐
   │ INDEPENDENT — can run now on RunPod                                         │
   │ RunPod  run_latent_vs_barycentric.sh                                        │

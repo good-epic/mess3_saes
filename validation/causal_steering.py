@@ -39,6 +39,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "AAnet"))
 
 from transformer_lens import HookedTransformer
 from sae_lens import SAE
