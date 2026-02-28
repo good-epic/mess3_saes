@@ -139,6 +139,9 @@ def parse_args():
                         help="Skip next-token R² analysis (faster)")
     parser.add_argument("--skip_plots", action="store_true",
                         help="Skip matplotlib output")
+    parser.add_argument("--max_samples_per_vertex", type=int, default=None,
+                        help="Cap samples per vertex before inference (random subsample). "
+                             "Prevents compute waste on imbalanced clusters.")
 
     return parser.parse_args()
 
@@ -607,11 +610,14 @@ def main():
         )
 
         # Build flat sample list preserving vertex labels
+        rng = np.random.default_rng(seed=42)
         all_samples = []
         for vertex_id, samples in samples_by_vertex.items():
-            for sample in samples:
-                if not sample.get("trigger_token_indices"):
-                    continue
+            valid = [s for s in samples if s.get("trigger_token_indices")]
+            if args.max_samples_per_vertex and len(valid) > args.max_samples_per_vertex:
+                indices = rng.choice(len(valid), args.max_samples_per_vertex, replace=False)
+                valid = [valid[i] for i in indices]
+            for sample in valid:
                 all_samples.append({
                     "vertex_id": vertex_id,
                     "chunk_token_ids": sample["chunk_token_ids"],

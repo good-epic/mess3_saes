@@ -55,7 +55,8 @@ python -u validation/latent_vs_barycentric.py \
     --cv_folds 5 \
     --aanet_layer_widths 64 32 \
     --aanet_simplex_scale 1.0 \
-    --aanet_noise 0.05
+    --aanet_noise 0.05 \
+    --max_samples_per_vertex 200
 
 echo ""
 echo "============================================================"
