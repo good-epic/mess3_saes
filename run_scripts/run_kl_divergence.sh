@@ -34,7 +34,7 @@ python -u validation/kl_divergence_simplex.py \
     --clusters "${PRIORITY_CLUSTERS}" \
     --vertex_samples_dir "${VERTEX_SAMPLES_DIR}" \
     --simplex_samples_dir "${SIMPLEX_DIR}" \
-    --output_dir "outputs/validation/kl_divergence_broad_2" \
+    --output_dir "/workspace/outputs/validation/kl_divergence_broad_2" \
     --batch_size 256 \
     --n_pairs_per_sample 20 \
     --max_samples_per_vertex 200 \
@@ -48,5 +48,5 @@ python -u validation/kl_divergence_simplex.py \
 
 echo ""
 echo "============================================================"
-echo "Done. Results in outputs/validation/kl_divergence_broad_2/"
+echo "Done. Results in /workspace/outputs/validation/kl_divergence_broad_2/"
 echo "============================================================"
