@@ -29,6 +29,7 @@ import os
 import sys
 import json
 import argparse
+import glob as _glob
 import math
 from pathlib import Path
 
@@ -67,6 +68,10 @@ def parse_args():
                         help="Skip KDE heatmap generation (faster, stats only)")
     parser.add_argument("--heatmap_grid_size", type=int, default=100,
                         help="Grid resolution for KDE heatmaps")
+    parser.add_argument("--vertex_acts_dir", type=str, default=None,
+                        help="Dir containing vertex_samples_with_acts.jsonl files "
+                             "(from run_annotate_vertex_acts.sh). When provided, adds "
+                             "per-vertex latent activation pie charts for k=3 clusters.")
     return parser.parse_args()
 
 
@@ -337,6 +342,171 @@ def plot_centroid_scatter(centroids, weight_sums, total_variance, latent_indices
 
 
 # =============================================================================
+# Vertex latent activation pie charts (requires vertex_samples_with_acts.jsonl)
+# =============================================================================
+
+def find_vertex_acts_path(vertex_acts_dir, n_clusters, cluster_id, k):
+    """Find vertex_samples_with_acts.jsonl for a cluster."""
+    pattern = str(Path(vertex_acts_dir) / f"n{n_clusters}"
+                  / f"cluster_{cluster_id}_k{k}_*_vertex_samples_with_acts.jsonl")
+    matches = _glob.glob(pattern)
+    return Path(matches[0]) if matches else None
+
+
+def load_vertex_latent_means(vertex_acts_path, n_latents, k):
+    """Compute mean activation per latent per vertex.
+
+    latent_acts in each record is a list-of-lists (one per trigger).
+    We average over all triggers within a record, then average over records.
+
+    Returns:
+        mean_acts  (k, n_latents) float64 — mean activation at each vertex
+        counts     (k,)           int64   — number of records per vertex
+    """
+    sum_acts = np.zeros((k, n_latents), dtype=np.float64)
+    counts = np.zeros(k, dtype=np.int64)
+    with open(vertex_acts_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            record = json.loads(line)
+            v = record.get("vertex_id")
+            if v is None or v >= k:
+                continue
+            acts_list = record.get("latent_acts")
+            if not acts_list:
+                continue
+            acts = np.mean(np.array(acts_list, dtype=np.float64), axis=0)
+            if acts.shape[0] != n_latents:
+                continue
+            sum_acts[v] += acts
+            counts[v] += 1
+    mean_acts = np.where(
+        counts[:, None] > 0,
+        sum_acts / np.maximum(counts[:, None], 1),
+        0.0,
+    )
+    return mean_acts, counts
+
+
+def plot_vertex_latent_pies(mean_acts, vertex_counts, latent_indices, k,
+                             cluster_key, output_dir):
+    """Plot a simplex triangle with mean-activation pie charts at each vertex (k=3 only).
+
+    Each pie chart shows the mean magnitude of each cluster latent's activation
+    across all near-vertex samples at that vertex.  Only latents contributing
+    more than 1% of total activation at a vertex are shown individually;
+    the remainder is grouped as 'other'.
+    """
+    sqrt3_2 = float(np.sqrt(3) / 2)
+
+    # Padded data limits so pie charts at corners have room
+    xlim = (-0.5, 1.5)
+    ylim = (-0.5, sqrt3_2 + 0.5)
+    ax_w = xlim[1] - xlim[0]   # 2.0
+    ax_h = ylim[1] - ylim[0]   # sqrt3_2 + 1.0
+
+    def to_axes(dx, dy):
+        """Convert data coords to axes fraction [0,1]."""
+        return (dx - xlim[0]) / ax_w, (dy - ylim[0]) / ax_h
+
+    # Assign a consistent color per latent position in latent_indices list
+    n_latents = len(latent_indices)
+    cmap = plt.get_cmap('tab20')
+    latent_colors = [cmap(l % 20) for l in range(n_latents)]
+
+    fig, ax = plt.subplots(1, 1, figsize=(9, 8))
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
+    ax.set_aspect('equal')
+    ax.axis('off')
+
+    # Draw triangle
+    tri = np.array(_TRIANGLE_VERTICES)
+    line_x = np.append(tri[:, 0], tri[0, 0])
+    line_y = np.append(tri[:, 1], tri[0, 1])
+    ax.plot(line_x, line_y, 'k-', linewidth=1.5, zorder=5)
+
+    pie_diam = 0.28   # diameter of each inset pie as fraction of axes
+
+    active_latents_seen = set()
+
+    for v in range(3):
+        vax, vay = to_axes(*tri[v])
+
+        acts = mean_acts[v]   # (n_latents,)
+        total = acts.sum()
+        n_samples = int(vertex_counts[v])
+
+        if total <= 0 or n_samples == 0:
+            # Label-only, no pie
+            ax.text(tri[v][0], tri[v][1] - 0.15, f"V{v}\n(n=0)",
+                    fontsize=8, ha='center', va='top', color='#666666')
+            continue
+
+        # Filter: keep latents above 1% threshold, top 15 max
+        threshold = total * 0.01
+        active_idxs = np.where(acts >= threshold)[0]
+        if len(active_idxs) > 15:
+            active_idxs = active_idxs[np.argsort(-acts[active_idxs])[:15]]
+        active_idxs = sorted(active_idxs.tolist())
+
+        pie_vals = acts[active_idxs]
+        other_val = total - pie_vals.sum()
+
+        colors = [latent_colors[l] for l in active_idxs]
+        pie_vals_full = list(pie_vals)
+        colors_full = list(colors)
+        if other_val > 1e-12:
+            pie_vals_full.append(other_val)
+            colors_full.append('#dddddd')
+
+        active_latents_seen.update(active_idxs)
+
+        inset_ax = ax.inset_axes(
+            [vax - pie_diam / 2, vay - pie_diam / 2, pie_diam, pie_diam]
+        )
+        inset_ax.pie(
+            pie_vals_full,
+            colors=colors_full,
+            startangle=90,
+            wedgeprops={'linewidth': 0.4, 'edgecolor': 'white'},
+        )
+        inset_ax.set_title(f"V{v}  (n={n_samples})", fontsize=8, pad=3)
+
+    # Legend: one entry per latent that appeared in any vertex pie
+    from matplotlib.patches import Patch
+    handles = [
+        Patch(color=latent_colors[l], label=f"L{latent_indices[l]}")
+        for l in sorted(active_latents_seen)
+    ]
+    if handles:
+        fig.legend(
+            handles=handles,
+            loc='lower center',
+            fontsize=7,
+            ncol=min(len(handles), 6),
+            bbox_to_anchor=(0.5, 0.0),
+            title="Latent index",
+            title_fontsize=8,
+            framealpha=0.8,
+        )
+
+    ax.set_title(
+        f"Cluster {cluster_key}: mean latent activation at each vertex\n"
+        f"(slice ∝ mean magnitude; latents < 1% of total grouped as 'other')",
+        fontsize=10,
+    )
+
+    out_path = Path(output_dir) / f"cluster_{cluster_key}_vertex_latent_pies.png"
+    fig.savefig(str(out_path), dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"    Vertex latent pies → {out_path}")
+    return out_path
+
+
+# =============================================================================
 # Main
 # =============================================================================
 
@@ -449,6 +619,22 @@ def main():
                 cluster_key,
                 cluster_plot_dir,
             )
+
+            # Vertex latent activation pie charts (requires vertex_acts_dir)
+            if args.vertex_acts_dir:
+                n_clusters_str, cluster_id_str = cluster_key.split("_")
+                vacts_path = find_vertex_acts_path(
+                    args.vertex_acts_dir,
+                    int(n_clusters_str), int(cluster_id_str), k,
+                )
+                if vacts_path is None:
+                    print(f"  Vertex acts file not found in {args.vertex_acts_dir}, skipping pies")
+                else:
+                    mean_acts, vcounts = load_vertex_latent_means(vacts_path, n_latents, k)
+                    plot_vertex_latent_pies(
+                        mean_acts, vcounts, latent_indices, k,
+                        cluster_key, cluster_plot_dir,
+                    )
 
             # KDE heatmaps (unless skipped or epdf unavailable)
             if not args.skip_heatmaps and HAS_EPDF:

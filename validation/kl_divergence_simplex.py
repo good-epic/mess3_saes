@@ -92,42 +92,56 @@ def parse_args():
 # =============================================================================
 
 def load_vertex_entries(vertex_samples_dir, cluster_key, max_per_vertex, rng):
-    """Load near-vertex samples, flattened to one entry per trigger position.
+    """Load near-vertex samples from vertex_samples.jsonl, flattened to one entry per trigger.
+
+    Reads from selected_clusters_broad_2-style structure:
+      vertex_samples_dir/n{N}/cluster_{id}_k*_*_vertex_samples.jsonl
 
     Returns dict: vertex_id (int) -> list of dicts with keys:
         chunk_ids: list[int]
         trigger_idx: int
         trigger_word: str
     """
-    prepared_path = Path(vertex_samples_dir) / f"{cluster_key}_prepared.json"
-    if not prepared_path.exists():
-        raise FileNotFoundError(f"Prepared samples not found: {prepared_path}")
+    import re as _re
+    n_clusters_str, cluster_id_str = cluster_key.split("_")
+    n_clusters = int(n_clusters_str)
+    cluster_id = int(cluster_id_str)
 
-    with open(prepared_path) as f:
-        data = json.load(f)
+    pattern = str(
+        Path(vertex_samples_dir) / f"n{n_clusters}"
+        / f"cluster_{cluster_id}_k*_*_vertex_samples.jsonl"
+    )
+    matches = glob.glob(pattern)
+    if not matches:
+        raise FileNotFoundError(
+            f"No vertex_samples.jsonl found for {cluster_key} at {pattern}"
+        )
 
     entries_by_vertex = {}
-    for vertex_str, samples in data["vertices"].items():
-        vertex_id = int(vertex_str)
-        entries = []
-        for sample in samples:
-            chunk_ids = sample["chunk_token_ids"]
-            trigger_indices = sample.get("trigger_token_indices", [])
-            trigger_words = sample.get("trigger_words", [])
+    with open(matches[0]) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            record = json.loads(line)
+            vertex_id = int(record["vertex_id"])
+            chunk_ids = record["chunk_token_ids"]
+            trigger_indices = record.get("trigger_token_indices", [])
+            trigger_words = record.get("trigger_words", [])
             for j, trig_idx in enumerate(trigger_indices):
                 tw = trigger_words[j] if j < len(trigger_words) else ""
-                entries.append({
+                entries_by_vertex.setdefault(vertex_id, []).append({
                     "chunk_ids": chunk_ids,
-                    "trigger_idx": trig_idx,
+                    "trigger_idx": int(trig_idx),
                     "trigger_word": tw,
                 })
 
-        # Cap per vertex
+    # Cap per vertex
+    for vertex_id in list(entries_by_vertex.keys()):
+        entries = entries_by_vertex[vertex_id]
         if max_per_vertex and len(entries) > max_per_vertex:
             idxs = rng.choice(len(entries), max_per_vertex, replace=False)
-            entries = [entries[i] for i in sorted(idxs)]
-
-        entries_by_vertex[vertex_id] = entries
+            entries_by_vertex[vertex_id] = [entries[i] for i in sorted(idxs)]
 
     return entries_by_vertex
 

@@ -20,30 +20,19 @@ export PYTHONPATH=.
 # All broad_2 priority clusters
 PRIORITY_CLUSTERS="512_17,512_22,512_67,512_181,512_229,512_261,512_471,512_504,768_114,768_140,768_210,768_306,768_570,768_581,768_596,768_672"
 
+VERTEX_SAMPLES_DIR="/workspace/outputs/selected_clusters_broad_2"
 SIMPLEX_DIR="/workspace/outputs/simplex_samples"
-
-# Auto-discover control clusters from stats files (is_control=true)
-CONTROL_CLUSTERS=$(python -c "
-import json, glob, sys
-stats_files = glob.glob('${SIMPLEX_DIR}/n*/*_simplex_stats.json')
-keys = []
-for f in sorted(stats_files):
-    d = json.load(open(f))
-    if d.get('is_control'):
-        keys.append(f'{d[\"n_clusters\"]}_{d[\"cluster_id\"]}')
-print(','.join(keys))
-")
 
 echo "============================================================"
 echo "KL DIVERGENCE ANALYSIS — broad_2 clusters (2A)"
 echo "============================================================"
-echo "Priority clusters: ${PRIORITY_CLUSTERS}"
-echo "Control clusters:  ${CONTROL_CLUSTERS}"
+echo "Priority clusters:   ${PRIORITY_CLUSTERS}"
+echo "Vertex samples dir:  ${VERTEX_SAMPLES_DIR}"
+echo "Simplex samples dir: ${SIMPLEX_DIR}"
 
 python -u validation/kl_divergence_simplex.py \
     --clusters "${PRIORITY_CLUSTERS}" \
-    --control_clusters "${CONTROL_CLUSTERS}" \
-    --vertex_samples_dir "outputs/interpretations/prepared_samples_broad_2_no_whitespace" \
+    --vertex_samples_dir "${VERTEX_SAMPLES_DIR}" \
     --simplex_samples_dir "${SIMPLEX_DIR}" \
     --output_dir "outputs/validation/kl_divergence_broad_2" \
     --batch_size 256 \

@@ -221,19 +221,9 @@ Three distributions for pairwise KL
                      │                     │
                      └──────────┬──────────┘
                                 │  (both real + null simplex samples needed)
-                                ▼
-          ┌─────────────────────────────────────────────────────┐
-          │ RunPod  run_kl_divergence.sh  +  Local run_latent_spatial_simplex.sh
-          │   run_kl_divergence.sh (2a): pairwise KL between    │
-          │   same-vertex, cross-vertex, and random simplex      │
-          │   pairs for real vs null clusters.                   │
-          │   run_latent_spatial_simplex.sh (2Ba, CPU): reads    │
-          │   simplex_samples.jsonl, computes activation-        │
-          │   weighted centroid + spatial variance per latent,   │
-          │   renders KDE heatmaps + centroid scatter plots.     │
-          │   Output: outputs/validation/latent_spatial/         │
-          └─────────────────────────────────────────────────────┘
-    
+                                │  + run_annotate_vertex_acts.sh
+                                ▼ (see annotate block above for pie chart dependency)
+
   ┌─────────────────────────────────────────────────────────────────────────────┐
   │ INDEPENDENT — can run now on RunPod                                         │
   │ RunPod  run_latent_vs_barycentric.sh                                        │
@@ -252,6 +242,34 @@ Three distributions for pairwise KL
   │   barycentric coords for priority clusters. Checks whether vertex           │
   │   coordinates correlate with interpretable linguistic categories.           │
   └─────────────────────────────────────────────────────────────────────────────┘
+
+  ┌─────────────────────────────────────────────────────────────────────────────┐
+  │ INDEPENDENT — needs GPU (~15-30 min)                                        │
+  │ RunPod  run_annotate_vertex_acts.sh                                         │
+  │   Post-processing pass over existing vertex_samples.jsonl. Re-runs each    │
+  │   saved 256-token chunk through model + SAE + AANet at each trigger         │
+  │   position to extract: latent_acts (cluster activation vector) and         │
+  │   barycentric_coords (full k-dim). Writes _with_acts.jsonl alongside       │
+  │   existing files. Runs for real (selected_clusters_broad_2) and null        │
+  │   (selected_null_clusters) clusters.                                        │
+  │   Output: *_vertex_samples_with_acts.jsonl in-place alongside originals.   │
+  └──────────────────────────────────────┬──────────────────────────────────────┘
+                                         │  (must complete before latent_spatial)
+                                         ▼
+          ┌─────────────────────────────────────────────────────┐
+          │ RunPod  run_kl_divergence.sh  +  Local run_latent_spatial_simplex.sh
+          │   run_kl_divergence.sh (2a): pairwise KL between    │
+          │   same-vertex, cross-vertex, and random simplex      │
+          │   pairs for real vs null clusters.                   │
+          │   run_latent_spatial_simplex.sh (2Ba, CPU): reads    │
+          │   simplex_samples.jsonl, computes activation-        │
+          │   weighted centroid + spatial variance per latent,   │
+          │   renders KDE heatmaps + centroid scatter plots.     │
+          │   Also renders per-vertex latent activation pie      │
+          │   charts using vertex_samples_with_acts.jsonl        │
+          │   (--vertex_acts_dir=selected_clusters_broad_2).     │
+          │   Output: outputs/validation/latent_spatial/         │
+          └─────────────────────────────────────────────────────┘
 
   ┌─────────────────────────────────────────────────────────────────────────────┐
   │ INDEPENDENT — needs GPU                                                     │
