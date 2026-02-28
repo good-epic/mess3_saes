@@ -47,9 +47,9 @@ python -u validation/causal_steering.py \
     --csv_dir "${CSV_DIR}" \
     --output_dir "${OUTPUT_DIR}" \
     --clusters "${CLUSTERS}" \
-    --scales 0 1 5 20 \
-    --n_gen_tokens 128 \
-    --max_examples_per_vertex 100 \
+    --scales 1 5 20 \
+    --n_gen_tokens 50 \
+    --max_examples_per_vertex 30 \
     --model_name "gemma-2-9b" \
     --sae_release "gemma-scope-9b-pt-res" \
     --sae_id "layer_20/width_16k/average_l0_68" \
