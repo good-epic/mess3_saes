@@ -628,6 +628,7 @@ def main():
         gpu_memory_utilization=args.gpu_memory_utilization,
         max_model_len=args.max_model_len,
         trust_remote_code=True,
+        download_dir=args.cache_dir,
     )
     if args.quantization:
         llm_kwargs["quantization"] = args.quantization

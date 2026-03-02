@@ -801,7 +801,7 @@ def main():
         args.model_name,
         device=args.device,
         cache_dir=args.cache_dir,
-        dtype=torch.float16,
+        dtype=torch.bfloat16,
     )
     model.eval()
 

@@ -50,7 +50,7 @@ python -u validation/causal_steering_autointerp.py \
     --prepared_samples_dir "${PREPARED_SAMPLES_DIR}" \
     --output_dir "${OUTPUT_DIR}" \
     --clusters "${CLUSTERS}" \
-    --scales 0 1 5 20 \
+    --scales 1 5 20 \
     --n_baseline 30 \
     --n_steered 30 \
     --n_exemplars 5 \
