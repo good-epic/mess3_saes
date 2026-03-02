@@ -31,7 +31,7 @@ echo "2Bb NULL CONTROL: LATENT VS. BARYCENTRIC REGRESSION"
 echo "============================================================"
 echo "Null clusters:      ${NULL_CLUSTERS}"
 echo "Manifest:           ${MANIFEST}"
-echo "Prepared samples:   ${PREPARED_SAMPLES_DIR}_no_whitespace"
+echo "Prepared samples:   ${PREPARED_SAMPLES_DIR}"
 echo "AANet/CSV dir:      ${CSV_DIR}"
 echo "Output dir:         ${OUTPUT_DIR}"
 echo ""
@@ -47,7 +47,7 @@ python -u interpretation/prepare_vertex_samples.py \
 echo ""
 echo "--- Step 2: latent vs. barycentric regression ---"
 python -u validation/latent_vs_barycentric.py \
-    --prepared_samples_dir "${PREPARED_SAMPLES_DIR}_no_whitespace" \
+    --prepared_samples_dir "${PREPARED_SAMPLES_DIR}" \
     --source_dir "${SOURCE_DIR}" \
     --csv_dir "${CSV_DIR}" \
     --output_dir "${OUTPUT_DIR}" \

@@ -143,10 +143,7 @@ def prepare_cluster_samples(cluster_metadata, vertex_collection_results, max_sam
         # Replace _all_barycentric_coords.jsonl with _vertex_samples.jsonl
         samples_path = coords_path.replace('_all_barycentric_coords.jsonl', '_vertex_samples.jsonl')
 
-        # Handle local vs RunPod paths
-        if samples_path.startswith('/workspace/'):
-            # Convert RunPod path to local path
-            samples_path = samples_path.replace('/workspace/outputs/', 'outputs/')
+
     else:
         # Samples weren't collected for this cluster
         print(f"  No vertex samples collected for this cluster")
