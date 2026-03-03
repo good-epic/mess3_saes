@@ -1086,7 +1086,7 @@ def plot_mp_epdfs(
                 # Plot based on mode
                 if mode == "transparency":
                     opacity_values = z_norm * base_opacity
-                    opacity_values = np.clip(opacity_values, 0.05, 1.0)
+                    opacity_values = np.clip(opacity_values, 0.0, 1.0)
                     # Create RGBA colors for each point
                     colors_rgba = np.zeros((len(pts_x), 4))
                     colors_rgba[:, :3] = color_rgb
@@ -1167,6 +1167,7 @@ def plot_mp_epdfs(
             ax.plot(circle_x, circle_y, 'k-', linewidth=1, zorder=1000)
 
         # Configure axes
+        ax.set_facecolor('white')
         ax.set_aspect('equal', adjustable='box')
         ax.grid(False)
         ax.set_xticks([])
