@@ -230,12 +230,13 @@ def process_path_b_vertex(vertex_id, vertex_samples, template, model, api_key, o
     print(f"      Vertex {vertex_id}...")
 
     vertex_dir = output_dir / f"vertex_{vertex_id}"
+    vertex_dir.mkdir(parents=True, exist_ok=True)
 
     # Save vertex samples
     samples_data = [
         {
             'sample_id': s.get('sample_id', f'sample_{i}'),
-            'trigger_word': s['trigger_word'],
+            'trigger_words': s.get('trigger_words', s.get('trigger_word', [])),
             'full_text': s['full_text']
         }
         for i, s in enumerate(vertex_samples)
@@ -284,6 +285,7 @@ def process_path_b_synthesis(vertex_proposals, template, model, api_key, output_
     print(f"      Synthesis...")
 
     synth_dir = output_dir / "synthesis"
+    synth_dir.mkdir(parents=True, exist_ok=True)
 
     # Save input proposals
     with open(synth_dir / "input_proposals.json", 'w') as f:
