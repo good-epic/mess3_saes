@@ -543,7 +543,7 @@ def process_cluster_iteration(cluster_key, cluster_data, iteration, templates, s
             v_id: [
                 {
                     'sample_id': s.get('sample_id', f'sample_{i}'),
-                    'trigger_word': s['trigger_word'],
+                    'trigger_words': s.get('trigger_words', s.get('trigger_word', [])),
                     'full_text': s['full_text'],
                     'distance_to_vertex': s['distance_to_vertex']
                 }
