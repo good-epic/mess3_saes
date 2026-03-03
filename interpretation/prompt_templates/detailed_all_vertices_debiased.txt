@@ -67,7 +67,7 @@ OUTPUT REQUIREMENTS:
 
 OUTPUT FORMAT:
 {
-  "dimension_hypothesis": "What dimension of variation this simplex captures",
+  "state_space_hypothesis": "What dimension of variation this simplex captures",
   "vertex_labels": ["Label for vertex 0", "Label for vertex 1", ...],
   "confidence": "high|medium|low",
   "reasoning": "Brief explanation with specific evidence from samples"

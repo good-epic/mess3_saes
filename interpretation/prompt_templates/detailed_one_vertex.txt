@@ -57,7 +57,7 @@ OUTPUT REQUIREMENTS:
 OUTPUT FORMAT:
 {
   "vertex_label_candidates": ["Label 0", "Label 1"],
-  "confidence": ["high|medium|low", "high|medium|low"]
+  "confidence": ["high|medium|low", "high|medium|low"],
   "reasoning": ["Brief explanation for proposal 0 with specific evidence from samples",
                 "Brief explanation for proposal 1 with specific evidence from samples"]
 }

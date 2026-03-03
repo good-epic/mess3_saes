@@ -51,6 +51,17 @@ def load_prepared_samples(samples_dir):
     return cluster_samples
 
 
+def tag_trigger_words(full_text, trigger_word_indices):
+    """Wrap trigger words in <trigger>...</trigger> tags using word indices."""
+    if not trigger_word_indices:
+        return full_text
+    indices_set = set(trigger_word_indices)
+    words = full_text.split(' ')
+    tagged = [f'<trigger>{w}</trigger>' if i in indices_set else w
+              for i, w in enumerate(words)]
+    return ' '.join(tagged)
+
+
 def sample_vertex_examples(vertex_samples, n_samples, rng):
     """Randomly sample n examples from vertex samples."""
     if len(vertex_samples) <= n_samples:
@@ -64,7 +75,8 @@ def format_prompt_all_vertices(template, sampled_examples):
     samples_text = ""
     for vertex_id in sorted(sampled_examples.keys()):
         samples = sampled_examples[vertex_id]
-        texts = [s['full_text'] for s in samples]
+        texts = [tag_trigger_words(s['full_text'], s.get('trigger_word_indices', []))
+                 for s in samples]
         samples_text += f"Vertex {vertex_id}: {json.dumps(texts, indent=2)}\n\n"
 
     return template.strip() + "\n\n" + samples_text.strip()
@@ -72,7 +84,8 @@ def format_prompt_all_vertices(template, sampled_examples):
 
 def format_prompt_one_vertex(template, vertex_id, vertex_samples):
     """Format prompt with one vertex's samples (Path B step 1)."""
-    texts = [s['full_text'] for s in vertex_samples]
+    texts = [tag_trigger_words(s['full_text'], s.get('trigger_word_indices', []))
+             for s in vertex_samples]
     samples_text = f"Vertex {vertex_id}: {json.dumps(texts, indent=2)}"
 
     return template.strip() + "\n\n" + samples_text.strip()
@@ -82,8 +95,10 @@ def format_prompt_synthesis(template, vertex_proposals):
     """Format prompt with all vertex proposals for synthesis (Path B step 2)."""
     proposals_text = "VERTEX PROPOSALS FROM INDEPENDENT ANALYSIS:\n\n"
 
+    _proposal_keys = ('vertex_label_candidates', 'confidence', 'reasoning')
     for vertex_id in sorted(vertex_proposals.keys()):
-        proposals = vertex_proposals[vertex_id]
+        proposals = {k: v for k, v in vertex_proposals[vertex_id].items()
+                     if k in _proposal_keys}
         proposals_text += f"Vertex {vertex_id}:\n"
         proposals_text += json.dumps(proposals, indent=2) + "\n\n"
 
@@ -388,7 +403,7 @@ def update_aggregated_summary_path_a(output_dir, cluster_key, cluster_data, iter
 
     # Append new iteration
     if error:
-        new_line = f"  Iteration {iteration}: ERROR - {error}\n"
+        lines.append(f"  Iteration {iteration}: ERROR - {error}\n")
     else:
         # We'll insert at appropriate places - rebuild
         lines_str = ''.join(lines)
