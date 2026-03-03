@@ -545,7 +545,7 @@ def process_cluster_iteration(cluster_key, cluster_data, iteration, templates, s
                     'sample_id': s.get('sample_id', f'sample_{i}'),
                     'trigger_words': s.get('trigger_words', s.get('trigger_word', [])),
                     'full_text': s['full_text'],
-                    'distance_to_vertex': s['distance_to_vertex']
+                    'distance_to_vertex': (s.get('distances_to_vertex') or [s.get('distance_to_vertex')])[0]
                 }
                 for i, s in enumerate(samples)
             ]
