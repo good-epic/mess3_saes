@@ -77,10 +77,6 @@ def load_vertex_samples(samples_path, max_samples_per_vertex=None):
         Tuple of (samples_by_vertex dict or None, trigger_stats dict, total_count)
         trigger_stats contains counts of problematic trigger words (empty, newline, tab)
     """
-    if not os.path.exists(samples_path):
-        print(f"  WARNING: Samples file not found: {samples_path}")
-        return None, {'empty': 0, 'newline': 0, 'tab': 0}, 0
-
     samples_by_vertex = defaultdict(list)
     trigger_stats = {'empty': 0, 'newline': 0, 'tab': 0}
     total_count = 0
@@ -110,7 +106,7 @@ def load_vertex_samples(samples_path, max_samples_per_vertex=None):
     return dict(samples_by_vertex), trigger_stats, total_count
 
 
-def prepare_cluster_samples(cluster_metadata, vertex_collection_results, max_samples_per_vertex, min_vertices_with_samples, min_samples_per_vertex=1):
+def prepare_cluster_samples(cluster_metadata, vertex_collection_results, max_samples_per_vertex, min_vertices_with_samples, min_samples_per_vertex=1, source_dir=None):
     """Prepare samples for one cluster.
 
     Returns:
@@ -128,31 +124,28 @@ def prepare_cluster_samples(cluster_metadata, vertex_collection_results, max_sam
         for result in vertex_collection_results:
             if result['cluster_id'] == cluster_id and result['n_clusters'] == n_clusters:
                 collection_result = result
-                # Update k and category from collection result if available
-                k = collection_result.get('k', k)
                 break
 
-    # Determine samples path
-    if 'vertex_samples_path' in cluster_metadata:
-        # Old format: path directly in cluster metadata
-        samples_path = cluster_metadata['vertex_samples_path']
-    elif collection_result and 'all_coords_path' in collection_result:
-        # New format: construct from all_coords_path
-        import os
-        coords_path = collection_result['all_coords_path']
-        # Replace _all_barycentric_coords.jsonl with _vertex_samples.jsonl
-        samples_path = coords_path.replace('_all_barycentric_coords.jsonl', '_vertex_samples.jsonl')
+    # Construct samples path from source_dir + cluster metadata fields
+    if source_dir is None:
+        print(f"  No source_dir provided, skipping")
+        return None, {'empty': 0, 'newline': 0, 'tab': 0}, 0, "no_source_dir"
 
+    category = cluster_metadata.get('category', 'M')
+    if collection_result:
+        k = collection_result.get('k', k)
+        category = collection_result.get('category', category)
 
-    else:
-        # Samples weren't collected for this cluster
-        print(f"  No vertex samples collected for this cluster")
-        return None, {'empty': 0, 'newline': 0, 'tab': 0}, 0, "no_samples_file"
+    samples_path = str(
+        Path(source_dir) / f"n{n_clusters}"
+        / f"cluster_{cluster_id}_k{k}_category{category}_vertex_samples.jsonl"
+    )
+
+    if not os.path.exists(samples_path):
+        print(f"  WARNING: Samples file not found: {samples_path}")
+        return None, {'empty': 0, 'newline': 0, 'tab': 0}, 0, "samples_file_not_found"
 
     samples_by_vertex, trigger_stats, total_count = load_vertex_samples(samples_path, max_samples_per_vertex)
-
-    if samples_by_vertex is None:
-        return None, {'empty': 0, 'newline': 0, 'tab': 0}, 0, "samples_file_not_found"
 
     # Filter out vertices below minimum sample count
     if min_samples_per_vertex > 1:
@@ -181,11 +174,6 @@ def prepare_cluster_samples(cluster_metadata, vertex_collection_results, max_sam
         print(f"  Skipping: only {vertices_with_samples} vertices have samples (need at least {min_vertices_with_samples})")
         return None, trigger_stats, total_count, "insufficient_vertices"
 
-    # Get category from collection result or cluster metadata
-    category = cluster_metadata.get('category', 'unknown')
-    if collection_result and 'category' in collection_result:
-        category = collection_result['category']
-
     # Create prepared sample structure
     prepared = {
         'cluster_id': cluster_id,
@@ -213,8 +201,14 @@ def main():
                         help='Minimum number of vertices that must have samples (default: 2)')
     parser.add_argument('--min_samples_per_vertex', type=int, default=1,
                         help='Minimum samples a vertex must have to be included (default: 1, i.e. no filtering)')
+    parser.add_argument('--source_dir', type=str, default=None,
+                        help='Directory containing vertex_samples.jsonl files. '
+                             'Defaults to the directory containing the manifest.')
 
     args = parser.parse_args()
+
+    # Default source_dir to the manifest's directory
+    source_dir = args.source_dir or str(Path(args.manifest).parent)
 
     # Create output directories (full + whitespace-filtered)
     filtered_output_dir = args.output_dir.rstrip('/') + '_no_whitespace'
@@ -244,7 +238,7 @@ def main():
         prepared, trigger_stats, total_count, skip_reason = prepare_cluster_samples(
             cluster_metadata, vertex_collection_results,
             args.max_samples_per_vertex, args.min_vertices_with_samples,
-            args.min_samples_per_vertex
+            args.min_samples_per_vertex, source_dir=source_dir,
         )
 
         # Accumulate trigger stats

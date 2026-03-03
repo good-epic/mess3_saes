@@ -21,8 +21,8 @@ set -e
 
 export PYTHONPATH=.
 
-NULL_SOURCE_DIR="/workspace/outputs/selected_null_clusters"
-NULL_CSV_DIR="/workspace/outputs/null_clusters"
+NULL_SOURCE_DIR="outputs/selected_null_clusters"
+NULL_CSV_DIR="outputs/null_clusters"
 
 # Priority null clusters
 NULL_CLUSTERS="512_138,512_345,768_310"
