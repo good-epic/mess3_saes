@@ -25,7 +25,7 @@ import json
 import argparse
 import random
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 import anthropic
 
 
@@ -614,23 +614,143 @@ def process_cluster_iteration(cluster_key, cluster_data, iteration, templates, s
         )
 
 
+def collect_path_a_results(output_dir, cluster_key, num_iterations):
+    """Collect all successful Path A results for a cluster."""
+    results = []
+    for iteration in range(num_iterations):
+        interp_path = (Path(output_dir) / f"iteration_{iteration:03d}"
+                       / cluster_key / "path_a" / "interpretation.json")
+        if not interp_path.exists():
+            continue
+        with open(interp_path) as f:
+            data = json.load(f)
+        if 'error' in data:
+            continue
+        results.append({
+            'iteration': iteration,
+            'state_space_hypothesis': data.get('state_space_hypothesis', data.get('dimension_hypothesis')),
+            'vertex_labels': data.get('vertex_labels', []),
+            'confidence': data.get('confidence'),
+        })
+    return results
+
+
+def run_path_a_synthesis(output_dir, cluster_key, num_iterations, model, api_key, cluster_data=None):
+    """Synthesize all Path A iterations into a single consolidated interpretation."""
+    print(f"\n  Synthesizing {num_iterations} Path A iterations...")
+
+    iteration_results = collect_path_a_results(output_dir, cluster_key, num_iterations)
+    if len(iteration_results) < 2:
+        print(f"    Skipping: only {len(iteration_results)} successful iterations (need at least 2)")
+        return
+
+    print(f"    Found {len(iteration_results)} successful iterations")
+
+    # Infer k from results; use cluster_data as fallback if available
+    k = (cluster_data['k'] if cluster_data
+         else max(len(r['vertex_labels']) for r in iteration_results))
+    n_latents = cluster_data['n_latents'] if cluster_data else 'unknown'
+    n_iters = len(iteration_results)
+
+    prompt = f"""You previously analyzed a cluster of SAE latents {n_iters} times, each time with different randomly sampled examples near each vertex of a {k}-vertex simplex.
+
+CLUSTER INFO:
+- Cluster: {cluster_key}
+- Number of vertices (k): {k}
+- Number of latents in cluster: {n_latents}
+- Number of independent analyses: {n_iters}
+
+Below are the labels assigned to each vertex across all iterations. Each iteration saw different randomly sampled examples but was analyzing the same underlying structure. The vertex numbering is fixed — vertex 0 is always the same geometric direction in the simplex.
+
+"""
+    for v in range(k):
+        prompt += f"VERTEX {v} — labels across iterations:\n"
+        for r in iteration_results:
+            labels = r.get('vertex_labels', [])
+            label = labels[v] if v < len(labels) else "(missing)"
+            prompt += f"  Iteration {r['iteration']}: \"{label}\"\n"
+        prompt += "\n"
+
+    prompt += "OVERALL HYPOTHESES across iterations:\n"
+    for r in iteration_results:
+        prompt += f"  Iteration {r['iteration']} ({r['confidence']}): \"{r['state_space_hypothesis']}\"\n"
+
+    prompt += f"""
+YOUR TASK:
+Synthesize these {n_iters} interpretations into a single consolidated interpretation.
+
+CRITICAL: Each vertex has a fixed geometric identity. A real signal should produce the same label for the same vertex across iterations. Do not count a concept as consistent just because it appears somewhere across iterations; it must appear at the SAME vertex.
+
+Consider:
+1. For each vertex, are the labels consistent across iterations, or does the same concept drift between vertices?
+2. Do the vertices form a coherent set of contrasts along a single dimension?
+3. How confident are you, given the vertex-level consistency?
+
+OUTPUT FORMAT (JSON only, no markdown):
+{{
+  "consolidated_hypothesis": "What dimension of variation this simplex captures",
+  "consolidated_vertex_labels": ["Label for vertex 0", "Label for vertex 1", ...],
+  "confidence": "high|medium|low",
+  "per_vertex_consistency": ["consistent|mixed|inconsistent for vertex 0", ...],
+  "consistency_assessment": "How consistent were the iterations? Did concepts stay at the same vertices or drift?",
+  "reasoning": "Brief explanation of how you arrived at this consolidated interpretation"
+}}"""
+
+    try:
+        response = call_claude_api(prompt, model, api_key)
+        text = response.content[0].text.strip()
+        if text.startswith('```'):
+            lines = text.split('\n')
+            text = '\n'.join(lines[1:] if lines[0].startswith('```') else lines)
+            text = '\n'.join(text.split('\n')[:-1]) if text.strip().endswith('```') else text
+        synthesis = json.loads(text)
+        print(f"    Consolidated: {synthesis.get('consolidated_hypothesis', '')[:80]}...")
+        print(f"    Confidence: {synthesis.get('confidence')}")
+        print(f"    Consistency: {synthesis.get('consistency_assessment', '')[:80]}...")
+    except Exception as e:
+        print(f"    ERROR in synthesis: {e}")
+        synthesis = {'error': str(e)}
+
+    synthesis_dir = Path(output_dir) / "synthesis"
+    synthesis_dir.mkdir(parents=True, exist_ok=True)
+    out = {
+        'cluster_key': cluster_key,
+        'k': k,
+        'n_latents': n_latents,
+        'num_iterations_used': n_iters,
+        'iteration_summaries': iteration_results,
+        'synthesis': synthesis,
+        'model': model,
+        'timestamp': datetime.now(timezone.utc).isoformat(),
+    }
+    with open(synthesis_dir / f"{cluster_key}_synthesis.json", 'w') as f:
+        json.dump(out, f, indent=2)
+    with open(synthesis_dir / f"{cluster_key}_synthesis_prompt.txt", 'w') as f:
+        f.write(prompt)
+    print(f"    Saved → {synthesis_dir}/{cluster_key}_synthesis.json")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Dual-path cluster interpretation")
-    parser.add_argument('--prepared_samples_dir', type=str, required=True)
-    parser.add_argument('--path_a_template', type=str, required=True,
-                        help='Prompt template for Path A (all vertices together)')
-    parser.add_argument('--path_b_vertex_template', type=str, required=True,
-                        help='Prompt template for Path B step 1 (one vertex)')
-    parser.add_argument('--path_b_synthesis_template', type=str, required=True,
-                        help='Prompt template for Path B step 2 (synthesis)')
+    parser.add_argument('--prepared_samples_dir', type=str, default=None,
+                        help='Directory of prepared sample files. Required unless --synthesis_only.')
+    parser.add_argument('--path_a_template', type=str, default=None,
+                        help='Prompt template for Path A (all vertices together). Not required with --synthesis_only.')
+    parser.add_argument('--path_b_vertex_template', type=str, default=None,
+                        help='Prompt template for Path B step 1 (one vertex). Not required with --synthesis_only.')
+    parser.add_argument('--path_b_synthesis_template', type=str, default=None,
+                        help='Prompt template for Path B step 2 (synthesis). Not required with --synthesis_only.')
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--analysis_mode', type=str, choices=['path_a', 'path_b', 'both'], default='both')
     parser.add_argument('--model', type=str, choices=['sonnet', 'haiku', 'opus'], default='sonnet')
-    parser.add_argument('--samples_per_vertex', type=int, required=True)
+    parser.add_argument('--samples_per_vertex', type=int, default=None,
+                        help='Number of samples per vertex per iteration. Not required with --synthesis_only.')
     parser.add_argument('--num_iterations', type=int, required=True)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--clusters_to_process', type=str, default='all')
     parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--synthesis_only', action='store_true',
+                        help='Skip iterations and only run synthesis over existing results.')
     parser.add_argument('--api_key', type=str, default=None)
 
     args = parser.parse_args()
@@ -643,6 +763,35 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
     random.seed(args.seed)
+
+    if args.synthesis_only:
+        if args.clusters_to_process == 'all':
+            print("ERROR: --clusters_to_process required with --synthesis_only (cannot scan prepared_samples_dir)")
+            sys.exit(1)
+        clusters_to_process = args.clusters_to_process.split(',')
+        print(f"\nRunning synthesis only for {len(clusters_to_process)} clusters")
+        for cluster_key in clusters_to_process:
+            print("\n" + "="*80)
+            print(f"CLUSTER {cluster_key}")
+            print("="*80)
+            run_path_a_synthesis(
+                args.output_dir, cluster_key, args.num_iterations, args.model, api_key
+            )
+        print("\n" + "="*80)
+        print("SYNTHESIS COMPLETE")
+        print("="*80)
+        return
+
+    # Validate args required for running iterations
+    missing = [a for a, v in [('--prepared_samples_dir', args.prepared_samples_dir),
+                               ('--path_a_template', args.path_a_template),
+                               ('--path_b_vertex_template', args.path_b_vertex_template),
+                               ('--path_b_synthesis_template', args.path_b_synthesis_template),
+                               ('--samples_per_vertex', args.samples_per_vertex)]
+               if v is None]
+    if missing:
+        print(f"ERROR: {', '.join(missing)} required unless --synthesis_only")
+        sys.exit(1)
 
     # Load templates
     print("\nLoading prompt templates...")
@@ -709,6 +858,14 @@ def main():
                 cluster_key, cluster_data, iteration, templates,
                 args.samples_per_vertex, args.model, api_key,
                 args.output_dir, rng, args.analysis_mode
+            )
+
+        # Synthesize Path A iterations
+        if args.analysis_mode in ['path_a', 'both'] and args.num_iterations > 1:
+            run_path_a_synthesis(
+                args.output_dir, cluster_key,
+                args.num_iterations, args.model, api_key,
+                cluster_data=cluster_data
             )
 
     print("\n" + "="*80)
