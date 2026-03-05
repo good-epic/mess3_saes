@@ -20,7 +20,7 @@ set -e
 export PYTHONPATH=.
 
 SIMPLEX_SAMPLES_DIR="outputs/simplex_samples"
-VERTEX_ACTS_DIR="/workspace/outputs/selected_clusters_broad_2"
+VERTEX_ACTS_DIR="outputs/selected_clusters_broad_2"
 OUTPUT_DIR="outputs/validation/latent_spatial"
 
 # All priority clusters (high + medium confidence, broad_2)

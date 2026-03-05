@@ -342,9 +342,11 @@ def compute_steering_vectors(aanet, acts_c, W_c, k, device):
     """
     with torch.no_grad():
         X_c = (acts_c.unsqueeze(0).float() @ W_c.float())  # (1, d_model)
-        X_recon_curr, _, Z_curr = aanet(X_c)
-        X_recon_curr = X_recon_curr.squeeze(0)             # (d_model,)
-        Z_curr = Z_curr.squeeze(0)                          # (k-1,)
+        _, _, Z_curr = aanet(X_c)
+        Z_curr = Z_curr.squeeze(0)                          # (k-1,) clean encoder output
+        # Decode from the clean encoding (no noise) so the subtraction component of the
+        # steering delta is consistent with the noise-free X_recon_target below.
+        X_recon_curr = aanet.decode(Z_curr.unsqueeze(0)).squeeze(0)  # (d_model,)
         bary_curr = aanet.euclidean_to_barycentric(Z_curr.unsqueeze(0)).squeeze(0)  # (k,)
 
         targets = {}

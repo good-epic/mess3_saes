@@ -3,24 +3,31 @@
 Phase 3b: Causal Steering Auto-Interpretation via vLLM.
 
 For each cluster, classifies steered and unsteered continuations into vertex
-categories using Qwen-72B. Uses the existing frontier-model synthesis
-(consolidated_vertex_labels + consolidated_hypothesis) as grounding, plus
+categories using Qwen-72B. Uses consolidated vertex labels as grounding, plus
 exemplar text windows from prepared_samples.
 
-Two test types:
-  baseline  — unsteered continuations from natural vertex examples.
-              Expected label: source vertex. Measures classification ceiling.
-  steered   — steered continuations at each scale for each src→tgt direction.
-              Expected label: target vertex. Measures steering shift.
+Sampling (paired design): for each vertex v, n_samples examples are drawn
+once. Those same examples provide all 20 continuations per example:
+  document  — original post-trigger text from the source document
+  baseline  — unsteered (greedy) continuation
+  steered   — (k-1) target vertices × 3 types × 3 scales = 18 per example
 
-All prompts are collected into one flat list with full metadata, run in a
-single vLLM batch, then scored.
+Using the same examples across all conditions ensures example-level difficulty
+is shared, controlling for variation when n_samples is small (e.g. 30).
+
+Score function (all case types):
+  1.0 if predicted label == expected vertex
+  0.5 if "Between" label that includes expected vertex
+  0.0 otherwise (including Unclear)
+
+Degenerate continuations are excluded from mean/std and counted separately.
+Unclear responses score 0, stay in the denominator, and are counted separately.
 
 Usage:
     python validation/causal_steering_autointerp.py \\
         --steering_dir /workspace/outputs/validation/causal_steering \\
-        --synthesis_dir outputs/interpretations/sonnet_broad_2_no_whitespace/synthesis \\
-        --prepared_samples_dir outputs/interpretations/prepared_samples_broad_2_no_whitespace \\
+        --synthesis_dir outputs/interpretations/sonnet_broad_2/synthesis \\
+        --prepared_samples_dir outputs/interpretations/prepared_samples_broad_2 \\
         --output_dir /workspace/outputs/validation/causal_steering_autointerp \\
         --clusters 512_17,512_181,768_140,768_596 \\
         --model_name Qwen/Qwen2.5-72B-Instruct-AWQ \\
@@ -33,7 +40,6 @@ import argparse
 import json
 import random
 import re
-import sys
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -65,10 +71,7 @@ def load_synthesis(synthesis_dir, cluster_key):
 # =============================================================================
 
 def build_exemplar_window(chunk_token_ids, trigger_idx, tokenizer, n_tokens=80):
-    """Decode a ~80-token window centered on trigger, marking it >>>TOKEN<<<.
-
-    ~80 tokens ≈ 64 words for typical English text.
-    """
+    """Decode a ~80-token window centered on trigger, marking it >>>TOKEN<<<."""
     half = n_tokens // 2
     start = max(0, trigger_idx - half)
     end = min(len(chunk_token_ids), trigger_idx + half)
@@ -133,24 +136,33 @@ def get_steered_continuation(steered_continuations, scale, steering_type):
     return ""
 
 
-def load_test_cases(steering_dir, cluster_key, n_baseline, n_steered, scales, rng):
-    """Load baseline and steered test cases from steering_results.jsonl.
+def _parse_ex_idx(record):
+    """Parse example index from record_id: '{cluster_key}_ex{NNNN}_V{src}toV{tgt}'."""
+    try:
+        return int(record["record_id"].split("_ex")[1].split("_")[0])
+    except (IndexError, ValueError):
+        return id(record)
 
-    Baseline: one case per unique example (deduplicated by ex_idx), using
-              unsteered_continuation. Cap n_baseline per source vertex.
-    Steered:  n_steered cases per (src→tgt) direction, same examples reused
-              for all scales (enables proper dose-response comparison).
 
-    Returns list of case dicts, each carrying all metadata needed for scoring.
+def load_test_cases(steering_dir, cluster_key, k, n_samples, scales, rng):
+    """Load all continuations for n_samples examples per vertex (paired design).
+
+    For each source vertex v, samples n_samples examples once. Those same
+    examples provide all 20 continuations:
+      - document:  original post-trigger text from the source document
+      - baseline:  unsteered greedy continuation
+      - steered:   (k-1) target vertices × len(scales) × len(STEERING_TYPES)
+
+    This ensures example-level difficulty is shared across all conditions.
     """
     results_path = Path(steering_dir) / f"cluster_{cluster_key}" / "steering_results.jsonl"
     if not results_path.exists():
         print(f"  WARNING: {results_path} not found")
         return []
 
-    # Read all records
-    by_source = defaultdict(dict)    # {src_vertex: {ex_idx: record}}
-    by_direction = defaultdict(list)  # {(src, tgt): [records]}
+    # Index records by source vertex and by (src, tgt) direction
+    by_source    = defaultdict(dict)   # {src: {ex_idx: record}}
+    by_direction = defaultdict(dict)   # {(src, tgt): {ex_idx: record}}
 
     with open(results_path) as f:
         for line in f:
@@ -158,67 +170,76 @@ def load_test_cases(steering_dir, cluster_key, n_baseline, n_steered, scales, rn
             if not line:
                 continue
             record = json.loads(line)
-            src = record["source_vertex"]
-            tgt = record["target_vertex"]
+            src    = record["source_vertex"]
+            tgt    = record["target_vertex"]
+            ex_idx = _parse_ex_idx(record)
 
-            # Parse ex_idx from record_id: "{cluster_key}_ex{NNNN}_V{src}toV{tgt}"
-            try:
-                ex_idx = int(record["record_id"].split("_ex")[1].split("_")[0])
-            except (IndexError, ValueError):
-                ex_idx = id(record)  # fallback unique key
-
-            # Deduplicate for baseline (one entry per example, not per target)
             if ex_idx not in by_source[src]:
                 by_source[src][ex_idx] = record
-
-            by_direction[(src, tgt)].append(record)
+            by_direction[(src, tgt)][ex_idx] = record
 
     cases = []
 
-    # --- Baseline cases ---
-    for src in sorted(by_source):
-        pool = list(by_source[src].values())
+    for src in range(k):
+        pool = list(by_source.get(src, {}).values())
+        if not pool:
+            print(f"  WARNING: no examples for V{src} in {cluster_key}")
+            continue
         rng.shuffle(pool)
-        for record in pool[:n_baseline]:
-            cases.append({
-                "test_type": "baseline",
-                "cluster_key": cluster_key,
-                "source_vertex": src,
-                "target_vertex": src,
-                "scale": None,
-                "record_id": record["record_id"],
-                "continuation": record["unsteered_continuation"],
-                "expected_label": f"V{src}",
+        selected = pool[:n_samples]
+
+        for record in selected:
+            ex_idx = _parse_ex_idx(record)
+            common = {
+                "cluster_key":         cluster_key,
+                "source_vertex":       src,
+                "ex_idx":              ex_idx,
+                "record_id":           record["record_id"],
                 "trigger_token_index": record["trigger_token_index"],
-                "trigger_word": record.get("trigger_word", ""),
-                "pre_trigger_text": record.get("pre_trigger_text", record.get("original_text", "")),
+                "trigger_word":        record.get("trigger_word", ""),
+                "pre_trigger_text":    record.get("pre_trigger_text",
+                                                   record.get("original_text", "")),
+            }
+
+            # Original post-trigger text from source document
+            cases.append({
+                **common,
+                "test_type":       "document",
+                "continuation":    record.get("document_continuation", ""),
+                "expected_vertex": src,
             })
 
-    # --- Steered cases (same examples across all scales and steering types) ---
-    for (src, tgt) in sorted(by_direction):
-        pool = list(by_direction[(src, tgt)])
-        rng.shuffle(pool)
-        selected = pool[:n_steered]
-        for record in selected:
-            for scale in scales:
-                for steering_type in STEERING_TYPES:
-                    continuation = get_steered_continuation(
-                        record.get("steered_continuations", {}), scale, steering_type
-                    )
-                    cases.append({
-                        "test_type": "steered",
-                        "cluster_key": cluster_key,
-                        "source_vertex": src,
-                        "target_vertex": tgt,
-                        "scale": scale,
-                        "steering_type": steering_type,
-                        "record_id": record["record_id"],
-                        "continuation": continuation,
-                        "expected_label": f"V{tgt}",
-                        "trigger_token_index": record["trigger_token_index"],
-                        "trigger_word": record.get("trigger_word", ""),
-                        "pre_trigger_text": record.get("pre_trigger_text", record.get("original_text", "")),
-                    })
+            # Unsteered greedy continuation
+            cases.append({
+                **common,
+                "test_type":       "baseline",
+                "continuation":    record["unsteered_continuation"],
+                "expected_vertex": src,
+            })
+
+            # All steered continuations — same examples for every (tgt, scale, stype)
+            for tgt in range(k):
+                if tgt == src:
+                    continue
+                dir_record = by_direction.get((src, tgt), {}).get(ex_idx)
+                if dir_record is None:
+                    print(f"  WARNING: missing steered record {cluster_key} "
+                          f"ex{ex_idx:04d} V{src}→V{tgt}")
+                    continue
+                for scale in scales:
+                    for stype in STEERING_TYPES:
+                        cont = get_steered_continuation(
+                            dir_record.get("steered_continuations", {}), scale, stype
+                        )
+                        cases.append({
+                            **common,
+                            "test_type":       "steered",
+                            "target_vertex":   tgt,
+                            "scale":           scale,
+                            "steering_type":   stype,
+                            "continuation":    cont,
+                            "expected_vertex": tgt,
+                        })
 
     return cases
 
@@ -233,6 +254,7 @@ def build_options(k):
     if k == 3:
         opts += ["Between V0-V1", "Between V1-V2", "Between V0-V2"]
     # For k=4 we skip Between options (6 combinations is too many)
+    opts.append("Degenerate")
     opts.append("Unclear")
     return opts
 
@@ -252,10 +274,8 @@ def build_prompt(case, hypothesis, vertex_labels, exemplars, k):
     opts = build_options(k)
     opts_str = " / ".join(opts)
 
-    # Vertex descriptions block
     vertex_block = "\n".join(f"  V{i}: {label}" for i, label in enumerate(vertex_labels))
 
-    # Exemplar block — one line per example, grouped by vertex
     exemplar_lines = []
     for v in range(k):
         vex = exemplars.get(v, [])
@@ -266,20 +286,17 @@ def build_prompt(case, hypothesis, vertex_labels, exemplars, k):
             exemplar_lines.append(f"[V{v} EXAMPLES]\n    (none available)")
     exemplar_block = "\n\n".join(exemplar_lines)
 
-    # Context: last ~50 words of pre_trigger_text
     pre_text = case.get("pre_trigger_text") or ""
     words = pre_text.split()
     context_snippet = " ".join(words[-50:]) if len(words) > 50 else pre_text
 
     trigger_word = case.get("trigger_word") or "(unknown)"
-    trigger_idx = case.get("trigger_token_index", "?")
+    trigger_idx  = case.get("trigger_token_index", "?")
     continuation = case["continuation"] or "(empty)"
 
-    return f"""We are studying a language model feature cluster. A frontier AI model analyzed thousands of activating text examples and produced the following interpretation:
+    return f"""We are studying a language model feature cluster. A frontier AI model analyzed \
+thousands of activating text examples and identified {k} distinct activation patterns:
 
-STATE SPACE: {hypothesis}
-
-The cluster has {k} vertex types:
 {vertex_block}
 
 Here are example texts where the cluster fires strongly at each vertex.
@@ -302,11 +319,16 @@ CONTINUATION: {continuation}
 Which vertex does the CONTINUATION most likely represent?
 Options: {opts_str}
 
-Respond with ONLY the option label (e.g., "V0" or "Between V0-V1")."""
+Choose "Degenerate" if the continuation is repetitive, incoherent, or stuck in a loop \
+(e.g. the same word or phrase repeated many times). This is a known failure mode of the \
+model being studied; label it Degenerate rather than guessing a vertex.
+Choose "Unclear" only if the continuation is coherent but does not fit any vertex description well.
+
+Respond with ONLY the option label (e.g., "V0" or "Between V0-V1" or "Degenerate")."""
 
 
 # =============================================================================
-# vLLM helpers (from meta_sae pattern)
+# vLLM helpers
 # =============================================================================
 
 def apply_chat_template(tokenizer, user_prompt):
@@ -321,12 +343,16 @@ def apply_chat_template(tokenizer, user_prompt):
     return f"{SYSTEM_PROMPT}\n\n### User\n{user_prompt}\n\n### Assistant\n"
 
 
-def batch_generate(llm, tokenizer, prompts, max_tokens=20):
+def batch_generate(llm, tokenizer, prompts, max_tokens=20, batch_size=256):
     from vllm import SamplingParams
     formatted = [apply_chat_template(tokenizer, p) for p in prompts]
     params = SamplingParams(temperature=0.0, max_tokens=max_tokens)
-    outputs = llm.generate(formatted, params)
-    return [o.outputs[0].text.strip() for o in outputs]
+    responses = []
+    for i in range(0, len(formatted), batch_size):
+        chunk = formatted[i : i + batch_size]
+        outputs = llm.generate(chunk, params)
+        responses.extend(o.outputs[0].text.strip() for o in outputs)
+    return responses
 
 
 # =============================================================================
@@ -348,7 +374,7 @@ def parse_label(response, k):
         if text.lower().startswith(opt.lower()):
             return opt
 
-    # Fuzzy: look for "Between V{i}-V{j}" or "Between V{i} and V{j}"
+    # Fuzzy: "Between V{i}-V{j}" or "Between V{i} and V{j}"
     between_m = re.search(r'[Bb]etween\s+V(\d)\s*[-–and ]+\s*V(\d)', text)
     if between_m:
         va, vb = sorted([int(between_m.group(1)), int(between_m.group(2))])
@@ -367,75 +393,235 @@ def parse_label(response, k):
 
 
 # =============================================================================
-# Scoring
+# Scoring and metrics
 # =============================================================================
 
-def label_shift_score(label, target_vertex):
-    """Continuous shift score: 1.0 if label == V_tgt, 0.5 if Between and includes V_tgt, else 0."""
-    tgt = f"V{target_vertex}"
+def label_shift_score(label, expected_vertex):
+    """Score toward expected vertex: 1.0 exact, 0.5 if Between includes it, else 0."""
+    tgt = f"V{expected_vertex}"
     if label == tgt:
         return 1.0
     if "Between" in label:
         vs = re.findall(r'V(\d)', label)
-        if str(target_vertex) in vs:
+        if str(expected_vertex) in vs:
             return 0.5
     return 0.0
 
 
-def compute_metrics(cases, k):
-    """Return per-cluster metrics dict from a list of cases with predicted_label."""
-    baseline = [c for c in cases if c["test_type"] == "baseline"]
-    steered  = [c for c in cases if c["test_type"] == "steered"]
+def compute_group_stats(case_list, expected_vertex):
+    """Compute stats for a group of cases sharing the same expected vertex.
 
-    # Baseline: per-vertex accuracy
-    by_vertex = defaultdict(list)
-    for c in baseline:
-        correct = int(c["predicted_label"] == c["expected_label"])
-        by_vertex[c["source_vertex"]].append(correct)
-
-    baseline_acc = {
-        f"V{v}": float(np.mean(scores)) for v, scores in sorted(by_vertex.items())
+    Degenerate: excluded from mean/std, counted in n_degenerate.
+    Unclear:    scores 0 (included in mean/std), counted in n_unclear.
+    """
+    scores       = []
+    n_degenerate = 0
+    n_unclear    = 0
+    for c in case_list:
+        label = c["predicted_label"]
+        if label == "Degenerate":
+            n_degenerate += 1
+        else:
+            if label == "Unclear":
+                n_unclear += 1
+            scores.append(label_shift_score(label, expected_vertex))
+    return {
+        "mean":         float(np.mean(scores))  if scores else None,
+        "std":          float(np.std(scores))   if scores else None,
+        "n_valid":      len(scores),
+        "n_degenerate": n_degenerate,
+        "n_unclear":    n_unclear,
     }
-    if baseline_acc:
-        baseline_acc["macro"] = float(np.mean(list(baseline_acc.values())))
 
-    # Steered: shift rate per (direction, scale, steering_type)
-    by_dir_scale = defaultdict(list)
-    for c in steered:
-        key = (c["source_vertex"], c["target_vertex"], c["scale"],
-               c.get("steering_type", "type1"))
-        by_dir_scale[key].append(label_shift_score(c["predicted_label"], c["target_vertex"]))
 
-    shift_rates = {}
-    for (src, tgt, scale, stype), scores in sorted(by_dir_scale.items()):
-        label = f"V{src}toV{tgt}_s{scale:g}_{stype}"
-        shift_rates[label] = {
-            "source_vertex": src,
-            "target_vertex": tgt,
-            "scale": scale,
-            "steering_type": stype,
-            "mean_shift": float(np.mean(scores)),
-            "n": len(scores),
-            "label_distribution": _label_dist(
-                [c["predicted_label"] for c in steered
-                 if c["source_vertex"] == src
-                 and c["target_vertex"] == tgt
-                 and c["scale"] == scale
-                 and c.get("steering_type", "type1") == stype],
-                k,
+def _find_best_combo(steered_cases, k, scales):
+    """Find the (steering_type, scale) with best average score across all directions.
+
+    Eligibility: total_valid / (total_valid + total_degenerate) >= 2/3 globally
+    (across all directions combined for that combo).
+
+    Returns a dict with the best combo and per-direction stats, or None.
+    """
+    combo_scores = defaultdict(list)
+    combo_degen  = defaultdict(int)
+
+    for c in steered_cases:
+        key = (c["steering_type"], c["scale"])
+        if c["predicted_label"] == "Degenerate":
+            combo_degen[key] += 1
+        else:
+            combo_scores[key].append(
+                label_shift_score(c["predicted_label"], c["target_vertex"])
+            )
+
+    best_key  = None
+    best_mean = -1.0
+
+    for key in combo_scores:
+        n_valid = len(combo_scores[key])
+        n_degen = combo_degen.get(key, 0)
+        if n_valid + n_degen == 0:
+            continue
+        if n_valid / (n_valid + n_degen) < 2 / 3:
+            continue
+        mean = float(np.mean(combo_scores[key]))
+        if mean > best_mean:
+            best_mean = mean
+            best_key  = key
+
+    if best_key is None:
+        return None
+
+    stype, scale = best_key
+
+    per_direction = {}
+    for src in range(k):
+        for tgt in range(k):
+            if tgt == src:
+                continue
+            group = [
+                c for c in steered_cases
+                if c["source_vertex"] == src
+                and c["target_vertex"] == tgt
+                and c["steering_type"] == stype
+                and c["scale"] == scale
+            ]
+            per_direction[f"V{src}toV{tgt}"] = compute_group_stats(group, tgt)
+
+    return {
+        "steering_type":          stype,
+        "scale":                  scale,
+        "mean_across_directions": best_mean,
+        "per_direction":          per_direction,
+    }
+
+
+def compute_metrics(cases, k, scales):
+    """Full metrics: per-vertex detailed breakdown and best (type, scale) summary.
+
+    Returns:
+        vertex_results: {
+            "V{src}": {
+                "document": group_stats,
+                "baseline": group_stats,
+                "steered": {
+                    "V{src}toV{tgt}_{stype}_s{scale}": group_stats, ...
+                }
+            }, ...
+        }
+        best_combo: {
+            "steering_type", "scale", "mean_across_directions",
+            "per_direction": {"V{src}toV{tgt}": group_stats, ...}
+        } or None
+    """
+    steered_cases = [c for c in cases if c["test_type"] == "steered"]
+
+    vertex_results = {}
+    for src in range(k):
+        src_cases = [c for c in cases if c["source_vertex"] == src]
+
+        steered_combos = {}
+        for tgt in range(k):
+            if tgt == src:
+                continue
+            for scale in scales:
+                for stype in STEERING_TYPES:
+                    group = [
+                        c for c in src_cases
+                        if c["test_type"] == "steered"
+                        and c.get("target_vertex") == tgt
+                        and c["scale"] == scale
+                        and c["steering_type"] == stype
+                    ]
+                    combo_key = f"V{src}toV{tgt}_{stype}_s{scale:g}"
+                    steered_combos[combo_key] = {
+                        "source_vertex": src,
+                        "target_vertex": tgt,
+                        "scale":         scale,
+                        "steering_type": stype,
+                        **compute_group_stats(group, tgt),
+                    }
+
+        vertex_results[f"V{src}"] = {
+            "document": compute_group_stats(
+                [c for c in src_cases if c["test_type"] == "document"], src
             ),
+            "baseline": compute_group_stats(
+                [c for c in src_cases if c["test_type"] == "baseline"], src
+            ),
+            "steered": steered_combos,
         }
 
-    return {"baseline_accuracy": baseline_acc, "shift_rates": shift_rates}
+    return {
+        "vertex_results": vertex_results,
+        "best_combo":     _find_best_combo(steered_cases, k, scales),
+    }
 
 
-def _label_dist(labels, k):
-    """Count occurrences of each canonical label."""
-    opts = build_options(k)
-    counts = {o: 0 for o in opts}
-    for lbl in labels:
-        counts[lbl] = counts.get(lbl, 0) + 1
-    return counts
+# =============================================================================
+# Console reporting
+# =============================================================================
+
+def _fmt(stats):
+    """Format a group_stats dict as a compact one-liner."""
+    if stats is None or stats.get("mean") is None:
+        return "N/A"
+    return (f"mean={stats['mean']:.3f} ±{stats['std']:.3f}  "
+            f"n={stats['n_valid']}  degen={stats['n_degenerate']}  "
+            f"unclear={stats['n_unclear']}")
+
+
+def print_cluster_results(cluster_key, k, vertex_labels, metrics, scales):
+    print(f"\n{'='*68}")
+    print(f"Cluster {cluster_key}  (k={k})")
+
+    vr = metrics["vertex_results"]
+
+    # --- Per-vertex detailed table ---
+    for src in range(k):
+        label_short = vertex_labels[src][:55] if len(vertex_labels[src]) > 55 \
+                      else vertex_labels[src]
+        print(f"\n  [V{src}] {label_short}")
+        print(f"    document : {_fmt(vr[f'V{src}']['document'])}")
+        print(f"    baseline : {_fmt(vr[f'V{src}']['baseline'])}")
+        for tgt in range(k):
+            if tgt == src:
+                continue
+            print(f"    V{src}→V{tgt} steered:")
+            for stype in STEERING_TYPES:
+                parts = []
+                for scale in scales:
+                    key = f"V{src}toV{tgt}_{stype}_s{scale:g}"
+                    s = vr[f"V{src}"]["steered"].get(key, {})
+                    m = f"{s['mean']:.3f}" if s.get("mean") is not None else "N/A"
+                    parts.append(
+                        f"s={scale:g}: {m} "
+                        f"(n={s.get('n_valid','?')} "
+                        f"degen={s.get('n_degenerate','?')} "
+                        f"unc={s.get('n_unclear','?')})"
+                    )
+                print(f"      [{stype}] " + "  |  ".join(parts))
+
+    # --- Best combo summary ---
+    bc = metrics.get("best_combo")
+    print(f"\n  {'─'*60}")
+    print(f"  Best (type, scale): ", end="")
+    if bc is None:
+        print("none qualified (all combos failed 2/3 non-degenerate threshold)")
+        return
+
+    print(f"{bc['steering_type']}  s={bc['scale']:g}  "
+          f"→ mean across directions = {bc['mean_across_directions']:.3f}")
+
+    dirs = [f"V{src}toV{tgt}" for src in range(k) for tgt in range(k) if tgt != src]
+    for d in dirs:
+        s = bc["per_direction"].get(d, {})
+        print(f"    {d}: {_fmt(s)}")
+
+    print(f"  Document / unsteered per vertex:")
+    for src in range(k):
+        print(f"    V{src}: doc={_fmt(vr[f'V{src}']['document'])}  "
+              f"unsteer={_fmt(vr[f'V{src}']['baseline'])}")
 
 
 # =============================================================================
@@ -447,22 +633,20 @@ def run_pipeline(args, llm, vllm_tokenizer, gemma_tokenizer):
     rng = random.Random(args.seed)
     np.random.seed(args.seed)
 
-    # ------------------------------------------------------------------
-    # Load all cluster data; build flat (case, prompt) list
-    # ------------------------------------------------------------------
-    print("\nLoading cluster data and building prompts...")
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    cluster_meta = {}   # cluster_key → (hypothesis, vertex_labels, k)
-    all_cases   = []    # flat list of metadata dicts (one per prompt)
-    all_prompts = []    # flat list of prompt strings (parallel to all_cases)
+    all_results = {}
 
     for cluster_key in cluster_keys:
+        print(f"\n{'='*60}")
+        print(f"Processing cluster {cluster_key}...")
+
         synth = load_synthesis(args.synthesis_dir, cluster_key)
         if synth is None:
             print(f"  WARNING: no synthesis for {cluster_key}, skipping")
             continue
         hypothesis, vertex_labels, k = synth
-        cluster_meta[cluster_key] = synth
 
         exemplars = load_exemplars(
             args.prepared_samples_dir, cluster_key, k,
@@ -470,74 +654,47 @@ def run_pipeline(args, llm, vllm_tokenizer, gemma_tokenizer):
         )
 
         cases = load_test_cases(
-            args.steering_dir, cluster_key,
-            args.n_baseline, args.n_steered, args.scales, rng,
+            args.steering_dir, cluster_key, k,
+            args.n_samples, args.scales, rng,
         )
 
-        n_base    = sum(1 for c in cases if c["test_type"] == "baseline")
-        n_steered = sum(1 for c in cases if c["test_type"] == "steered")
-        print(f"  {cluster_key} k={k}: {n_base} baseline, {n_steered} steered")
+        n_doc  = sum(1 for c in cases if c["test_type"] == "document")
+        n_base = sum(1 for c in cases if c["test_type"] == "baseline")
+        n_ste  = sum(1 for c in cases if c["test_type"] == "steered")
+        print(f"  {n_doc} doc + {n_base} baseline + {n_ste} steered = {len(cases)} total")
 
-        for case in cases:
-            prompt = build_prompt(case, hypothesis, vertex_labels, exemplars, k)
-            all_cases.append(case)
-            all_prompts.append(prompt)
-
-    print(f"\nTotal prompts: {len(all_prompts)}")
-    if not all_prompts:
-        print("No prompts to run — exiting.")
-        return
-
-    # ------------------------------------------------------------------
-    # Single vLLM batch
-    # ------------------------------------------------------------------
-    print(f"Running batch through {args.model_name}...")
-    t0 = time.perf_counter()
-    responses = batch_generate(llm, vllm_tokenizer, all_prompts, max_tokens=args.max_response_tokens)
-    elapsed = time.perf_counter() - t0
-    print(f"Done in {elapsed:.1f}s  ({elapsed / len(all_prompts):.3f}s/prompt)")
-
-    # Attach parsed labels back to cases
-    for case, raw_response in zip(all_cases, responses):
-        _, _, k = cluster_meta[case["cluster_key"]]
-        case["raw_response"]    = raw_response
-        case["predicted_label"] = parse_label(raw_response, k)
-
-    # ------------------------------------------------------------------
-    # Score + save
-    # ------------------------------------------------------------------
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    all_results = {}
-
-    for cluster_key in cluster_keys:
-        if cluster_key not in cluster_meta:
+        if not cases:
+            print("  No cases — skipping.")
             continue
-        hypothesis, vertex_labels, k = cluster_meta[cluster_key]
-        c_cases = [c for c in all_cases if c["cluster_key"] == cluster_key]
-        metrics  = compute_metrics(c_cases, k)
 
-        # Console summary
-        print(f"\n{'='*55}")
-        print(f"Cluster {cluster_key}  (k={k})")
-        print(f"  Baseline accuracy: {metrics['baseline_accuracy']}")
-        # Print shift rates grouped by direction for readability
-        for stype in STEERING_TYPES:
-            type_rows = {k2: v for k2, v in metrics["shift_rates"].items()
-                         if v.get("steering_type") == stype}
-            if type_rows:
-                print(f"  [{stype}]")
-                for sr_key, sr in sorted(type_rows.items()):
-                    print(f"    V{sr['source_vertex']}→V{sr['target_vertex']} "
-                          f"s={sr['scale']:g}: mean_shift={sr['mean_shift']:.3f}  n={sr['n']}")
+        prompts = [
+            build_prompt(case, hypothesis, vertex_labels, exemplars, k)
+            for case in cases
+        ]
 
-        # Save per-cluster file (omit bulky text fields from the case list)
-        slim_cases = []
-        for c in c_cases:
-            slim = {k2: v for k2, v in c.items() if k2 not in ("pre_trigger_text",)}
-            slim_cases.append(slim)
+        print(f"  Running {len(prompts)} prompts "
+              f"(batch_size={args.vllm_batch_size})...")
+        t0 = time.perf_counter()
+        responses = batch_generate(
+            llm, vllm_tokenizer, prompts,
+            max_tokens=args.max_response_tokens,
+            batch_size=args.vllm_batch_size,
+        )
+        elapsed = time.perf_counter() - t0
+        print(f"  Done in {elapsed:.1f}s  ({elapsed / len(prompts):.3f}s/prompt)")
 
+        for case, raw_response in zip(cases, responses):
+            case["raw_response"]    = raw_response
+            case["predicted_label"] = parse_label(raw_response, k)
+
+        metrics = compute_metrics(cases, k, args.scales)
+        print_cluster_results(cluster_key, k, vertex_labels, metrics, args.scales)
+
+        # Per-cluster JSON — omit bulky pre_trigger_text from case list
+        slim_cases = [
+            {k2: v for k2, v in c.items() if k2 != "pre_trigger_text"}
+            for c in cases
+        ]
         cluster_out = {
             "cluster_key":   cluster_key,
             "k":             k,
@@ -552,16 +709,18 @@ def run_pipeline(args, llm, vllm_tokenizer, gemma_tokenizer):
         print(f"  → {out_path}")
 
         all_results[cluster_key] = {
-            "k":         k,
-            "metrics":   metrics,
-            "n_baseline": sum(1 for c in c_cases if c["test_type"] == "baseline"),
-            "n_steered":  sum(1 for c in c_cases if c["test_type"] == "steered"),
+            "k":             k,
+            "vertex_labels": vertex_labels,
+            "metrics":       metrics,
+            "n_cases":       len(cases),
         }
 
-    combined_path = output_dir / "all_results.json"
-    with open(combined_path, "w") as f:
-        json.dump(all_results, f, indent=2)
-    print(f"\nAll results → {combined_path}")
+        # Write combined results after each cluster for crash recovery
+        combined_path = output_dir / "all_results.json"
+        with open(combined_path, "w") as f:
+            json.dump(all_results, f, indent=2)
+
+    print(f"\nAll results → {output_dir / 'all_results.json'}")
 
 
 # =============================================================================
@@ -572,45 +731,43 @@ def main():
     parser = argparse.ArgumentParser(
         description="Phase 3b: Causal steering auto-interpretation via vLLM"
     )
-    parser.add_argument("--steering_dir", required=True,
-                        help="Dir with causal_steering outputs "
-                             "(cluster_{key}/steering_results.jsonl)")
-    parser.add_argument("--synthesis_dir", required=True,
-                        help="Dir containing {cluster_key}_synthesis.json files")
+    parser.add_argument("--steering_dir",         required=True,
+                        help="Dir with cluster_{key}/steering_results.jsonl")
+    parser.add_argument("--synthesis_dir",        required=True,
+                        help="Dir with {cluster_key}_synthesis.json files")
     parser.add_argument("--prepared_samples_dir", required=True,
-                        help="Dir with prepared vertex samples (for exemplar windows)")
-    parser.add_argument("--output_dir", required=True)
-    parser.add_argument("--clusters", required=True,
+                        help="Dir with cluster_{key}.json prepared samples")
+    parser.add_argument("--output_dir",           required=True)
+    parser.add_argument("--clusters",             required=True,
                         help="Comma-separated cluster keys, e.g. 512_17,768_140")
 
-    parser.add_argument("--scales", type=float, nargs="+", default=[0.0, 1.0, 5.0, 20.0],
+    parser.add_argument("--scales", type=float, nargs="+", default=[1.0, 5.0, 20.0],
                         help="Steering scales to evaluate")
-    parser.add_argument("--n_baseline", type=int, default=30,
-                        help="Baseline (unsteered) examples per source vertex")
-    parser.add_argument("--n_steered", type=int, default=30,
-                        help="Steered examples per (src→tgt) direction "
-                             "(same examples reused across all scales)")
+    parser.add_argument("--n_samples", type=int, default=30,
+                        help="Examples per vertex; same pool used for document, "
+                             "baseline, and all steered conditions (paired design)")
     parser.add_argument("--n_exemplars", type=int, default=5,
-                        help="Exemplar text windows per vertex shown in each prompt")
+                        help="Exemplar windows per vertex shown in each prompt")
 
-    parser.add_argument("--model_name", default="Qwen/Qwen2.5-72B-Instruct-AWQ")
-    parser.add_argument("--quantization", default="awq_marlin")
+    parser.add_argument("--model_name",             default="Qwen/Qwen2.5-72B-Instruct-AWQ")
+    parser.add_argument("--quantization",           default="awq_marlin")
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.85)
-    parser.add_argument("--max_model_len", type=int, default=8192)
-    parser.add_argument("--max_response_tokens", type=int, default=20,
+    parser.add_argument("--max_model_len",          type=int,   default=8192)
+    parser.add_argument("--max_response_tokens",    type=int,   default=20,
                         help="Max tokens for the classification response")
+    parser.add_argument("--vllm_batch_size",        type=int,   default=256,
+                        help="Max prompts per llm.generate() call (prevents OOM)")
 
     parser.add_argument("--gemma_tokenizer", default="google/gemma-2-9b",
-                        help="Tokenizer used to decode prepared_samples token IDs "
+                        help="Tokenizer for decoding prepared_samples token IDs "
                              "(must match the SAE base model, NOT the classifier LLM)")
     parser.add_argument("--cache_dir", default="/workspace/hf_cache")
-    parser.add_argument("--hf_token", default=None)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--hf_token",  default=None)
+    parser.add_argument("--seed",      type=int, default=42)
 
     args = parser.parse_args()
     random.seed(args.seed)
 
-    # Load Gemma tokenizer (cheap — just for decoding prepared_samples token IDs)
     print(f"Loading Gemma tokenizer ({args.gemma_tokenizer})...")
     from transformers import AutoTokenizer
     from huggingface_hub import login
@@ -620,7 +777,6 @@ def main():
         args.gemma_tokenizer, cache_dir=args.cache_dir, token=args.hf_token
     )
 
-    # Load vLLM classifier
     print(f"\nLoading {args.model_name} via vLLM...")
     from vllm import LLM
     llm_kwargs = dict(

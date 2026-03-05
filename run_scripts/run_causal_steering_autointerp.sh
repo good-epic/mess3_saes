@@ -7,11 +7,12 @@
 # synthesis (consolidated_vertex_labels) as grounding and exemplar windows
 # from prepared_samples.
 #
-# Two test types:
-#   baseline  — unsteered continuations from natural vertex examples
+# Three test types:
+#   document  — original post-trigger text from the source document
+#   baseline  — unsteered (greedy) continuation
 #               (measures classification ceiling per vertex)
-#   steered   — continuations steered at scales [0, 1, 5, 20] for each
-#               src→tgt direction (measures causal shift rate + dose-response)
+#   steered   — continuations steered at scales [1, 5, 20] × 3 types × (k-1)
+#               directions per vertex (measures causal shift rate + dose-response)
 #
 # GPU required. Run from project root:
 #   ./run_scripts/run_causal_steering_autointerp.sh
@@ -26,8 +27,8 @@ set -e
 export PYTHONPATH=.
 
 STEERING_DIR="/workspace/outputs/validation/causal_steering"
-SYNTHESIS_DIR="outputs/interpretations/sonnet_broad_2_no_whitespace/synthesis"
-PREPARED_SAMPLES_DIR="outputs/interpretations/prepared_samples_broad_2_no_whitespace"
+SYNTHESIS_DIR="outputs/interpretations/sonnet_broad_2/synthesis"
+PREPARED_SAMPLES_DIR="outputs/interpretations/prepared_samples_broad_2"
 OUTPUT_DIR="/workspace/outputs/validation/causal_steering_autointerp"
 
 # All 13 priority clusters
@@ -51,14 +52,14 @@ python -u validation/causal_steering_autointerp.py \
     --output_dir "${OUTPUT_DIR}" \
     --clusters "${CLUSTERS}" \
     --scales 1 5 20 \
-    --n_baseline 30 \
-    --n_steered 30 \
+    --n_samples 30 \
     --n_exemplars 5 \
     --model_name "Qwen/Qwen2.5-72B-Instruct-AWQ" \
     --quantization "awq_marlin" \
     --gpu_memory_utilization 0.85 \
     --max_model_len 8192 \
     --gemma_tokenizer "google/gemma-2-9b" \
+    --vllm_batch_size 256 \
     --cache_dir "/workspace/hf_cache" \
     --hf_token "${HF_TOKEN}" \
     --seed 42
