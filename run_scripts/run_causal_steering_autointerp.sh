@@ -27,8 +27,8 @@ set -e
 export PYTHONPATH=.
 
 STEERING_DIR="/workspace/outputs/validation/causal_steering"
-SYNTHESIS_DIR="outputs/interpretations/sonnet_broad_2/synthesis"
-PREPARED_SAMPLES_DIR="outputs/interpretations/prepared_samples_broad_2"
+SYNTHESIS_DIR="/workspace/outputs/interpretations/sonnet_broad_2/synthesis"
+PREPARED_SAMPLES_DIR="/workspace/outputs/interpretations/prepared_samples_broad_2"
 OUTPUT_DIR="/workspace/outputs/validation/causal_steering_autointerp"
 
 # All 13 priority clusters
