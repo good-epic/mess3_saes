@@ -1,41 +1,39 @@
 #!/bin/bash
 
-# Phase 3b: Causal Steering Auto-Interpretation
+# Phase 3b (null): Causal Steering Auto-Interpretation — NULL clusters
 #
-# Classifies steered and unsteered continuations from Phase 3a into vertex
-# categories using Qwen-72B-AWQ via vLLM. Uses the existing frontier-model
-# synthesis (consolidated_vertex_labels) as grounding and exemplar windows
-# from prepared_samples.
+# Same pipeline as run_causal_steering_autointerp.sh but for the three null
+# clusters (random, non-simplex-structured). Uses sonnet_null synthesis and
+# prepared_samples_null for grounding.
 #
 # Three test types:
 #   document  — original post-trigger text from the source document
 #   baseline  — unsteered (greedy) continuation
-#               (measures classification ceiling per vertex)
 #   steered   — continuations steered at scales [1, 5, 20] × 3 types × (k-1)
-#               directions per vertex (measures causal shift rate + dose-response)
+#               directions per vertex
 #
 # GPU required. Run from project root:
-#   ./run_scripts/run_causal_steering_autointerp.sh
+#   ./run_scripts/run_null_causal_steering_autointerp.sh
 #
 # Prerequisites:
-#   - Phase 3a outputs in STEERING_DIR (run_causal_steering.sh)
-#   - Synthesis JSONs in SYNTHESIS_DIR (already exist for broad_2)
+#   - Phase 3a null steering outputs in STEERING_DIR (run_causal_steering.sh)
+#   - Synthesis JSONs in SYNTHESIS_DIR (sonnet_null/synthesis)
 #   - vllm: pip install vllm
 
 set -e
 
 export PYTHONPATH=.
 
-STEERING_DIR="/workspace/outputs/validation/causal_steering"
-SYNTHESIS_DIR="/workspace/outputs/interpretations/sonnet_broad_2/synthesis"
-PREPARED_SAMPLES_DIR="/workspace/outputs/interpretations/prepared_samples_broad_2"
-OUTPUT_DIR="/workspace/outputs/validation/causal_steering_autointerp"
+STEERING_DIR="/workspace/outputs/validation/causal_steering_null "
+SYNTHESIS_DIR="/workspace/outputs/interpretations/sonnet_null/synthesis"
+PREPARED_SAMPLES_DIR="/workspace/outputs/interpretations/prepared_samples_null"
+OUTPUT_DIR="/workspace/outputs/validation/causal_steering_autointerp_null"
 
-# All 13 priority clusters
-CLUSTERS="512_17,512_22,512_67,512_181,512_229,512_261,512_471,512_504,768_140,768_210,768_306,768_581,768_596"
+# Null clusters
+CLUSTERS="512_138,512_345,768_310"
 
 echo "============================================================"
-echo "Phase 3b: CAUSAL STEERING AUTO-INTERPRETATION"
+echo "Phase 3b (null): CAUSAL STEERING AUTO-INTERPRETATION"
 echo "============================================================"
 echo "Steering results:  ${STEERING_DIR}"
 echo "Synthesis dir:     ${SYNTHESIS_DIR}"
