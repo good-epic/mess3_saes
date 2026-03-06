@@ -24,7 +24,7 @@ set -e
 
 export PYTHONPATH=.
 
-STEERING_DIR="/workspace/outputs/validation/causal_steering_null "
+STEERING_DIR="/workspace/outputs/validation/causal_steering_null"
 SYNTHESIS_DIR="/workspace/outputs/interpretations/sonnet_null/synthesis"
 PREPARED_SAMPLES_DIR="/workspace/outputs/interpretations/prepared_samples_null"
 OUTPUT_DIR="/workspace/outputs/validation/causal_steering_autointerp_null"
