@@ -2,26 +2,26 @@
 """
 2Bb: Barycentric coordinate vs. single-latent predictive power.
 
-For each priority cluster, runs vertex samples through model → SAE → AANet and
-compares how well:
+For each priority cluster, compares how well:
   (a) any single cluster latent's scalar activation, vs.
   (b) the full K-dim barycentric coordinate,
 predicts:
   1. Vertex membership (K-class classification)
   2. Primary linguistic feature from 1c (spacy-based, e.g. gram_function)
   3. Next-token log-probabilities for the top-50 most diagnostic vocabulary items
-     (selected by log-prob variance across samples)
 
-For (3), per each of the 50 tokens:
-  - Univariate CV-R² for each cluster latent  → shape (50, n_latents)
-  - K-predictor adjusted CV-R² for bary coord → shape (50,)
-  - Paired Wilcoxon test: bary vs. best-single-latent across 50 tokens
+Results are reported separately for:
+  - near-vertex samples (from prepared_samples_dir)
+  - simplex-interior samples (from simplex_dir, if provided)
+  - combined (pooled) samples
 
-GPU required (runs model + SAE + AANet forward passes on vertex samples).
+GPU required (runs model forward passes; SAE+AANet skipped for simplex samples
+since latent_acts and barycentric_coords are pre-saved in the JSONL).
 
 Usage:
     python validation/latent_vs_barycentric.py \\
-        --prepared_samples_dir outputs/interpretations/prepared_samples_broad_2_no_whitespace \\
+        --prepared_samples_dir outputs/interpretations/prepared_samples_broad_2 \\
+        --simplex_dir outputs/simplex_samples \\
         --source_dir /workspace/outputs/selected_clusters_broad_2 \\
         --csv_dir /workspace/outputs/real_data_analysis_canonical \\
         --output_dir outputs/validation/latent_vs_barycentric \\
@@ -68,11 +68,11 @@ from mess3_gmg_analysis_utils import sae_encode_features
 
 
 # ---------------------------------------------------------------------------
-# Helpers (inlined from real_data_tests/collect_simplex_samples.py)
+# Helpers
 # ---------------------------------------------------------------------------
 
 def find_model_path(csv_dir, n_clusters, cluster_id, k):
-    """Find AANet .pt model in csv_dir (stage-1 naming: aanet_cluster_{id}_k{k}.pt)."""
+    """Find AANet .pt model in csv_dir."""
     path = Path(csv_dir) / f"clusters_{n_clusters}" / f"aanet_cluster_{cluster_id}_k{k}.pt"
     return path if path.exists() else None
 
@@ -80,7 +80,6 @@ def find_model_path(csv_dir, n_clusters, cluster_id, k):
 def get_latent_indices(csv_dir, n_clusters, cluster_id):
     """Get latent indices for a cluster from the consolidated metrics CSV."""
     import pandas as pd
-    import ast
     csv_path = Path(csv_dir) / f"clusters_{n_clusters}" / f"consolidated_metrics_n{n_clusters}.csv"
     if not csv_path.exists():
         return None
@@ -104,7 +103,11 @@ def parse_args():
     )
     parser.add_argument("--prepared_samples_dir", type=str, required=True,
                         help="Dir with prepared vertex sample JSON files "
-                             "(e.g. prepared_samples_broad_2_no_whitespace/)")
+                             "(e.g. prepared_samples_broad_2/)")
+    parser.add_argument("--simplex_dir", type=str, default=None,
+                        help="Dir with simplex_samples JSONL files "
+                             "(e.g. outputs/simplex_samples). If provided, also "
+                             "analyzes interior simplex samples and reports combined results.")
     parser.add_argument("--source_dir", type=str, required=True,
                         help="Dir with refitted AANet .pt models. "
                              "Structure: source_dir/n{N}/cluster_{id}_k{k}_category*.pt")
@@ -130,7 +133,7 @@ def parse_args():
 
     # Analysis parameters
     parser.add_argument("--batch_size", type=int, default=8,
-                        help="Batch size for model forward passes over vertex samples")
+                        help="Batch size for model forward passes")
     parser.add_argument("--n_top_tokens", type=int, default=50,
                         help="Number of top-variance vocabulary tokens for next-token R² analysis")
     parser.add_argument("--cv_folds", type=int, default=5,
@@ -140,14 +143,15 @@ def parse_args():
     parser.add_argument("--skip_plots", action="store_true",
                         help="Skip matplotlib output")
     parser.add_argument("--max_samples_per_vertex", type=int, default=None,
-                        help="Cap samples per vertex before inference (random subsample). "
-                             "Prevents compute waste on imbalanced clusters.")
+                        help="Cap vertex samples per vertex before inference.")
+    parser.add_argument("--max_simplex_samples", type=int, default=500,
+                        help="Cap total simplex interior samples per cluster.")
 
     return parser.parse_args()
 
 
 # =============================================================================
-# Helpers
+# Data loading
 # =============================================================================
 
 def load_vertex_samples(prepared_path):
@@ -160,10 +164,30 @@ def load_vertex_samples(prepared_path):
     return samples_by_vertex, data
 
 
-def find_aanet_model(csv_dir, n_clusters, cluster_id, k):
-    """Find AANet .pt model in csv_dir."""
-    return find_model_path(csv_dir, n_clusters, cluster_id, k)
+def load_simplex_samples(simplex_dir, n_clusters, cluster_id, k,
+                         max_samples=None, rng=None):
+    """Load simplex interior samples from JSONL. Returns list of sample dicts."""
+    path = (Path(simplex_dir) / f"n{n_clusters}"
+            / f"cluster_{cluster_id}_k{k}_simplex_samples.jsonl")
+    if not path.exists():
+        return []
+    records = []
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                records.append(json.loads(line))
+    if max_samples and len(records) > max_samples:
+        if rng is None:
+            rng = np.random.default_rng(seed=42)
+        indices = rng.choice(len(records), max_samples, replace=False)
+        records = [records[int(i)] for i in indices]
+    return records
 
+
+# =============================================================================
+# Cross-validation helpers
+# =============================================================================
 
 def cv_balanced_accuracy(X, y, n_splits=5):
     """Stratified CV balanced accuracy for classification."""
@@ -219,28 +243,22 @@ def cv_r2_multi(X, y, n_splits=5):
 
 
 # =============================================================================
-# Model inference on vertex samples
+# Model inference
 # =============================================================================
 
-def run_inference_on_samples(
+def run_inference_on_vertex_samples(
     all_samples, model, sae, aanet, hook_name,
     cluster_indices_tensor, args,
     collect_logits=True,
 ):
-    """Run model + SAE + AANet on all samples.
-
-    Args:
-        all_samples: list of dicts with chunk_token_ids and trigger_token_indices
-        collect_logits: if True, collect full vocab logprobs (memory-intensive)
+    """Run model + SAE + AANet on vertex samples.
 
     Returns:
         latent_acts:   (N, n_latents) float32
         bary_coords:   (N, k)         float32
-        next_logprobs: (N, vocab)     float16, or None if collect_logits=False
-        valid_mask:    (N,)           bool (False for BOS or last-position samples)
+        next_logprobs: (N, vocab)     float16, or None
+        valid_mask:    (N,)           bool
     """
-    from AAnet.AAnet_torch.models.AAnet_vanilla import AAnet_vanilla
-
     d_model = sae.W_dec.shape[1]
     W_c = sae.W_dec[cluster_indices_tensor, :]  # (n_latents, d_model)
 
@@ -255,7 +273,7 @@ def run_inference_on_samples(
         tokens = torch.tensor(
             [s["chunk_token_ids"] for s in batch],
             dtype=torch.long, device=args.device,
-        )  # (B, seq_len)
+        )
         seq_len = tokens.shape[1]
         trigger_indices = [s["trigger_token_indices"][0] for s in batch]
 
@@ -265,7 +283,6 @@ def run_inference_on_samples(
             )
             acts = cache[hook_name]  # (B, seq_len, d_model)
 
-            # Extract hidden states at trigger positions
             trigger_hidden = torch.stack([
                 acts[i, ti, :] for i, ti in enumerate(trigger_indices)
             ])  # (B, d_model)
@@ -273,7 +290,6 @@ def run_inference_on_samples(
             feature_acts, _, _ = sae_encode_features(sae, trigger_hidden)
             lat_acts = feature_acts[:, cluster_indices_tensor]  # (B, n_latents)
 
-            # AANet forward
             X_recon = lat_acts @ W_c  # (B, d_model)
             _, _, emb = aanet(X_recon)
             bary = aanet.euclidean_to_barycentric(emb)  # (B, k)
@@ -281,10 +297,8 @@ def run_inference_on_samples(
             all_latent_acts.append(lat_acts.float().cpu().numpy())
             all_bary.append(bary.float().cpu().numpy())
 
-            # Next-token logprobs: logits at trigger position → predicts trigger+1
             if collect_logits:
                 for i, ti in enumerate(trigger_indices):
-                    # Mark invalid if trigger is at last position
                     if ti >= seq_len - 1:
                         valid_mask.append(False)
                         all_lp.append(torch.zeros(logits.shape[-1], dtype=torch.float16))
@@ -297,13 +311,63 @@ def run_inference_on_samples(
 
             del logits, cache, acts, feature_acts
 
-    latent_acts = np.concatenate(all_latent_acts, axis=0)   # (N, n_latents)
-    bary_coords = np.concatenate(all_bary, axis=0)           # (N, k)
+    latent_acts = np.concatenate(all_latent_acts, axis=0)
+    bary_coords = np.concatenate(all_bary, axis=0)
     next_logprobs = None
     if collect_logits:
-        next_logprobs = torch.stack(all_lp).numpy()          # (N, vocab_size) float16
+        next_logprobs = torch.stack(all_lp).numpy()
 
     return latent_acts, bary_coords, next_logprobs, np.array(valid_mask, dtype=bool)
+
+
+def run_model_logits_for_simplex_samples(all_samples, model, hook_name, args):
+    """Run model forward only on simplex samples; use saved latent_acts and bary_coords.
+
+    Returns:
+        latent_acts:   (N, n_latents) float32  — from saved JSONL fields
+        bary_coords:   (N, k)         float32  — from saved JSONL fields
+        next_logprobs: (N, vocab)     float16
+        valid_mask:    (N,)           bool
+        vertex_labels: (N,)           int — argmax of bary_coords per sample
+    """
+    all_lp = []
+    valid_mask = []
+
+    for batch_start in range(0, len(all_samples), args.batch_size):
+        batch = all_samples[batch_start: batch_start + args.batch_size]
+
+        tokens = torch.tensor(
+            [s["chunk_token_ids"] for s in batch],
+            dtype=torch.long, device=args.device,
+        )
+        seq_len = tokens.shape[1]
+        trigger_indices = [s["trigger_token_indices"][0] for s in batch]
+
+        with torch.no_grad():
+            logits, cache = model.run_with_cache(
+                tokens, return_type="logits", names_filter=[hook_name]
+            )
+            for i, ti in enumerate(trigger_indices):
+                if ti >= seq_len - 1:
+                    valid_mask.append(False)
+                    all_lp.append(torch.zeros(logits.shape[-1], dtype=torch.float16))
+                else:
+                    valid_mask.append(True)
+                    lp = F.log_softmax(logits[i, ti, :].float(), dim=-1)
+                    all_lp.append(lp.half().cpu())
+            del logits, cache
+
+    latent_acts = np.array(
+        [s["latent_acts"] for s in all_samples], dtype=np.float32
+    )
+    bary_coords = np.array(
+        [s["barycentric_coords"] for s in all_samples], dtype=np.float32
+    )
+    next_logprobs = torch.stack(all_lp).numpy()
+    vertex_labels = np.argmax(bary_coords, axis=1).astype(int)
+
+    return (latent_acts, bary_coords, next_logprobs,
+            np.array(valid_mask, dtype=bool), vertex_labels)
 
 
 # =============================================================================
@@ -311,15 +375,11 @@ def run_inference_on_samples(
 # =============================================================================
 
 def run_classification_comparison(latent_acts, bary_coords, labels, label_name, cv_folds):
-    """Compare vertex/text-feature classification across predictors.
-
-    Returns dict with majority, best_latent, bary balanced accuracies.
-    """
+    """Compare vertex/text-feature classification across predictors."""
     n_latents = latent_acts.shape[1]
     classes, counts = np.unique(labels, return_counts=True)
     majority_acc = float(counts.max() / counts.sum())
 
-    # Best single latent
     best_latent_acc = 0.0
     best_latent_idx = -1
     for l in range(n_latents):
@@ -329,9 +389,7 @@ def run_classification_comparison(latent_acts, bary_coords, labels, label_name, 
             best_latent_acc = acc
             best_latent_idx = l
 
-    # Barycentric coordinate
     bary_acc = cv_balanced_accuracy(bary_coords, labels, n_splits=cv_folds)
-
     improvement = bary_acc - best_latent_acc
 
     print(f"    [{label_name}] majority={majority_acc:.3f}  "
@@ -356,25 +414,19 @@ def run_classification_comparison(latent_acts, bary_coords, labels, label_name, 
 
 def run_nexttoken_r2(latent_acts, bary_coords, next_logprobs, valid_mask,
                      n_top_tokens, cv_folds, tokenizer):
-    """Compare R² for predicting next-token log-probs: single latent vs. bary coord.
-
-    Returns dict with per-token and aggregate statistics.
-    """
-    # Use only valid samples (trigger not at last position)
+    """Compare R² for predicting next-token log-probs: single latent vs. bary coord."""
     lat = latent_acts[valid_mask]
     bary = bary_coords[valid_mask]
-    lp = next_logprobs[valid_mask].astype(np.float32)  # (N_valid, vocab_size)
+    lp = next_logprobs[valid_mask].astype(np.float32)
 
     if lat.shape[0] < 2 * cv_folds:
         print(f"    Too few valid samples ({lat.shape[0]}) for next-token analysis")
         return None
 
-    # Identify top-N tokens by log-prob variance across samples
     lp_var = lp.var(axis=0)
     top_token_ids = np.argsort(lp_var)[-n_top_tokens:]
-    lp_top = lp[:, top_token_ids]  # (N_valid, n_top_tokens)
+    lp_top = lp[:, top_token_ids]
 
-    # Decode top tokens for reporting
     top_token_strs = []
     for tid in top_token_ids:
         try:
@@ -383,7 +435,6 @@ def run_nexttoken_r2(latent_acts, bary_coords, next_logprobs, valid_mask,
             top_token_strs.append(str(int(tid)))
 
     n_latents = lat.shape[1]
-    k = bary.shape[1]
 
     print(f"    Computing R² for {n_top_tokens} tokens × {n_latents} latents + bary ...")
 
@@ -396,9 +447,8 @@ def run_nexttoken_r2(latent_acts, bary_coords, next_logprobs, valid_mask,
         for l in range(n_latents):
             r2_latents[t, l] = cv_r2_single(lat[:, l], y, n_splits=cv_folds)
 
-    r2_best_latent = r2_latents.max(axis=1)  # (n_top_tokens,)
+    r2_best_latent = r2_latents.max(axis=1)
 
-    # Paired Wilcoxon test: bary vs. best-single-latent across top tokens
     try:
         w_stat, w_pval = wilcoxon(r2_bary, r2_best_latent, alternative="greater")
     except Exception:
@@ -418,7 +468,7 @@ def run_nexttoken_r2(latent_acts, bary_coords, next_logprobs, valid_mask,
         "top_token_strs": top_token_strs,
         "r2_bary": r2_bary.tolist(),
         "r2_best_latent": r2_best_latent.tolist(),
-        "r2_latents_matrix": r2_latents.tolist(),  # (n_top_tokens, n_latents)
+        "r2_latents_matrix": r2_latents.tolist(),
         "mean_r2_bary": mean_bary,
         "mean_r2_best_latent": mean_best,
         "frac_bary_wins": frac_bary_wins,
@@ -428,38 +478,143 @@ def run_nexttoken_r2(latent_acts, bary_coords, next_logprobs, valid_mask,
 
 
 # =============================================================================
+# Analysis split
+# =============================================================================
+
+def analyze_split(
+    tag,
+    all_samples,
+    latent_acts,
+    bary_coords,
+    next_logprobs,
+    valid_mask,
+    vertex_labels,
+    n_latents, k,
+    args, tokenizer, nlp, cluster_key,
+):
+    """Run classification + next-token R² for one data split.
+
+    Returns result dict with keys: tag, n_samples, classification, nexttoken_r2.
+    """
+    print(f"\n  [{tag}] {len(all_samples)} samples")
+
+    # --- Classification: vertex membership ---
+    print(f"  [{tag}] Classification comparisons:")
+    classification_results = []
+
+    vc = run_classification_comparison(
+        latent_acts, bary_coords, vertex_labels,
+        label_name="vertex_id", cv_folds=args.cv_folds,
+    )
+    classification_results.append(vc)
+
+    # --- Classification: primary text feature ---
+    if nlp is not None and cluster_key in CLUSTER_EXTRACTORS and all_samples:
+        # Only vertex-derived samples have full_text trigger word metadata
+        _, extractor_fn = CLUSTER_EXTRACTORS[cluster_key]
+        rows = []
+        sample_to_row = {}
+        for si, s in enumerate(all_samples):
+            for tw, twi in zip(s.get("trigger_words", []), s.get("trigger_word_indices", [])):
+                if tw.strip():
+                    sample_to_row[si] = len(rows)
+                    rows.append({
+                        "vertex_id": int(vertex_labels[si]),
+                        "trigger_word": tw,
+                        "trigger_word_idx": twi,
+                        "full_text": s.get("full_text", ""),
+                    })
+                    break
+
+        if rows:
+            try:
+                df, feature_cols, primary_feature = extractor_fn(rows, nlp)
+                valid_tf = [
+                    si for si, ri in sample_to_row.items()
+                    if ri < len(df) and df.iloc[ri][primary_feature] is not None
+                ]
+                if len(valid_tf) > 10:
+                    tf_labels_raw = [
+                        df.iloc[sample_to_row[si]][primary_feature]
+                        for si in valid_tf
+                    ]
+                    le = LabelEncoder()
+                    tf_labels = le.fit_transform(tf_labels_raw)
+                    lat_tf = latent_acts[valid_tf]
+                    bary_tf = bary_coords[valid_tf]
+
+                    tfc = run_classification_comparison(
+                        lat_tf, bary_tf, tf_labels,
+                        label_name=primary_feature, cv_folds=args.cv_folds,
+                    )
+                    tfc["label_classes"] = le.classes_.tolist()
+                    classification_results.append(tfc)
+            except Exception as e:
+                print(f"    [{tag}] Text feature extraction failed: {e}")
+
+    # --- Next-token R² ---
+    nexttoken_result = None
+    if not args.skip_nexttoken and next_logprobs is not None:
+        print(f"\n  [{tag}] Next-token R² analysis (top-{args.n_top_tokens} tokens):")
+        nexttoken_result = run_nexttoken_r2(
+            latent_acts, bary_coords, next_logprobs, valid_mask,
+            n_top_tokens=args.n_top_tokens,
+            cv_folds=args.cv_folds,
+            tokenizer=tokenizer,
+        )
+
+    return {
+        "tag": tag,
+        "n_samples": len(all_samples),
+        "classification": classification_results,
+        "nexttoken_r2": nexttoken_result,
+    }
+
+
+# =============================================================================
 # Plots
 # =============================================================================
 
-def plot_r2_comparison(r2_bary, r2_best_latent, cluster_key, output_dir):
-    """Box/scatter comparison of R² distributions."""
-    fig, axes = plt.subplots(1, 2, figsize=(10, 4.5))
+def plot_r2_comparison(splits_results, cluster_key, output_dir):
+    """Box/scatter comparison of R² distributions for all data splits."""
+    splits = [r for r in splits_results if r.get("nexttoken_r2") is not None]
+    if not splits:
+        return
 
-    # Left: box plots
-    ax = axes[0]
-    ax.boxplot(
-        [r2_best_latent, r2_bary],
-        labels=["Best single latent", "Barycentric coord"],
-        patch_artist=True,
-        boxprops=dict(facecolor='lightblue'),
-        medianprops=dict(color='navy', linewidth=2),
-    )
-    ax.set_ylabel("CV R²")
-    ax.set_title(f"Cluster {cluster_key}\nNext-token R² distribution (top-{len(r2_bary)} tokens)")
-    ax.axhline(0, color='gray', linewidth=0.8, linestyle='--')
+    n_splits = len(splits)
+    fig, axes = plt.subplots(n_splits, 2, figsize=(10, 4.5 * n_splits), squeeze=False)
 
-    # Right: paired scatter
-    ax = axes[1]
-    lim = max(max(r2_best_latent), max(r2_bary)) * 1.1 + 0.01
-    ax.scatter(r2_best_latent, r2_bary, s=30, alpha=0.7, color='steelblue')
-    ax.plot([0, lim], [0, lim], 'k--', linewidth=0.8, label='y=x')
-    ax.set_xlabel("Best single latent R²")
-    ax.set_ylabel("Barycentric R²")
-    ax.set_title("Paired comparison (each point = one token)")
-    ax.legend(fontsize=8)
-    ax.set_xlim(-0.02, lim)
-    ax.set_ylim(-0.02, lim)
-    ax.set_aspect('equal')
+    for row, split in enumerate(splits):
+        tag = split["tag"]
+        nr = split["nexttoken_r2"]
+        r2_bary = np.array(nr["r2_bary"])
+        r2_best = np.array(nr["r2_best_latent"])
+
+        # Box
+        ax = axes[row, 0]
+        ax.boxplot(
+            [r2_best, r2_bary],
+            labels=["Best single latent", "Barycentric coord"],
+            patch_artist=True,
+            boxprops=dict(facecolor='lightblue'),
+            medianprops=dict(color='navy', linewidth=2),
+        )
+        ax.set_ylabel("CV R²")
+        ax.set_title(f"Cluster {cluster_key} [{tag}]\n"
+                     f"Next-token R² (top-{len(r2_bary)} tokens, N={nr['n_valid_samples']})")
+        ax.axhline(0, color='gray', linewidth=0.8, linestyle='--')
+
+        # Scatter
+        ax = axes[row, 1]
+        lim = max(r2_best.max(), r2_bary.max()) * 1.1 + 0.01
+        ax.scatter(r2_best, r2_bary, s=30, alpha=0.7, color='steelblue')
+        ax.plot([0, lim], [0, lim], 'k--', linewidth=0.8)
+        ax.set_xlabel("Best single latent R²")
+        ax.set_ylabel("Barycentric R²")
+        ax.set_title("Paired comparison (each point = one token)")
+        ax.set_xlim(-0.02, lim)
+        ax.set_ylim(-0.02, lim)
+        ax.set_aspect('equal')
 
     fig.tight_layout()
     out_path = Path(output_dir) / f"cluster_{cluster_key}_r2_comparison.png"
@@ -468,38 +623,41 @@ def plot_r2_comparison(r2_bary, r2_best_latent, cluster_key, output_dir):
     print(f"    R² plot → {out_path}")
 
 
-def plot_classification_bar(classification_results, cluster_key, output_dir):
-    """Bar chart comparing classification accuracies."""
-    targets = [r["label_name"] for r in classification_results]
-    n = len(targets)
-    if n == 0:
-        return
+def plot_classification_bar(splits_results, cluster_key, output_dir):
+    """Bar chart comparing classification accuracies for all data splits."""
+    for split in splits_results:
+        tag = split["tag"]
+        classification_results = split["classification"]
+        targets = [r["label_name"] for r in classification_results]
+        n = len(targets)
+        if n == 0:
+            continue
 
-    x = np.arange(n)
-    width = 0.25
-    fig, ax = plt.subplots(figsize=(max(6, n * 2), 4))
+        x = np.arange(n)
+        width = 0.25
+        fig, ax = plt.subplots(figsize=(max(6, n * 2), 4))
 
-    majority = [r["majority_acc"] for r in classification_results]
-    best_lat = [r["best_latent_balanced_acc"] for r in classification_results]
-    bary = [r["bary_balanced_acc"] for r in classification_results]
+        majority = [r["majority_acc"] for r in classification_results]
+        best_lat = [r["best_latent_balanced_acc"] for r in classification_results]
+        bary = [r["bary_balanced_acc"] for r in classification_results]
 
-    ax.bar(x - width, majority, width, label="Majority baseline", color='lightgray')
-    ax.bar(x, best_lat, width, label="Best single latent", color='steelblue')
-    ax.bar(x + width, bary, width, label="Barycentric coord", color='tomato')
+        ax.bar(x - width, majority, width, label="Majority baseline", color='lightgray')
+        ax.bar(x, best_lat, width, label="Best single latent", color='steelblue')
+        ax.bar(x + width, bary, width, label="Barycentric coord", color='tomato')
 
-    ax.set_xticks(x)
-    ax.set_xticklabels(targets, rotation=15, ha='right', fontsize=9)
-    ax.set_ylabel("Balanced accuracy")
-    ax.set_title(f"Cluster {cluster_key}: classification comparison")
-    ax.legend(fontsize=9)
-    ax.set_ylim(0, 1.05)
-    ax.axhline(1.0, color='gray', linewidth=0.5, linestyle='--')
+        ax.set_xticks(x)
+        ax.set_xticklabels(targets, rotation=15, ha='right', fontsize=9)
+        ax.set_ylabel("Balanced accuracy")
+        ax.set_title(f"Cluster {cluster_key} [{tag}]: classification comparison")
+        ax.legend(fontsize=9)
+        ax.set_ylim(0, 1.05)
+        ax.axhline(1.0, color='gray', linewidth=0.5, linestyle='--')
 
-    fig.tight_layout()
-    out_path = Path(output_dir) / f"cluster_{cluster_key}_classification.png"
-    fig.savefig(str(out_path), dpi=150, bbox_inches='tight')
-    plt.close(fig)
-    print(f"    Classification plot → {out_path}")
+        fig.tight_layout()
+        out_path = Path(output_dir) / f"cluster_{cluster_key}_{tag}_classification.png"
+        fig.savefig(str(out_path), dpi=150, bbox_inches='tight')
+        plt.close(fig)
+        print(f"    Classification plot [{tag}] → {out_path}")
 
 
 # =============================================================================
@@ -512,18 +670,15 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Determine clusters
     if args.clusters:
         cluster_keys = [c.strip() for c in args.clusters.split(',') if c.strip()]
     else:
         cluster_keys = [k for k in CLUSTER_EXTRACTORS if k not in {"512_464", "768_484", "512_292"}]
         print(f"Using clusters with feature extractors: {cluster_keys}")
 
-    # Login
     if args.hf_token:
         login(token=args.hf_token)
 
-    # Load model + SAE (shared across clusters)
     print(f"\nLoading model: {args.model_name}")
     model = HookedTransformer.from_pretrained_no_processing(
         args.model_name,
@@ -545,7 +700,6 @@ def main():
     layer_idx = int(args.sae_id.split("/")[0].split("_")[1])
     hook_name = f"blocks.{layer_idx}.hook_resid_post"
 
-    # Load spacy
     try:
         import spacy
         nlp = spacy.load("en_core_web_sm")
@@ -565,9 +719,7 @@ def main():
         cluster_id = int(cluster_id_str)
 
         # Load prepared vertex samples
-        prepared_path = (
-            Path(args.prepared_samples_dir) / f"cluster_{cluster_key}.json"
-        )
+        prepared_path = Path(args.prepared_samples_dir) / f"cluster_{cluster_key}.json"
         if not prepared_path.exists():
             print(f"  Prepared samples not found: {prepared_path}, skipping")
             continue
@@ -582,12 +734,12 @@ def main():
             continue
 
         n_latents = len(latent_indices)
-        total_samples = sum(len(v) for v in samples_by_vertex.values())
-        print(f"  k={k}, n_latents={n_latents}, total vertex samples={total_samples}")
+        total_vertex_samples = sum(len(v) for v in samples_by_vertex.values())
+        print(f"  k={k}, n_latents={n_latents}, total vertex samples={total_vertex_samples}")
 
         # Load AANet
         from AAnet.AAnet_torch.models.AAnet_vanilla import AAnet_vanilla
-        model_path = find_aanet_model(args.csv_dir, n_clusters, cluster_id, k)
+        model_path = find_model_path(args.csv_dir, n_clusters, cluster_id, k)
         if model_path is None:
             print(f"  AANet model not found in {args.csv_dir}, skipping")
             continue
@@ -609,16 +761,18 @@ def main():
             latent_indices, device=args.device, dtype=torch.long
         )
 
-        # Build flat sample list preserving vertex labels
+        # ----------------------------------------------------------------
+        # Build vertex sample list
+        # ----------------------------------------------------------------
         rng = np.random.default_rng(seed=42)
-        all_samples = []
+        vertex_samples = []
         for vertex_id, samples in samples_by_vertex.items():
             valid = [s for s in samples if s.get("trigger_token_indices")]
             if args.max_samples_per_vertex and len(valid) > args.max_samples_per_vertex:
                 indices = rng.choice(len(valid), args.max_samples_per_vertex, replace=False)
                 valid = [valid[i] for i in indices]
             for sample in valid:
-                all_samples.append({
+                vertex_samples.append({
                     "vertex_id": vertex_id,
                     "chunk_token_ids": sample["chunk_token_ids"],
                     "trigger_token_indices": sample["trigger_token_indices"],
@@ -627,110 +781,87 @@ def main():
                     "full_text": sample.get("full_text", ""),
                 })
 
-        if not all_samples:
-            print(f"  No valid samples, skipping")
-            continue
+        splits_results = []
 
-        # Run model inference
-        print(f"  Running inference on {len(all_samples)} samples ...")
-        collect_logits = not args.skip_nexttoken
-        latent_acts, bary_coords, next_logprobs, valid_mask = run_inference_on_samples(
-            all_samples, model, sae, aanet, hook_name,
-            cluster_indices_tensor, args,
-            collect_logits=collect_logits,
-        )
-        vertex_labels = np.array([s["vertex_id"] for s in all_samples])
-
-        # --- Classification comparisons ---
-        print(f"\n  Classification comparisons:")
-        classification_results = []
-
-        # Vertex membership
-        vc = run_classification_comparison(
-            latent_acts, bary_coords, vertex_labels,
-            label_name="vertex_id", cv_folds=args.cv_folds,
-        )
-        classification_results.append(vc)
-
-        # Primary text feature from 1c (if spacy available and extractor defined)
-        if nlp is not None and cluster_key in CLUSTER_EXTRACTORS:
-            _, extractor_fn = CLUSTER_EXTRACTORS[cluster_key]
-            # Build one row per sample (first non-empty trigger word only),
-            # tracking which sample index each row came from.
-            rows = []
-            sample_to_row = {}  # sample_idx -> row_idx in `rows`
-            for si, s in enumerate(all_samples):
-                for tw, twi in zip(s["trigger_words"], s["trigger_word_indices"]):
-                    if tw.strip():
-                        sample_to_row[si] = len(rows)
-                        rows.append({
-                            "vertex_id": s["vertex_id"],
-                            "trigger_word": tw,
-                            "trigger_word_idx": twi,
-                            "full_text": s["full_text"],
-                        })
-                        break  # first trigger word only
-
-            if rows:
-                try:
-                    df, feature_cols, primary_feature = extractor_fn(rows, nlp)
-                    # Map back to per-sample labels
-                    valid_tf = [
-                        si for si, ri in sample_to_row.items()
-                        if ri < len(df) and df.iloc[ri][primary_feature] is not None
-                    ]
-                    if len(valid_tf) > 10:
-                        tf_labels_raw = [
-                            df.iloc[sample_to_row[si]][primary_feature]
-                            for si in valid_tf
-                        ]
-                        le = LabelEncoder()
-                        tf_labels = le.fit_transform(tf_labels_raw)
-                        lat_tf = latent_acts[valid_tf]
-                        bary_tf = bary_coords[valid_tf]
-
-                        tfc = run_classification_comparison(
-                            lat_tf, bary_tf, tf_labels,
-                            label_name=primary_feature, cv_folds=args.cv_folds,
-                        )
-                        tfc["label_classes"] = le.classes_.tolist()
-                        classification_results.append(tfc)
-                except Exception as e:
-                    print(f"    Text feature extraction failed: {e}")
-
-        # --- Next-token R² ---
-        nexttoken_result = None
-        if not args.skip_nexttoken and next_logprobs is not None:
-            print(f"\n  Next-token R² analysis (top-{args.n_top_tokens} tokens):")
-            nexttoken_result = run_nexttoken_r2(
-                latent_acts, bary_coords, next_logprobs, valid_mask,
-                n_top_tokens=args.n_top_tokens,
-                cv_folds=args.cv_folds,
-                tokenizer=tokenizer,
+        # ----------------------------------------------------------------
+        # Vertex split
+        # ----------------------------------------------------------------
+        if vertex_samples:
+            print(f"\n  Running vertex inference on {len(vertex_samples)} samples ...")
+            collect_logits = not args.skip_nexttoken
+            lat_v, bary_v, lp_v, mask_v = run_inference_on_vertex_samples(
+                vertex_samples, model, sae, aanet, hook_name,
+                cluster_indices_tensor, args,
+                collect_logits=collect_logits,
             )
+            vlabels_v = np.array([s["vertex_id"] for s in vertex_samples])
 
-        # --- Plots ---
+            vertex_result = analyze_split(
+                tag="vertex",
+                all_samples=vertex_samples,
+                latent_acts=lat_v,
+                bary_coords=bary_v,
+                next_logprobs=lp_v,
+                valid_mask=mask_v,
+                vertex_labels=vlabels_v,
+                n_latents=n_latents, k=k,
+                args=args, tokenizer=tokenizer, nlp=nlp,
+                cluster_key=cluster_key,
+            )
+            splits_results.append(vertex_result)
+        else:
+            lat_v = bary_v = lp_v = mask_v = vlabels_v = None
+            print("  No valid vertex samples, skipping vertex split")
+
+        # ----------------------------------------------------------------
+        # Simplex split (if simplex_dir provided)
+        # ----------------------------------------------------------------
+        lat_s = bary_s = lp_s = mask_s = vlabels_s = None
+        if args.simplex_dir:
+            simplex_records = load_simplex_samples(
+                args.simplex_dir, n_clusters, cluster_id, k,
+                max_samples=args.max_simplex_samples, rng=rng,
+            )
+            if simplex_records:
+                print(f"\n  Running simplex model-logit inference on {len(simplex_records)} samples ...")
+                lat_s, bary_s, lp_s, mask_s, vlabels_s = run_model_logits_for_simplex_samples(
+                    simplex_records, model, hook_name, args,
+                )
+                simplex_result = analyze_split(
+                    tag="simplex",
+                    all_samples=simplex_records,
+                    latent_acts=lat_s,
+                    bary_coords=bary_s,
+                    next_logprobs=lp_s,
+                    valid_mask=mask_s,
+                    vertex_labels=vlabels_s,
+                    n_latents=n_latents, k=k,
+                    args=args, tokenizer=tokenizer, nlp=nlp,
+                    cluster_key=cluster_key,
+                )
+                splits_results.append(simplex_result)
+            else:
+                print(f"  No simplex samples found for cluster {cluster_key}")
+
+        # ----------------------------------------------------------------
+        # Plots
+        # ----------------------------------------------------------------
         cluster_out_dir = output_dir / f"cluster_{cluster_key}"
         cluster_out_dir.mkdir(exist_ok=True)
 
-        if not args.skip_plots:
-            plot_classification_bar(classification_results, cluster_key, cluster_out_dir)
-            if nexttoken_result is not None:
-                plot_r2_comparison(
-                    np.array(nexttoken_result["r2_bary"]),
-                    np.array(nexttoken_result["r2_best_latent"]),
-                    cluster_key, cluster_out_dir,
-                )
+        if not args.skip_plots and splits_results:
+            plot_classification_bar(splits_results, cluster_key, cluster_out_dir)
+            plot_r2_comparison(splits_results, cluster_key, cluster_out_dir)
 
-        # --- Save results ---
+        # ----------------------------------------------------------------
+        # Save per-cluster results
+        # ----------------------------------------------------------------
         result = {
             "cluster_key": cluster_key,
             "k": k,
             "n_latents": n_latents,
             "latent_indices": latent_indices,
-            "n_samples": len(all_samples),
-            "classification": classification_results,
-            "nexttoken_r2": nexttoken_result,
+            "splits": splits_results,
         }
         result_path = output_dir / f"cluster_{cluster_key}_results.json"
         with open(result_path, "w") as f:
@@ -740,43 +871,56 @@ def main():
         all_results[cluster_key] = {
             "k": k,
             "n_latents": n_latents,
-            "classification": classification_results,
-            "nexttoken_r2": {
-                k2: v for k2, v in (nexttoken_result or {}).items()
-                if k2 not in {"r2_latents_matrix", "top_token_strs"}
-            } if nexttoken_result else None,
+            "splits": [
+                {
+                    "tag": s["tag"],
+                    "n_samples": s["n_samples"],
+                    "classification": s["classification"],
+                    "nexttoken_r2": {
+                        kk: vv for kk, vv in (s["nexttoken_r2"] or {}).items()
+                        if kk not in {"r2_latents_matrix", "top_token_strs"}
+                    } if s["nexttoken_r2"] else None,
+                }
+                for s in splits_results
+            ],
         }
 
-    # Save combined
+    # Save combined JSON
     combined_path = output_dir / "all_results.json"
     with open(combined_path, "w") as f:
         json.dump(all_results, f, indent=2)
     print(f"\nAll results → {combined_path}")
 
+    # ----------------------------------------------------------------
     # Summary table
-    print(f"\n{'=' * 100}")
+    # ----------------------------------------------------------------
+    print(f"\n{'=' * 110}")
     print("SUMMARY")
-    print(f"{'=' * 100}")
-    print(f"{'Cluster':>12}  {'k':>3}  {'n_lat':>5}  "
-          f"{'Target':>18}  {'Majority':>9}  {'BestLatent':>10}  {'Bary':>7}  "
-          f"{'Δ':>6}  {'BaryR²':>7}  {'LatR²':>6}  {'p':>7}")
-    print("  " + "-" * 90)
+    print(f"{'=' * 110}")
+    header = (f"{'Cluster':>12}  {'Split':>8}  {'k':>3}  "
+              f"{'Target':>18}  {'Majority':>9}  {'BestLat':>8}  {'Bary':>7}  "
+              f"{'Δ':>6}  {'BaryR²':>7}  {'LatR²':>7}  {'BaryWins':>9}  {'p':>8}")
+    print(header)
+    print("  " + "-" * 100)
     for ck, res in all_results.items():
         k_ = res["k"]
         n_lat = res["n_latents"]
-        for clf in res["classification"]:
-            nr = res.get("nexttoken_r2")
-            bary_r2_str = f"{nr['mean_r2_bary']:.3f}" if nr else "  -  "
-            lat_r2_str = f"{nr['mean_r2_best_latent']:.3f}" if nr else "  -  "
-            p_str = f"{nr['wilcoxon_pval']:.4f}" if nr else "  -  "
+        for split in res["splits"]:
+            tag = split["tag"]
+            nr = split.get("nexttoken_r2")
+            bary_r2_str = f"{nr['mean_r2_bary']:.4f}" if nr else "    -   "
+            lat_r2_str  = f"{nr['mean_r2_best_latent']:.4f}" if nr else "    -   "
+            wins_str    = f"{nr['frac_bary_wins']:.0%}" if nr else "    -   "
+            p_str       = f"{nr['wilcoxon_pval']:.4f}" if nr else "    -   "
+            first_clf = split["classification"][0] if split["classification"] else {}
             print(
-                f"  {ck:>12}  {k_:>3}  {n_lat:>5}  "
-                f"{clf['label_name']:>18}  "
-                f"{clf['majority_acc']:>9.3f}  "
-                f"{clf['best_latent_balanced_acc']:>10.3f}  "
-                f"{clf['bary_balanced_acc']:>7.3f}  "
-                f"{clf['improvement']:>+6.3f}  "
-                f"{bary_r2_str:>7}  {lat_r2_str:>6}  {p_str:>7}"
+                f"  {ck:>12}  {tag:>8}  {k_:>3}  "
+                f"{first_clf.get('label_name','?'):>18}  "
+                f"{first_clf.get('majority_acc',0):>9.3f}  "
+                f"{first_clf.get('best_latent_balanced_acc',0):>8.3f}  "
+                f"{first_clf.get('bary_balanced_acc',0):>7.3f}  "
+                f"{first_clf.get('improvement',0):>+6.3f}  "
+                f"{bary_r2_str:>7}  {lat_r2_str:>7}  {wins_str:>9}  {p_str:>8}"
             )
 
 

@@ -21,6 +21,7 @@ set -e
 export PYTHONPATH=.
 
 PREPARED_SAMPLES_DIR="/workspace/outputs/interpretations/prepared_samples_broad_2"
+SIMPLEX_DIR="/workspace/outputs/simplex_samples"
 SOURCE_DIR="/workspace/outputs/selected_clusters_broad_2"
 CSV_DIR="/workspace/outputs/real_data_analysis_canonical"
 OUTPUT_DIR="/workspace/outputs/validation/latent_vs_barycentric"
@@ -40,6 +41,7 @@ echo ""
 
 python -u validation/latent_vs_barycentric.py \
     --prepared_samples_dir "${PREPARED_SAMPLES_DIR}" \
+    --simplex_dir "${SIMPLEX_DIR}" \
     --source_dir "${SOURCE_DIR}" \
     --csv_dir "${CSV_DIR}" \
     --output_dir "${OUTPUT_DIR}" \
@@ -56,7 +58,8 @@ python -u validation/latent_vs_barycentric.py \
     --aanet_layer_widths 64 32 \
     --aanet_simplex_scale 1.0 \
     --aanet_noise 0.05 \
-    --max_samples_per_vertex 200
+    --max_samples_per_vertex 200 \
+    --max_simplex_samples 500
 
 echo ""
 echo "============================================================"

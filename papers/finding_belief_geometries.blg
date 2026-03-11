@@ -1,0 +1,48 @@
+This is BibTeX, Version 0.99d (TeX Live 2022/dev/Debian)
+Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
+The top-level auxiliary file: finding_belief_geometries.aux
+The style file: plainnat.bst
+Database file #1: references.bib
+Warning--empty booktitle in bradley2000ksubspace
+You've used 13 entries,
+            2773 wiz_defined-function locations,
+            663 strings with 7324 characters,
+and the built_in function-call counts, 6373 in all, are:
+= -- 533
+> -- 485
+< -- 6
++ -- 164
+- -- 150
+* -- 533
+:= -- 1026
+add.period$ -- 43
+call.type$ -- 13
+change.case$ -- 85
+chr.to.int$ -- 12
+cite$ -- 27
+duplicate$ -- 272
+empty$ -- 450
+format.name$ -- 170
+if$ -- 1301
+int.to.chr$ -- 2
+int.to.str$ -- 1
+missing$ -- 13
+newline$ -- 76
+num.names$ -- 52
+pop$ -- 170
+preamble$ -- 1
+purify$ -- 72
+quote$ -- 0
+skip$ -- 221
+stack$ -- 0
+substring$ -- 106
+swap$ -- 24
+text.length$ -- 2
+text.prefix$ -- 0
+top$ -- 0
+type$ -- 143
+warning$ -- 1
+while$ -- 46
+width$ -- 0
+write$ -- 173
+(There was 1 warning)

@@ -1,0 +1,92 @@
+\begin{thebibliography}{13}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Bloom et~al.(2024)Bloom, Bricken, et~al.]{saelens2024}
+Joseph Bloom, Trenton Bricken, et~al.
+\newblock {SAELens}: Towards scalable open-source {S}parse {A}utoencoders.
+\newblock \emph{GitHub}, 2024.
+\newblock URL \url{https://github.com/jbloomAus/SAELens}.
+
+\bibitem[Bradley and Mangasarian(2000)]{bradley2000ksubspace}
+Paul~S Bradley and Olvi~L Mangasarian.
+\newblock k-plane clustering.
+\newblock volume~16, pages 23--32. Springer, 2000.
+
+\bibitem[Bricken et~al.(2023)Bricken, Templeton, Batson, Chen, Jermyn, Conerly,
+  Turner, Anil, Denison, Askell, et~al.]{bricken2023monosemanticity}
+Trenton Bricken, Adly Templeton, Joshua Batson, Brian Chen, Adam Jermyn, Tom
+  Conerly, Nick Turner, Cem Anil, Carson Denison, Amanda Askell, et~al.
+\newblock Towards monosemanticity: Decomposing language models with dictionary
+  learning.
+\newblock \emph{Transformer Circuits Thread}, 2023.
+\newblock URL \url{https://transformer-circuits.pub/2023/monosemanticity/}.
+
+\bibitem[Chua et~al.(2024)]{chua2024geometry}
+Jack Chua et~al.
+\newblock The geometry of concepts: {S}parse autoencoder feature structure.
+\newblock \emph{arXiv preprint arXiv:2410.19750}, 2024.
+
+\bibitem[Cunningham et~al.(2023)Cunningham, Ewart, Riggs, Huben, and
+  Sharkey]{cunningham2023sparse}
+Hoagy Cunningham, Aidan Ewart, Logan Riggs, Robert Huben, and Lee Sharkey.
+\newblock Sparse autoencoders find highly interpretable features in language
+  models.
+\newblock \emph{arXiv preprint arXiv:2309.08600}, 2023.
+
+\bibitem[Cutler and Breiman(1994)]{cutler1994archetypal}
+Adele Cutler and Leo Breiman.
+\newblock Archetypal analysis.
+\newblock \emph{Technometrics}, 36\penalty0 (4):\penalty0 338--347, 1994.
+
+\bibitem[Ferrando et~al.(2024)Ferrando, Sarti, Bentivogli,
+  et~al.]{ferrando2024}
+Javier Ferrando, Gabriele Sarti, Luisa Bentivogli, et~al.
+\newblock A primer on the inner workings of transformer-based language models.
+\newblock \emph{arXiv preprint arXiv:2405.00208}, 2024.
+
+\bibitem[Korem et~al.(2019)Korem, Shai, and Tishby]{korem2019finding}
+Yael Korem, Adam~S Shai, and Naftali Tishby.
+\newblock Finding archetypal spaces using neural networks.
+\newblock \emph{arXiv preprint arXiv:1901.09078}, 2019.
+
+\bibitem[Marzen and Crutchfield(2017)]{marzen2017predictive}
+Sarah~E Marzen and James~P Crutchfield.
+\newblock Predictive rate-distortion for infinite-order {Markov} chains.
+\newblock \emph{Journal of Statistical Physics}, 168\penalty0 (6):\penalty0
+  1312--1339, 2017.
+
+\bibitem[Piotrowski et~al.(2025)Piotrowski, Riechers, Filan, and
+  Shai]{piotrowski2025constrained}
+Mateusz Piotrowski, Paul~M Riechers, Daniel Filan, and Adam~S Shai.
+\newblock Constrained belief updates explain geometric structures in
+  transformer representations.
+\newblock \emph{arXiv preprint arXiv:2502.01954}, 2025.
+
+\bibitem[Riechers et~al.(2025{\natexlab{a}})Riechers, Bigelow, Alt, and
+  Shai]{riechers2025icl}
+Paul~M Riechers, Henry~R Bigelow, Eric~A Alt, and Adam Shai.
+\newblock Next-token pretraining implies in-context learning.
+\newblock \emph{arXiv preprint arXiv:2505.18373}, 2025{\natexlab{a}}.
+
+\bibitem[Riechers et~al.(2025{\natexlab{b}})Riechers, Elliott, and
+  Shai]{riechers2025quantum}
+Paul~M Riechers, Thomas~J Elliott, and Adam~S Shai.
+\newblock Neural networks leverage nominally quantum and post-quantum
+  representations.
+\newblock \emph{arXiv preprint arXiv:2507.07432}, 2025{\natexlab{b}}.
+
+\bibitem[Shai et~al.(2024)Shai, Marzen, Teixeira, Gietelink~Oldenziel, and
+  Riechers]{shai2024transformers}
+Adam~S Shai, Sarah~E Marzen, Lucas Teixeira, Alexander Gietelink~Oldenziel, and
+  Paul~M Riechers.
+\newblock Transformers represent belief state geometry in their residual
+  stream.
+\newblock In \emph{Advances in Neural Information Processing Systems
+  (NeurIPS)}, 2024.
+\newblock arXiv:2405.15943.
+
+\end{thebibliography}

@@ -67,8 +67,8 @@ def compute_nc_backbone(N11, z_threshold=1.96, min_weight=1, verbose=True):
     # We compute row sums then subtract diagonal.
     if verbose:
         print("  Computing node strengths...")
-    diag_vals = np.diag(N11).astype(np.float64)
-    row_sums = N11.sum(axis=1).astype(np.float64)
+    diag_vals = np.diag(N11).astype(np.float32)
+    row_sums = N11.sum(axis=1).astype(np.float32)
     s = row_sums - diag_vals   # shape (n,)
 
     # Total directed weight: W = sum_i s_i = 2 * (sum of upper triangle)
@@ -80,14 +80,12 @@ def compute_nc_backbone(N11, z_threshold=1.96, min_weight=1, verbose=True):
     # --- convert upper triangle to COO sparse (exclude diagonal) ---
     if verbose:
         print("  Converting to sparse upper triangle...")
-    # Keep int64 through sparsification to avoid a full 2GB float64 copy;
-    # convert to float64 only for the (much smaller) non-zero values.
-    N11_sp = sparse.csr_matrix(N11)           # int64, only non-zeros stored
+    N11_sp = sparse.csr_matrix(N11)
     upper = sparse.triu(N11_sp, k=1).tocoo()  # k=1 excludes diagonal
 
     rows = upper.row.astype(np.int32)
     cols = upper.col.astype(np.int32)
-    weights = upper.data.astype(np.float64)   # convert only nnz values
+    weights = upper.data.astype(np.float32)   # convert only nnz values
 
     n_edges_raw = len(weights)
     nonzero_mask = weights > 0
@@ -108,8 +106,8 @@ def compute_nc_backbone(N11, z_threshold=1.96, min_weight=1, verbose=True):
         return {
             'rows': np.array([], dtype=np.int32),
             'cols': np.array([], dtype=np.int32),
-            'weights': np.array([], dtype=np.float64),
-            'z_scores': np.array([], dtype=np.float64),
+            'weights': np.array([], dtype=np.float32),
+            'z_scores': np.array([], dtype=np.float32),
             'node_strengths': s,
             'n_edges_raw': n_edges_raw,
             'n_edges_backbone': 0,
@@ -131,7 +129,7 @@ def compute_nc_backbone(N11, z_threshold=1.96, min_weight=1, verbose=True):
     variance = W * p_ij * (1.0 - p_ij)
     std = np.sqrt(np.maximum(variance, 1e-10))
 
-    z_scores = (weights - expected) / std
+    z_scores = (weights - expected) / std  # float32
 
     # --- threshold ---
     keep = z_scores > z_threshold
@@ -155,6 +153,68 @@ def compute_nc_backbone(N11, z_threshold=1.96, min_weight=1, verbose=True):
         'n_edges_raw': n_edges_raw,
         'n_edges_backbone': n_keep,
     }
+
+
+# ---------------------------------------------------------------------------
+# kNN sparsification
+# ---------------------------------------------------------------------------
+
+def apply_knn_sparsification(rows, cols, z_scores, weights, k, verbose=True):
+    """Further sparsify backbone by keeping only each node's top-k edges by z-score.
+
+    Uses AND logic: edge (i,j) is retained only if j is among i's top-k neighbours
+    AND i is among j's top-k neighbours.  This guarantees every node has degree ≤ k,
+    which breaks the giant connected component that survives NC backbone alone.
+
+    Args:
+        rows, cols:  int32 arrays of backbone edge endpoints (upper triangle).
+        z_scores:    float64 z-scores for each backbone edge.
+        weights:     float64 raw co-occurrence counts for each backbone edge.
+        k:           Maximum neighbours to retain per node.  k=0 → no-op.
+        verbose:     Print progress.
+
+    Returns:
+        rows, cols, z_scores, weights arrays filtered to surviving edges.
+    """
+    n_edges = len(rows)
+    if k <= 0 or n_edges == 0:
+        return rows, cols, z_scores, weights
+
+    def _top_k_mask(node_arr, z_arr):
+        """Boolean mask: True where edge is in node's top-k by z-score.
+
+        Fully vectorised: sort by (node asc, z desc), then rank within group
+        via index - searchsorted-of-first-occurrence.
+        """
+        order = np.lexsort((-z_arr, node_arr))          # node asc, z desc
+        node_sorted = node_arr[order]
+        # rank within group = position - index of group's first element
+        rank_sorted = np.arange(n_edges) - np.searchsorted(node_sorted, node_sorted)
+        mask_sorted = rank_sorted < k
+        mask = np.empty(n_edges, dtype=bool)
+        mask[order] = mask_sorted
+        return mask
+
+    mask_rows = _top_k_mask(rows, z_scores)
+    keep = mask_rows & _top_k_mask(cols, z_scores)
+    del mask_rows
+    n_keep = int(keep.sum())
+
+    if verbose:
+        print(f"  kNN sparsification (k={k}, AND logic): "
+              f"{n_keep:,} / {n_edges:,} edges retained "
+              f"({100.0 * n_keep / max(n_edges, 1):.1f}%)")
+        if n_keep > 0:
+            n_nodes = int(max(rows[keep].max(), cols[keep].max())) + 1
+            deg = np.zeros(n_nodes, dtype=np.int32)
+            np.add.at(deg, rows[keep], 1)
+            np.add.at(deg, cols[keep], 1)
+            active = deg > 0
+            print(f"  Degree after kNN: max={deg.max()}, "
+                  f"mean={deg[active].mean():.1f}, "
+                  f"nodes with ≥1 edge: {active.sum():,}")
+
+    return rows[keep], cols[keep], z_scores[keep], weights[keep]
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +337,12 @@ def main():
         '--min_weight', type=int, default=5,
         help='Pre-filter: skip edges with raw co-occurrence count below this value.',
     )
+    # kNN sparsification (applied after NC backbone, before Leiden)
+    parser.add_argument(
+        '--knn_k', type=int, default=0,
+        help='If > 0, further sparsify backbone by keeping each node\'s top-k edges '
+             'by z-score (AND logic → degree ≤ k). 0 = disabled.',
+    )
     # Leiden parameters
     parser.add_argument(
         '--gamma', type=float, default=0.01,
@@ -305,9 +371,10 @@ def main():
     if args.run_name:
         run_dir = os.path.join(args.output_dir, args.run_name)
     else:
+        knn_tag = f"_knn{args.knn_k}" if args.knn_k > 0 else ""
         run_dir = os.path.join(
             args.output_dir,
-            f"z{args.z_threshold}_mw{args.min_weight}_g{args.gamma}_{args.weight_type}"
+            f"z{args.z_threshold}_mw{args.min_weight}{knn_tag}_g{args.gamma}_{args.weight_type}"
         )
     os.makedirs(run_dir, exist_ok=True)
 
@@ -319,6 +386,7 @@ def main():
         'cooc_path': args.cooc_path,
         'z_threshold': args.z_threshold,
         'min_weight': args.min_weight,
+        'knn_k': args.knn_k,
         'gamma': args.gamma,
         'weight_type': args.weight_type,
         'seed': args.seed,
@@ -333,6 +401,7 @@ def main():
     print(f"  cooc_path:      {args.cooc_path}")
     print(f"  z_threshold:    {args.z_threshold}")
     print(f"  min_weight:     {args.min_weight}")
+    print(f"  knn_k:          {args.knn_k if args.knn_k > 0 else 'disabled'}")
     print(f"  gamma:          {args.gamma}")
     print(f"  weight_type:    {args.weight_type}")
     print(f"  min_cluster_sz: {args.min_cluster_size}")
@@ -376,13 +445,33 @@ def main():
 
     print(f"  Time: {time.time() - t2:.1f}s")
 
-    # Free N11 — no longer needed
     del N11
     gc.collect()
 
     n_edges_raw = backbone['n_edges_raw']
     n_edges_bb = backbone['n_edges_backbone']
     backbone_pct = 100.0 * n_edges_bb / max(n_edges_raw, 1)
+
+    bb_rows    = backbone['rows']
+    bb_cols    = backbone['cols']
+    bb_zscores = backbone['z_scores']
+    bb_weights = backbone['weights']
+
+    # -----------------------------------------------------------------------
+    # Step 2b: kNN sparsification (optional)
+    # -----------------------------------------------------------------------
+    n_edges_knn = n_edges_bb
+    if args.knn_k > 0:
+        print("\n" + "=" * 70)
+        print("Step 2b: kNN sparsification")
+        print("=" * 70)
+        t2b = time.time()
+        bb_rows, bb_cols, bb_zscores, bb_weights = apply_knn_sparsification(
+            bb_rows, bb_cols, bb_zscores, bb_weights,
+            k=args.knn_k, verbose=True,
+        )
+        n_edges_knn = len(bb_rows)
+        print(f"  Time: {time.time() - t2b:.1f}s")
 
     # -----------------------------------------------------------------------
     # Step 3: Leiden CPM
@@ -393,14 +482,14 @@ def main():
     t3 = time.time()
 
     edge_weights_for_leiden = (
-        backbone['z_scores'] if args.weight_type == 'zscore'
-        else backbone['weights']
+        bb_zscores if args.weight_type == 'zscore'
+        else bb_weights
     )
 
     leiden_result = run_leiden_cpm(
         n_nodes=n_latents,
-        edges_src=backbone['rows'],
-        edges_dst=backbone['cols'],
+        edges_src=bb_rows,
+        edges_dst=bb_cols,
         edge_weights=edge_weights_for_leiden,
         gamma=args.gamma,
         seed=args.seed,
@@ -515,6 +604,9 @@ def main():
         'n_edges_backbone': n_edges_bb,
         'backbone_retention_pct': round(backbone_pct, 2),
         'backbone_density': round(float(n_edges_bb) / max(n_latents * (n_latents - 1) / 2, 1), 8),
+        'knn_k': args.knn_k,
+        'n_edges_after_knn': n_edges_knn,
+        'knn_retention_pct': round(100.0 * n_edges_knn / max(n_edges_bb, 1), 2),
     }
 
     cluster_stats: dict = {
@@ -568,8 +660,11 @@ def main():
     print("SUMMARY")
     print("=" * 70)
     print(f"  z_threshold={args.z_threshold}  min_weight={args.min_weight}  "
-          f"gamma={args.gamma}  weight={args.weight_type}")
+          f"knn_k={args.knn_k}  gamma={args.gamma}  weight={args.weight_type}")
     print(f"  Backbone: {n_edges_bb:,} / {n_edges_raw:,} edges retained ({backbone_pct:.1f}%)")
+    if args.knn_k > 0:
+        print(f"  After kNN:  {n_edges_knn:,} edges "
+              f"({100.0 * n_edges_knn / max(n_edges_bb, 1):.1f}% of backbone)")
     if n_valid:
         sizes_arr = np.array(sizes)
         print(f"  Clusters: {n_valid} valid  "

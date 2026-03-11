@@ -1,0 +1,166 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyperFirstAtBeginDocument{\AtBeginDocument}
+\HyperFirstAtBeginDocument{\ifx\hyper@anchor\@undefined
+\global\let\oldcontentsline\contentsline
+\gdef\contentsline#1#2#3#4{\oldcontentsline{#1}{#2}{#3}}
+\global\let\oldnewlabel\newlabel
+\gdef\newlabel#1#2{\newlabelxx{#1}#2}
+\gdef\newlabelxx#1#2#3#4#5#6{\oldnewlabel{#1}{{#2}{#3}}}
+\AtEndDocument{\ifx\hyper@anchor\@undefined
+\let\contentsline\oldcontentsline
+\let\newlabel\oldnewlabel
+\fi}
+\fi}
+\global\let\hyper@last\relax 
+\gdef\HyperFirstAtBeginDocument#1{#1}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{marzen2017predictive,shai2024transformers}
+\citation{shai2024transformers,piotrowski2025constrained}
+\citation{shai2024transformers}
+\citation{piotrowski2025constrained}
+\citation{riechers2025quantum}
+\citation{riechers2025icl}
+\citation{bricken2023monosemanticity,cunningham2023sparse}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Introduction}{1}{section.1}\protected@file@percent }
+\newlabel{sec:intro}{{1}{1}{Introduction}{section.1}{}}
+\citation{korem2019finding}
+\citation{shai2024transformers}
+\citation{piotrowski2025constrained}
+\citation{riechers2025icl}
+\citation{bricken2023monosemanticity,cunningham2023sparse}
+\citation{saelens2024}
+\citation{cutler1994archetypal}
+\citation{korem2019finding}
+\citation{bradley2000ksubspace}
+\citation{chua2024geometry}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Background and Related Work}{2}{section.2}\protected@file@percent }
+\newlabel{sec:background}{{2}{2}{Background and Related Work}{section.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Belief states and simplex geometry.}{2}{section*.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Sparse autoencoders.}{2}{section*.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Archetypal analysis and AANet.}{2}{section*.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{k-subspace clustering.}{2}{section*.4}\protected@file@percent }
+\citation{riechers2025quantum}
+\citation{saelens2024}
+\citation{ferrando2024}
+\@writefile{toc}{\contentsline {paragraph}{Geometry of Concepts.}{3}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Toy Model: Proof of Concept}{3}{section.3}\protected@file@percent }
+\newlabel{sec:toy}{{3}{3}{Toy Model: Proof of Concept}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Generator Model}{3}{subsection.3.1}\protected@file@percent }
+\newlabel{sec:toy_generator}{{3.1}{3}{Generator Model}{subsection.3.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Simplex Structure in the Residual Stream}{3}{subsection.3.2}\protected@file@percent }
+\newlabel{sec:toy_pca}{{3.2}{3}{Simplex Structure in the Residual Stream}{subsection.3.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}SAE Fitting and Latent Analysis}{3}{subsection.3.3}\protected@file@percent }
+\newlabel{sec:toy_sae}{{3.3}{3}{SAE Fitting and Latent Analysis}{subsection.3.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Clustering and AANet Fitting}{3}{subsection.3.4}\protected@file@percent }
+\newlabel{sec:toy_cluster}{{3.4}{3}{Clustering and AANet Fitting}{subsection.3.4}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}Real Model Pipeline: Gemma-2-9B}{4}{section.4}\protected@file@percent }
+\newlabel{sec:real}{{4}{4}{Real Model Pipeline: Gemma-2-9B}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}SAE and Representation Space}{4}{subsection.4.1}\protected@file@percent }
+\newlabel{sec:real_sae}{{4.1}{4}{SAE and Representation Space}{subsection.4.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}k-Subspace Clustering}{4}{subsection.4.2}\protected@file@percent }
+\newlabel{sec:real_cluster}{{4.2}{4}{k-Subspace Clustering}{subsection.4.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}AANet Simplex Fitting}{4}{subsection.4.3}\protected@file@percent }
+\newlabel{sec:real_aanet}{{4.3}{4}{AANet Simplex Fitting}{subsection.4.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Priority Cluster Selection}{4}{subsection.4.4}\protected@file@percent }
+\newlabel{sec:real_selection}{{4.4}{4}{Priority Cluster Selection}{subsection.4.4}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5}Validation}{4}{section.5}\protected@file@percent }
+\newlabel{sec:validation}{{5}{4}{Validation}{section.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Strand 1: Cross-Vertex KL Divergence}{4}{subsection.5.1}\protected@file@percent }
+\newlabel{sec:kl}{{5.1}{4}{Strand 1: Cross-Vertex KL Divergence}{subsection.5.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{Setup.}{4}{section*.10}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces \textbf  {The 13 priority clusters.} Clusters are identified by the number of top-frequency SAE latents used (512 or 768) and their cluster index within that run. Confidence reflects manual review of interpretability outputs and validation consistency. $m$ denotes the number of SAE latents in the cluster. \relax }}{5}{table.caption.9}\protected@file@percent }
+\newlabel{tab:priority_clusters}{{1}{5}{\textbf {The 13 priority clusters.} Clusters are identified by the number of top-frequency SAE latents used (512 or 768) and their cluster index within that run. Confidence reflects manual review of interpretability outputs and validation consistency. $m$ denotes the number of SAE latents in the cluster. \relax }{table.caption.9}{}}
+\@writefile{toc}{\contentsline {paragraph}{Hypothesis.}{5}{section*.11}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Results.}{5}{section*.13}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Strand 2: Latent vs.\ Barycentric Predictive Advantage}{5}{subsection.5.2}\protected@file@percent }
+\newlabel{sec:bary}{{5.2}{5}{Strand 2: Latent vs.\ Barycentric Predictive Advantage}{subsection.5.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Setup.}{5}{section*.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Hypothesis.}{5}{section*.15}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Results.}{5}{section*.17}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces \textbf  {KL divergence results: cross-vertex vs.\ same-vertex ratio.} We report the ratio $\overline  {D}_{\mathrm  {KL}}^{\mathrm  {cross}} / \overline  {D}_{\mathrm  {KL}}^{\mathrm  {same}}$ of mean symmetric KL divergences. A ratio $>1$ indicates that tokens near different simplex vertices predict more divergent next-token distributions than tokens near the same vertex. Null clusters are shown separately; their ratios overlap substantially with those of real clusters. \relax }}{6}{table.caption.12}\protected@file@percent }
+\newlabel{tab:kl}{{2}{6}{\textbf {KL divergence results: cross-vertex vs.\ same-vertex ratio.} We report the ratio $\overline {D}_{\mathrm {KL}}^{\mathrm {cross}} / \overline {D}_{\mathrm {KL}}^{\mathrm {same}}$ of mean symmetric KL divergences. A ratio $>1$ indicates that tokens near different simplex vertices predict more divergent next-token distributions than tokens near the same vertex. Null clusters are shown separately; their ratios overlap substantially with those of real clusters. \relax }{table.caption.12}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Strand 3: Causal Steering}{6}{subsection.5.3}\protected@file@percent }
+\newlabel{sec:steering}{{5.3}{6}{Strand 3: Causal Steering}{subsection.5.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Setup.}{6}{section*.18}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Results.}{6}{section*.20}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces \textbf  {Barycentric vs.\ best-latent predictive advantage.} Fraction of top-50 tokens for which the barycentric coordinate achieves higher $R^2$ for next-token probability than the best individual latent in the cluster (\emph  {frac. bary wins}). Wilcoxon $p$-values test the one-sided hypothesis that barycentric $R^2$ is stochastically greater. Mean $R^2$ values are shown for context. Null clusters are shown at bottom; none achieves significant barycentric advantage. \relax }}{7}{table.caption.16}\protected@file@percent }
+\newlabel{tab:bary}{{3}{7}{\textbf {Barycentric vs.\ best-latent predictive advantage.} Fraction of top-50 tokens for which the barycentric coordinate achieves higher $R^2$ for next-token probability than the best individual latent in the cluster (\emph {frac. bary wins}). Wilcoxon $p$-values test the one-sided hypothesis that barycentric $R^2$ is stochastically greater. Mean $R^2$ values are shown for context. Null clusters are shown at bottom; none achieves significant barycentric advantage. \relax }{table.caption.16}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Strand 4: Semantic Coherence and LLM Interpretability}{7}{subsection.5.4}\protected@file@percent }
+\newlabel{sec:interp}{{5.4}{7}{Strand 4: Semantic Coherence and LLM Interpretability}{subsection.5.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{Setup.}{7}{section*.21}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Results.}{7}{section*.22}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}Highlight Clusters}{7}{section.6}\protected@file@percent }
+\newlabel{sec:highlights}{{6}{7}{Highlight Clusters}{section.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.1}768\_596: Strongest Functional Evidence}{7}{subsection.6.1}\protected@file@percent }
+\newlabel{sec:highlight_596}{{6.1}{7}{768\_596: Strongest Functional Evidence}{subsection.6.1}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces \textbf  {Causal steering scores.} The steering score reports the best (type, scale) combination's mean shift rate across all source$\to $target directions. Clusters where AANet did not qualify (fewer than 2 vertices with document accuracy $\geq 0.15$) are marked with a dash. Null cluster scores are shown at bottom for comparison. Distributions of real and null scores overlap, but the best real cluster (768\_596) exceeds all null clusters. \relax }}{8}{table.caption.19}\protected@file@percent }
+\newlabel{tab:steering}{{4}{8}{\textbf {Causal steering scores.} The steering score reports the best (type, scale) combination's mean shift rate across all source$\to $target directions. Clusters where AANet did not qualify (fewer than 2 vertices with document accuracy $\geq 0.15$) are marked with a dash. Null cluster scores are shown at bottom for comparison. Distributions of real and null scores overlap, but the best real cluster (768\_596) exceeds all null clusters. \relax }{table.caption.19}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.2}768\_140: Strongest KL Divergence and Best Interpretation}{8}{subsection.6.2}\protected@file@percent }
+\newlabel{sec:highlight_140}{{6.2}{8}{768\_140: Strongest KL Divergence and Best Interpretation}{subsection.6.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {6.3}512\_17: Most Interpretable Semantic Structure}{9}{subsection.6.3}\protected@file@percent }
+\newlabel{sec:highlight_17}{{6.3}{9}{512\_17: Most Interpretable Semantic Structure}{subsection.6.3}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {7}Discussion}{9}{section.7}\protected@file@percent }
+\newlabel{sec:discussion}{{7}{9}{Discussion}{section.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.1}Convergent Evidence Without a Single Decisive Test}{9}{subsection.7.1}\protected@file@percent }
+\newlabel{sec:convergent}{{7.1}{9}{Convergent Evidence Without a Single Decisive Test}{subsection.7.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.2}Comparison to Toy Model Expectations}{9}{subsection.7.2}\protected@file@percent }
+\newlabel{sec:toy_comparison}{{7.2}{9}{Comparison to Toy Model Expectations}{subsection.7.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {7.3}Limitations}{9}{subsection.7.3}\protected@file@percent }
+\newlabel{sec:limitations}{{7.3}{9}{Limitations}{subsection.7.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Effect sizes are modest.}{9}{section*.26}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Null cluster size mismatch.}{9}{section*.27}\protected@file@percent }
+\bibstyle{plainnat}
+\bibdata{references}
+\bibcite{saelens2024}{{1}{2024}{{Bloom et~al.}}{{Bloom, Bricken, et~al.}}}
+\bibcite{bradley2000ksubspace}{{2}{2000}{{Bradley and Mangasarian}}{{}}}
+\bibcite{bricken2023monosemanticity}{{3}{2023}{{Bricken et~al.}}{{Bricken, Templeton, Batson, Chen, Jermyn, Conerly, Turner, Anil, Denison, Askell, et~al.}}}
+\bibcite{chua2024geometry}{{4}{2024}{{Chua et~al.}}{{}}}
+\bibcite{cunningham2023sparse}{{5}{2023}{{Cunningham et~al.}}{{Cunningham, Ewart, Riggs, Huben, and Sharkey}}}
+\bibcite{cutler1994archetypal}{{6}{1994}{{Cutler and Breiman}}{{}}}
+\@writefile{toc}{\contentsline {paragraph}{Phantom vertices.}{10}{section*.28}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{No causal proof of belief-state tracking.}{10}{section*.29}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Single model, single layer.}{10}{section*.30}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Degeneracy at large steering scales.}{10}{section*.31}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {8}Conclusion}{10}{section.8}\protected@file@percent }
+\newlabel{sec:conclusion}{{8}{10}{Conclusion}{section.8}{}}
+\bibcite{ferrando2024}{{7}{2024}{{Ferrando et~al.}}{{Ferrando, Sarti, Bentivogli, et~al.}}}
+\bibcite{korem2019finding}{{8}{2019}{{Korem et~al.}}{{Korem, Shai, and Tishby}}}
+\bibcite{marzen2017predictive}{{9}{2017}{{Marzen and Crutchfield}}{{}}}
+\bibcite{piotrowski2025constrained}{{10}{2025}{{Piotrowski et~al.}}{{Piotrowski, Riechers, Filan, and Shai}}}
+\bibcite{riechers2025icl}{{11}{2025{a}}{{Riechers et~al.}}{{Riechers, Bigelow, Alt, and Shai}}}
+\bibcite{riechers2025quantum}{{12}{2025{b}}{{Riechers et~al.}}{{Riechers, Elliott, and Shai}}}
+\bibcite{shai2024transformers}{{13}{2024}{{Shai et~al.}}{{Shai, Marzen, Teixeira, Gietelink~Oldenziel, and Riechers}}}
+\citation{marzen2017predictive}
+\citation{riechers2025quantum}
+\citation{korem2019finding}
+\@writefile{toc}{\contentsline {section}{\numberline {A}Toy Model Details}{11}{appendix.A}\protected@file@percent }
+\newlabel{app:toy}{{A}{11}{Toy Model Details}{appendix.A}{}}
+\@writefile{toc}{\contentsline {paragraph}{Mess3 process.}{11}{section*.33}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Tom Quantum (Bloch Walk) process.}{11}{section*.34}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Multipartite model vocabulary.}{11}{section*.35}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {B}SAE Details}{11}{appendix.B}\protected@file@percent }
+\newlabel{app:sae}{{B}{11}{SAE Details}{appendix.B}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {C}AANet Architecture and Training}{12}{appendix.C}\protected@file@percent }
+\newlabel{app:aanet}{{C}{12}{AANet Architecture and Training}{appendix.C}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {D}Causal Steering Intervention Types}{12}{appendix.D}\protected@file@percent }
+\newlabel{app:steering_types}{{D}{12}{Causal Steering Intervention Types}{appendix.D}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {E}All Priority Cluster Results}{12}{appendix.E}\protected@file@percent }
+\newlabel{app:all_results}{{E}{12}{All Priority Cluster Results}{appendix.E}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces \textbf  {Full results across all four validation strands for the 13 priority clusters and 3 null clusters.} KL ratio: cross/same symmetric KL divergence ratio. Bary wins: fraction of top-50 tokens where $R^2_{\mathrm  {bary}} > R^2_{\mathrm  {best\,latent}}$ (``sig.'' if Wilcoxon $p < 0.001$). Steering: best-combination steering score (``---'' if cluster did not qualify). Interp.: consistency of frontier-LLM vertex labels across 20 iterations (HIGH/MED/LOW). \relax }}{12}{table.caption.36}\protected@file@percent }
+\newlabel{tab:full_results}{{5}{12}{\textbf {Full results across all four validation strands for the 13 priority clusters and 3 null clusters.} KL ratio: cross/same symmetric KL divergence ratio. Bary wins: fraction of top-50 tokens where $R^2_{\mathrm {bary}} > R^2_{\mathrm {best\,latent}}$ (``sig.'' if Wilcoxon $p < 0.001$). Steering: best-combination steering score (``---'' if cluster did not qualify). Interp.: consistency of frontier-LLM vertex labels across 20 iterations (HIGH/MED/LOW). \relax }{table.caption.36}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces \textbf  {Simplex structure in the toy model residual stream (layer 2).} Each point is a token position from a held-out sequence. Colors encode the true belief state: RGB channels are proportional to the probability assigned to each of the three hidden states of the Mess3 component (pure red, green, blue at the vertices; mixed colors in the interior). \emph  {Top row:} ground-truth belief states. \emph  {Bottom row:} belief states predicted by linear readout from the layer-2 residual stream. The triangular (2-simplex) structure of the Mess3 components and the circular (1-simplex product) structure of the Tom Quantum components are clearly visible, confirming that the transformer has learned to represent these belief geometries. \relax }}{13}{figure.caption.6}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{fig:toy_pca}{{1}{13}{\textbf {Simplex structure in the toy model residual stream (layer 2).} Each point is a token position from a held-out sequence. Colors encode the true belief state: RGB channels are proportional to the probability assigned to each of the three hidden states of the Mess3 component (pure red, green, blue at the vertices; mixed colors in the interior). \emph {Top row:} ground-truth belief states. \emph {Bottom row:} belief states predicted by linear readout from the layer-2 residual stream. The triangular (2-simplex) structure of the Mess3 components and the circular (1-simplex product) structure of the Tom Quantum components are clearly visible, confirming that the transformer has learned to represent these belief geometries. \relax }{figure.caption.6}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces \textbf  {Per-latent activation profiles for the toy model (layer 2, TopK $K=3$).} Each panel shows the activation of a single SAE latent as a function of the ground-truth belief state (heatmap over Mess3 $(x, a)$ parameter space). Latents are sorted by total activation weight. Individual latents fire preferentially near specific vertices or edges of the belief simplex, tiling the simplex geometry in a graded, partially overlapping fashion. \relax }}{14}{figure.caption.7}\protected@file@percent }
+\newlabel{fig:toy_epdf}{{2}{14}{\textbf {Per-latent activation profiles for the toy model (layer 2, TopK $K=3$).} Each panel shows the activation of a single SAE latent as a function of the ground-truth belief state (heatmap over Mess3 $(x, a)$ parameter space). Latents are sorted by total activation weight. Individual latents fire preferentially near specific vertices or edges of the belief simplex, tiling the simplex geometry in a graded, partially overlapping fashion. \relax }{figure.caption.7}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces \textbf  {Overview of the belief geometry discovery pipeline.} Text sequences are processed through Gemma-2-9B; residual stream activations at layer 20 are encoded by a TopK SAE. Latent decoder directions are partitioned by k-subspace clustering, and candidate $K\!=\!3$ clusters are fit with AANet to recover barycentric (simplex) coordinates. The resulting cluster representations are evaluated with four complementary validation measurements. \relax }}{15}{figure.caption.8}\protected@file@percent }
+\newlabel{fig:pipeline}{{3}{15}{\textbf {Overview of the belief geometry discovery pipeline.} Text sequences are processed through Gemma-2-9B; residual stream activations at layer 20 are encoded by a TopK SAE. Latent decoder directions are partitioned by k-subspace clustering, and candidate $K\!=\!3$ clusters are fit with AANet to recover barycentric (simplex) coordinates. The resulting cluster representations are evaluated with four complementary validation measurements. \relax }{figure.caption.8}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces \textbf  {Cluster 768\_596: spatial structure.} \emph  {(a)} All 5000 sample positions in barycentric coordinates (ternary plot). Concentration near the three vertices indicates that the model visits near-pure vertex states, not just the simplex interior. \emph  {(b)} Centroid positions of the 6 individual SAE latents in the cluster. Latents partition across the three vertices, with each vertex attracting one or two latents (centroids near the corresponding corner), consistent with vertex-specialized feature coding. \relax }}{16}{figure.caption.23}\protected@file@percent }
+\newlabel{fig:cluster_596_spatial}{{4}{16}{\textbf {Cluster 768\_596: spatial structure.} \emph {(a)} All 5000 sample positions in barycentric coordinates (ternary plot). Concentration near the three vertices indicates that the model visits near-pure vertex states, not just the simplex interior. \emph {(b)} Centroid positions of the 6 individual SAE latents in the cluster. Latents partition across the three vertices, with each vertex attracting one or two latents (centroids near the corresponding corner), consistent with vertex-specialized feature coding. \relax }{figure.caption.23}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces \textbf  {Cluster 768\_140: spatial structure and KL divergence.} \emph  {(a)} Sample scatter in barycentric coordinates. \emph  {(b)} Pairwise symmetric KL divergence distributions for same-vertex (blue), cross-vertex (red), and within-simplex (gray) pairs. The cross-vertex distribution is shifted to substantially higher values, with a cross/same mean ratio of 1.99---by far the strongest KL signal in our dataset. This indicates that tokens near different simplex vertices predict markedly different next-token distributions. \relax }}{16}{figure.caption.24}\protected@file@percent }
+\newlabel{fig:cluster_140}{{5}{16}{\textbf {Cluster 768\_140: spatial structure and KL divergence.} \emph {(a)} Sample scatter in barycentric coordinates. \emph {(b)} Pairwise symmetric KL divergence distributions for same-vertex (blue), cross-vertex (red), and within-simplex (gray) pairs. The cross-vertex distribution is shifted to substantially higher values, with a cross/same mean ratio of 1.99---by far the strongest KL signal in our dataset. This indicates that tokens near different simplex vertices predict markedly different next-token distributions. \relax }{figure.caption.24}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces \textbf  {Cluster 512\_17: latent decomposition.} \emph  {(a)} Fraction of total cluster activation contributed by each latent at each of the three vertices. Different latents dominate at each vertex, consistent with vertex-specialized feature encoding. \emph  {(b)} Centroid positions of the 15 SAE latents. Clear separation across the three simplex vertices confirms that the cluster's latents have distinct vertex preferences. \relax }}{17}{figure.caption.25}\protected@file@percent }
+\newlabel{fig:cluster_17}{{6}{17}{\textbf {Cluster 512\_17: latent decomposition.} \emph {(a)} Fraction of total cluster activation contributed by each latent at each of the three vertices. Different latents dominate at each vertex, consistent with vertex-specialized feature encoding. \emph {(b)} Centroid positions of the 15 SAE latents. Clear separation across the three simplex vertices confirms that the cluster's latents have distinct vertex preferences. \relax }{figure.caption.25}{}}
+\gdef \@abspage@last{17}
