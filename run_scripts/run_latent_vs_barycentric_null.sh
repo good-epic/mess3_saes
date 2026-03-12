@@ -36,6 +36,7 @@ echo ""
 
 python -u validation/latent_vs_barycentric.py \
     --prepared_samples_dir "${PREPARED_SAMPLES_DIR}" \
+    --source_dir "${CSV_DIR}" \
     --csv_dir "${CSV_DIR}" \
     --output_dir "${OUTPUT_DIR}" \
     --clusters "${CLUSTERS}" \
